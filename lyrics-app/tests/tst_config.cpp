@@ -80,27 +80,29 @@ void TestConfig::firstRunSeedsDefaults()
     DesktopLyricConfig config;
     config.load(); // first run: no file yet, so defaults are seeded
 
-    // Defaults mirror references/src/common/defaultSetting.ts (authoritative).
-    QCOMPARE(config.get(QStringLiteral("desktopLyric.enable")).toBool(), false);
+    // Defaults are the user's tuned preferences, not the upstream file's:
+    // enable, isAlwaysOnTop, isAlwaysOnTopLoop, fullscreenHide, width,
+    // fontSize, opacity, isZoomActiveLrc deviate from defaultSetting.ts.
+    QCOMPARE(config.get(QStringLiteral("desktopLyric.enable")).toBool(), true);
     QCOMPARE(config.get(QStringLiteral("desktopLyric.isLock")).toBool(), false);
-    QCOMPARE(config.get(QStringLiteral("desktopLyric.isAlwaysOnTop")).toBool(), false);
-    QCOMPARE(config.get(QStringLiteral("desktopLyric.isAlwaysOnTopLoop")).toBool(), false);
+    QCOMPARE(config.get(QStringLiteral("desktopLyric.isAlwaysOnTop")).toBool(), true);
+    QCOMPARE(config.get(QStringLiteral("desktopLyric.isAlwaysOnTopLoop")).toBool(), true);
     QCOMPARE(config.get(QStringLiteral("desktopLyric.isShowTaskbar")).toBool(), false);
     QCOMPARE(config.get(QStringLiteral("desktopLyric.pauseHide")).toBool(), true);
     QCOMPARE(config.get(QStringLiteral("desktopLyric.audioVisualization")).toBool(), false);
-    QCOMPARE(config.get(QStringLiteral("desktopLyric.fullscreenHide")).toBool(), true);
+    QCOMPARE(config.get(QStringLiteral("desktopLyric.fullscreenHide")).toBool(), false);
     QCOMPARE(config.get(QStringLiteral("desktopLyric.isDelayScroll")).toBool(), true);
     QCOMPARE(config.get(QStringLiteral("desktopLyric.isLockScreen")).toBool(), false); // !isWin
     QCOMPARE(config.get(QStringLiteral("desktopLyric.isHoverHide")).toBool(), false);
     QCOMPARE(config.get(QStringLiteral("desktopLyric.direction")).toString(), QStringLiteral("horizontal"));
     QCOMPARE(config.get(QStringLiteral("desktopLyric.scrollAlign")).toString(), QStringLiteral("center"));
-    QCOMPARE(config.get(QStringLiteral("desktopLyric.width")).toInt(), 450);
+    QCOMPARE(config.get(QStringLiteral("desktopLyric.width")).toInt(), 300);
     QCOMPARE(config.get(QStringLiteral("desktopLyric.height")).toInt(), 300);
     QVERIFY(!config.get(QStringLiteral("desktopLyric.x")).isValid()); // null
     QVERIFY(!config.get(QStringLiteral("desktopLyric.y")).isValid()); // null
     QCOMPARE(config.get(QStringLiteral("desktopLyric.style.align")).toString(), QStringLiteral("center"));
     QCOMPARE(config.get(QStringLiteral("desktopLyric.style.font")).toString(), QString());
-    QCOMPARE(config.get(QStringLiteral("desktopLyric.style.fontSize")).toInt(), 20);
+    QCOMPARE(config.get(QStringLiteral("desktopLyric.style.fontSize")).toInt(), 14);
     QCOMPARE(config.get(QStringLiteral("desktopLyric.style.lineGap")).toInt(), 15);
     QCOMPARE(config.get(QStringLiteral("desktopLyric.style.lyricUnplayColor")).toString(),
              QStringLiteral("rgba(255, 255, 255, 1)"));
@@ -108,9 +110,9 @@ void TestConfig::firstRunSeedsDefaults()
              QStringLiteral("rgba(7, 197, 86, 1)"));
     QCOMPARE(config.get(QStringLiteral("desktopLyric.style.lyricShadowColor")).toString(),
              QStringLiteral("rgba(0, 0, 0, 0.18)"));
-    QCOMPARE(config.get(QStringLiteral("desktopLyric.style.opacity")).toInt(), 95);
+    QCOMPARE(config.get(QStringLiteral("desktopLyric.style.opacity")).toInt(), 100);
     QCOMPARE(config.get(QStringLiteral("desktopLyric.style.ellipsis")).toBool(), false);
-    QCOMPARE(config.get(QStringLiteral("desktopLyric.style.isZoomActiveLrc")).toBool(), false);
+    QCOMPARE(config.get(QStringLiteral("desktopLyric.style.isZoomActiveLrc")).toBool(), true);
     QCOMPARE(config.get(QStringLiteral("desktopLyric.style.isFontWeightFont")).toBool(), true);
     QCOMPARE(config.get(QStringLiteral("desktopLyric.style.isFontWeightLine")).toBool(), true);
     QCOMPARE(config.get(QStringLiteral("desktopLyric.style.isFontWeightExtended")).toBool(), true);
@@ -205,11 +207,33 @@ void TestConfig::resetRestoresDefault()
 {
     DesktopLyricConfig config;
 
-    QVERIFY(config.set(QStringLiteral("desktopLyric.style.fontSize"), 60));
-    QCOMPARE(config.get(QStringLiteral("desktopLyric.style.fontSize")).toInt(), 60);
+    // The tuned keys each reset from a non-default value back to the new
+    // default in loadDefaults(): enable/isAlwaysOnTop/isAlwaysOnTopLoop/
+    // isZoomActiveLrc -> true, fullscreenHide -> false, width -> 300,
+    // fontSize -> 14, opacity -> 100.
+    const QVector<QPair<QString, QVariant>> cases = {
+        { QStringLiteral("desktopLyric.enable"), false },
+        { QStringLiteral("desktopLyric.isAlwaysOnTop"), false },
+        { QStringLiteral("desktopLyric.isAlwaysOnTopLoop"), false },
+        { QStringLiteral("desktopLyric.fullscreenHide"), true },
+        { QStringLiteral("desktopLyric.width"), 640 },
+        { QStringLiteral("desktopLyric.style.fontSize"), 60 },
+        { QStringLiteral("desktopLyric.style.opacity"), 50 },
+        { QStringLiteral("desktopLyric.style.isZoomActiveLrc"), false },
+    };
+    for (const auto& c : cases)
+        QVERIFY(config.set(c.first, c.second));
+    for (const auto& c : cases)
+        QVERIFY(config.reset(c.first));
 
-    QVERIFY(config.reset(QStringLiteral("desktopLyric.style.fontSize")));
-    QCOMPARE(config.get(QStringLiteral("desktopLyric.style.fontSize")).toInt(), 20); // default
+    QCOMPARE(config.get(QStringLiteral("desktopLyric.enable")).toBool(), true);
+    QCOMPARE(config.get(QStringLiteral("desktopLyric.isAlwaysOnTop")).toBool(), true);
+    QCOMPARE(config.get(QStringLiteral("desktopLyric.isAlwaysOnTopLoop")).toBool(), true);
+    QCOMPARE(config.get(QStringLiteral("desktopLyric.fullscreenHide")).toBool(), false);
+    QCOMPARE(config.get(QStringLiteral("desktopLyric.width")).toInt(), 300);
+    QCOMPARE(config.get(QStringLiteral("desktopLyric.style.fontSize")).toInt(), 14);
+    QCOMPARE(config.get(QStringLiteral("desktopLyric.style.opacity")).toInt(), 100);
+    QCOMPARE(config.get(QStringLiteral("desktopLyric.style.isZoomActiveLrc")).toBool(), true);
 }
 
 void TestConfig::debouncedSaveWritesFile()

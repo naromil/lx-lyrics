@@ -67,36 +67,42 @@ DesktopLyricConfig::~DesktopLyricConfig()
 
 void DesktopLyricConfig::loadDefaults()
 {
-    // Defaults mirror references/src/common/defaultSetting.ts (authoritative).
-    // Platform-dependent keys follow the file's isWin / !isMac expressions.
+    // Defaults are the user's tuned preferences, not the upstream file's.
+    // They deviate from references/src/common/defaultSetting.ts on: enable,
+    // isAlwaysOnTop, isAlwaysOnTopLoop, fullscreenHide, width, style.fontSize,
+    // style.opacity, style.isZoomActiveLrc. The remaining keys mirror the
+    // file, and platform-dependent keys keep its isWin / !isMac expressions.
+    // x/y intentionally default to null (auto-position).
+    // Reserved keys (stored, no consumer): enable (window shows unconditionally),
+    // isAlwaysOnTopLoop (loop keys off isAlwaysOnTop alone), fullscreenHide (no fullscreen handling).
     m_defaults = {
-        { QStringLiteral("desktopLyric.enable"), false },
+        { QStringLiteral("desktopLyric.enable"), true },
         { QStringLiteral("desktopLyric.isLock"), false },
-        { QStringLiteral("desktopLyric.isAlwaysOnTop"), false },
-        { QStringLiteral("desktopLyric.isAlwaysOnTopLoop"), false },
+        { QStringLiteral("desktopLyric.isAlwaysOnTop"), true },
+        { QStringLiteral("desktopLyric.isAlwaysOnTopLoop"), true },
         { QStringLiteral("desktopLyric.isShowTaskbar"), false },
         { QStringLiteral("desktopLyric.pauseHide"), true },
         { QStringLiteral("desktopLyric.audioVisualization"), false },
-        { QStringLiteral("desktopLyric.fullscreenHide"), true },
+        { QStringLiteral("desktopLyric.fullscreenHide"), false },
         { QStringLiteral("desktopLyric.isDelayScroll"), true },
         { QStringLiteral("desktopLyric.isLockScreen"), isWindows() },
         { QStringLiteral("desktopLyric.isHoverHide"), false },
         { QStringLiteral("desktopLyric.direction"), QStringLiteral("horizontal") },
         { QStringLiteral("desktopLyric.scrollAlign"), QStringLiteral("center") },
-        { QStringLiteral("desktopLyric.width"), 450 },
+        { QStringLiteral("desktopLyric.width"), 300 },
         { QStringLiteral("desktopLyric.height"), 300 },
         { QStringLiteral("desktopLyric.x"), QVariant() },
         { QStringLiteral("desktopLyric.y"), QVariant() },
         { QStringLiteral("desktopLyric.style.align"), QStringLiteral("center") },
         { QStringLiteral("desktopLyric.style.font"), QString() },
-        { QStringLiteral("desktopLyric.style.fontSize"), 20 },
+        { QStringLiteral("desktopLyric.style.fontSize"), 14 },
         { QStringLiteral("desktopLyric.style.lineGap"), 15 },
         { QStringLiteral("desktopLyric.style.lyricUnplayColor"), QStringLiteral("rgba(255, 255, 255, 1)") },
         { QStringLiteral("desktopLyric.style.lyricPlayedColor"), QStringLiteral("rgba(7, 197, 86, 1)") },
         { QStringLiteral("desktopLyric.style.lyricShadowColor"), QStringLiteral("rgba(0, 0, 0, 0.18)") },
-        { QStringLiteral("desktopLyric.style.opacity"), 95 },
+        { QStringLiteral("desktopLyric.style.opacity"), 100 },
         { QStringLiteral("desktopLyric.style.ellipsis"), false },
-        { QStringLiteral("desktopLyric.style.isZoomActiveLrc"), false },
+        { QStringLiteral("desktopLyric.style.isZoomActiveLrc"), true },
         { QStringLiteral("desktopLyric.style.isFontWeightFont"), true },
         { QStringLiteral("desktopLyric.style.isFontWeightLine"), true },
         { QStringLiteral("desktopLyric.style.isFontWeightExtended"), true },

@@ -42,7 +42,7 @@ Pushing selection logic (e.g. lxlrc-vs-lrc) or container decoding into the plugi
 ## Key decisions
 
 - **Native C++/Qt6** for the app (no Electron) — the extracted feature is rewritten as a Qt widget app.
-- **Full settings port** — the `desktopLyric.*` key set and defaults are carried over verbatim.
+- **Full settings port** — the `desktopLyric.*` key set is carried over verbatim, but the default values are tuned to user preference (enable, isAlwaysOnTop, isAlwaysOnTopLoop, fullscreenHide, width, fontSize, opacity, isZoomActiveLrc deviate from upstream); window positions default to auto (null).
 - **v1 lyric sources: tags + local `.lrc`** — embedded-tag lyrics and sidecar files only; online lyric APIs are deferred past v1.
 - **Spectrum in v1** — the analyser stream is part of the v1 protocol; the float→byte conversion is defined in `docs/protocol.md`.
 - **Separate app + socket** instead of a Fooyin-embedded window — keeps the display host-agnostic and testable, at the cost of a small process and loopback overhead.

@@ -16,8 +16,12 @@
 // Settings store for the desktop lyric feature.
 //
 // Mirrors lx-music's flat setting['desktopLyric.x'] key access. Defaults are
-// authoritative from references/src/common/defaultSetting.ts. The store is
-// persisted as JSON at QStandardPaths::ConfigLocation + "/lx-lyrics/config.json".
+// the user's tuned preferences, not the upstream file's: they deviate from
+// references/src/common/defaultSetting.ts on 8 keys (enable, isAlwaysOnTop,
+// isAlwaysOnTopLoop, fullscreenHide, width, style.fontSize, style.opacity,
+// style.isZoomActiveLrc); isLock/height and the rest stay verbatim, and x/y
+// default to null (auto-position). The store is persisted as JSON at
+// QStandardPaths::ConfigLocation + "/lx-lyrics/config.json".
 class DesktopLyricConfig : public QObject {
     Q_OBJECT
 

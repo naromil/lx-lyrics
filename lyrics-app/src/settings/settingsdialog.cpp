@@ -138,7 +138,7 @@ SettingsDialog::SettingsDialog(DesktopLyricConfig& config, TranslationManager& i
     // re-looked-up from the new pack.
     connect(&m_i18n, &TranslationManager::languageChanged, this, &SettingsDialog::buildUi);
 
-    resize(520, 600);
+    resize(550, 600);
 }
 
 void SettingsDialog::buildUi()
@@ -365,7 +365,8 @@ QWidget* SettingsDialog::buildResetGroup(QWidget* parent)
 
     m_resetWindowButton = new QPushButton(m_i18n.tr(QStringLiteral("setting__desktop_lyric_reset_window")), group);
     connect(m_resetWindowButton, &QPushButton::clicked, this, [this] {
-        m_config.set(QStringLiteral("desktopLyric.width"), 450);
+        // Width/height mirror the config defaults in loadDefaults() (300/300).
+        m_config.set(QStringLiteral("desktopLyric.width"), 300);
         m_config.set(QStringLiteral("desktopLyric.height"), 300);
         m_config.set(QStringLiteral("desktopLyric.x"), QVariant());
         m_config.set(QStringLiteral("desktopLyric.y"), QVariant());

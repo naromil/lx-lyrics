@@ -75,9 +75,9 @@ There are 36 keys total — 30 `desktopLyric.*` keys plus 6 display-affecting `c
 
 | Group | Keys (default) |
 |---|---|
-| Window | `enable`(false) `isLock`(false) `isAlwaysOnTop`(false) `isAlwaysOnTopLoop`(false) `isShowTaskbar`(false) `pauseHide`(true) `audioVisualization`(false) `fullscreenHide`(true) `isDelayScroll`(true) `isLockScreen`(platform) `isHoverHide`(false) `width`(450) `height`(300) `x`/`y`(null = auto-position) |
+| Window | `enable`(true) `isLock`(false) `isAlwaysOnTop`(true) `isAlwaysOnTopLoop`(true) `isShowTaskbar`(false) `pauseHide`(true) `audioVisualization`(false) `fullscreenHide`(false) `isDelayScroll`(true) `isLockScreen`(platform) `isHoverHide`(false) `width`(300) `height`(300) `x`/`y`(null = auto-position) |
 | Layout | `direction`(horizontal) `scrollAlign`(center) |
-| Style | `align`(center) `font`("") `fontSize`(20) `lineGap`(15) `lyricUnplayColor`(rgba(255,255,255,1)) `lyricPlayedColor`(rgba(7,197,86,1)) `lyricShadowColor`(rgba(0,0,0,0.18)) `opacity`(95) `ellipsis`(false) `isZoomActiveLrc`(false) `isFontWeightFont`(true) `isFontWeightLine`(true) `isFontWeightExtended`(true) |
+| Style | `align`(center) `font`("") `fontSize`(14) `lineGap`(15) `lyricUnplayColor`(rgba(255,255,255,1)) `lyricPlayedColor`(rgba(7,197,86,1)) `lyricShadowColor`(rgba(0,0,0,0.18)) `opacity`(100) `ellipsis`(false) `isZoomActiveLrc`(true) `isFontWeightFont`(true) `isFontWeightLine`(true) `isFontWeightExtended`(true) |
 | Player | `common.langId`(null) `player.isShowLyricTranslation`(false) `player.isShowLyricRoma`(false) `player.isSwapLyricTranslationAndRoma`(false) `player.isPlayLxlrc`(platform) `player.playbackRate`(1.0) |
 
 Writes are debounced (500 ms) so rapid settings changes do not thrash the disk.

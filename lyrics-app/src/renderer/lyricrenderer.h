@@ -178,11 +178,11 @@ private:
     bool m_vertical = false;
     Qt::Alignment m_align = Qt::AlignHCenter;
     QString m_fontFamily;
-    int m_fontSize = 20;
+    int m_fontSize = 14;
     int m_lineGap = 15;
-    int m_opacityPercent = 95;
+    int m_opacityPercent = 100;
     bool m_ellipsis = false;
-    bool m_zoomActiveLrc = false;
+    bool m_zoomActiveLrc = true;
     bool m_fontWeightLine = true;
     bool m_fontWeightExtended = true;
     QColor m_unplayColor = QColor(Qt::white);
