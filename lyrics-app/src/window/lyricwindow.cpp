@@ -52,6 +52,12 @@ constexpr int kFadeAnimationMs = 300;
 constexpr double kFaintFactor = 0.05;
 constexpr double kBodyOpacity = 0.8; // reference body { opacity: .8 }
 
+// Pane-fill fade (parity item 1): the pane background cross-fades between
+// rgba(0,0,0,.2) and fully transparent over 400 ms when the window locks
+// (reference #main transition: background-color @transition-theme, where
+// @transition-theme = .4s ease in variables.less:19).
+constexpr int kPaneAnimationMs = 400;
+
 // Hover-hide (Task H.1): the reference mouseCheckTools polls the cursor every
 // 500 ms while the window is locked and isHoverHide is on (setTimeout chain in
 // mouseCheckTools.ts), fading the content to kFaintFactor while the cursor is
@@ -156,6 +162,25 @@ LyricWindow::LyricWindow(DesktopLyricConfig& config, TranslationManager& i18n)
                 m_fadeFactor = value.toDouble();
                 applyFade();
             });
+
+    // Pane-fill fade (parity item 1): the pane background cross-fades between
+    // rgba(0,0,0,.2) and fully transparent over 400 ms as the window locks,
+    // matching the reference .lock #main { background-color: transparent } rule
+    // and its @transition-theme: .4s ease.
+    m_paneAnim = new QVariantAnimation(this);
+    m_paneAnim->setDuration(kPaneAnimationMs);
+    m_paneAnim->setEasingCurve(QEasingCurve::OutCubic);
+    connect(m_paneAnim, &QVariantAnimation::valueChanged, this,
+            [this](const QVariant& value) {
+                m_paneAlpha = value.toDouble();
+                update(); // Repaint the pane with the interpolated alpha.
+            });
+    // Seed the pane alpha before the first paint: a window that starts locked
+    // must not flash the shaded pane. The same-value animatePaneAlphaTo below
+    // is a no-op (early exit) that keeps the retarget path exercised from the
+    // start, so later lock toggles in applySetting behave identically.
+    m_paneAlpha = m_config.isLock() ? 0.0 : 0.2;
+    animatePaneAlphaTo(m_paneAlpha);
 
     // Task E: bounds persistence for compositor-native move/resize. The system
     // drives geometry and delivers a stream of move/resize events; each one
@@ -335,6 +360,23 @@ void LyricWindow::applyFade()
     update(); // Repaint the pane with the new opacity.
 }
 
+void LyricWindow::animatePaneAlphaTo(double target)
+{
+    // Retarget smoothly, mirroring animateFadeTo: a running pane fade is
+    // stopped, then restarted from the last delivered frame (m_paneAlpha is
+    // kept live by valueChanged) to the new target. QVariantAnimation::stop()
+    // does not emit a final valueChanged, so m_paneAlpha never jumps to the
+    // old end value mid-retarget.
+    if (qAbs(m_paneAlpha - target) < 1e-6) {
+        m_paneAnim->stop();
+        return;
+    }
+    m_paneAnim->stop();
+    m_paneAnim->setStartValue(m_paneAlpha);
+    m_paneAnim->setEndValue(target);
+    m_paneAnim->start();
+}
+
 void LyricWindow::updateHoverHidePolling()
 {
     m_hoverHideActive = m_config.get(QStringLiteral("desktopLyric.isHoverHide")).toBool()
@@ -387,9 +429,19 @@ void LyricWindow::paintEvent(QPaintEvent*)
     // pane's static rgba(0,0,0,.2) background dims alongside the content.
     painter.setOpacity(kBodyOpacity * m_fadeFactor);
 
+    // Parity item 1: the pane fill's alpha channel is m_paneAlpha (0.2 normal
+    // / 0.0 locked) scaled to the 8-bit range, so locking the window fades the
+    // background from rgba(0,0,0,.2) to fully transparent (reference
+    // .lock #main { background-color: transparent }); the rgb comes from the
+    // static kPaneFill.
+    const QColor paneFill = QColor(kPaneFill.red(),
+                                   kPaneFill.green(),
+                                   kPaneFill.blue(),
+                                   qRound(m_paneAlpha * 255));
+
     const QRectF pane = QRectF(rect());
     painter.setPen(Qt::NoPen);
-    painter.setBrush(kPaneFill);
+    painter.setBrush(paneFill);
     painter.drawRoundedRect(pane, kRadiusBorder, kRadiusBorder);
 }
 
@@ -558,6 +610,10 @@ void LyricWindow::applySetting(const QString& key, const QVariant& value)
         applyTransparentForMouseEvents();
         updateResizeHandles();
         updateHoverHidePolling(); // Hover-hide only runs while locked.
+        // Parity item 1: locking fades the pane background to fully transparent
+        // (reference .lock #main { background-color: transparent }); unlocking
+        // restores the rgba(0,0,0,.2) shade. Both cross-fade over 400 ms.
+        animatePaneAlphaTo(m_config.isLock() ? 0.0 : 0.2);
     } else if (key == QStringLiteral("desktopLyric.isAlwaysOnTop")) {
         setWindowFlagKeepingVisible(Qt::WindowStaysOnTopHint, value.toBool());
         updateAlwaysOnTopLoop();

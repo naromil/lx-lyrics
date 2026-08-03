@@ -33,9 +33,14 @@ struct RenderLine {
 };
 
 // Paints the lyric list with QPainter, mirroring the reference LyricHorizontal
-// / LyricVertical styling. The whole lyric block is centered; the active line
-// renders in the played color while inactive lines stay in the unplay color
-// (line-by-line highlight per the original lx-music design).
+// / LyricVertical styling. The lyric block starts below an 80% leading spacer
+// (reference .lyricSpace), so the active line can always center in the
+// viewport — including the first and last lines (scroll range
+// [0, 0.6 * viewport + block]). The active line renders in the played color
+// while inactive lines stay in the unplay color (line-by-line highlight per
+// the original lx-music design); both the color and the active-line zoom
+// transition over 600 ms with per-line progress, so an outgoing line decays
+// while the incoming line grows (reference font-size/color .6s ease).
 //
 // Scrolling ports the reference useLyric.js behavior: every auto-scroll is
 // animated with InOutQuad (reference handleScrollY's easeInOutQuad) — normal
@@ -79,7 +84,11 @@ public:
     // Current active-line zoom progress (0.0 = base scale, 1.0 = fully zoomed
     // at kActiveMainZoom / kActiveExtendedZoom); exposed for tests like
     // LyricWindow::fadeFactor().
-    double zoomProgress() const { return m_zoomFactor; }
+    double zoomProgress() const {
+        return (m_activeLine >= 0 && m_activeLine < m_lineZoomProgress.size())
+            ? m_lineZoomProgress.at(m_activeLine)
+            : 0.0;
+    }
 
 signals:
     // Emitted when a drag starts/stops (reference isMsDown), so the app can
@@ -115,12 +124,12 @@ private:
 
     void paintHorizontal(QPainter& p);
     void paintVertical(QPainter& p);
-    void drawHorizontalGroup(QPainter& p, const RenderLine& line, bool isActive, const QRectF& rect);
-    void drawVerticalGroup(QPainter& p, const VerticalGroupMetrics& metrics, bool isActive, const QRectF& rect);
+    void drawHorizontalGroup(QPainter& p, const RenderLine& line, int lineIndex, const QRectF& rect);
+    void drawVerticalGroup(QPainter& p, const VerticalGroupMetrics& metrics, int lineIndex, const QRectF& rect);
     void drawVerticalText(QPainter& p, const QString& text, const QRectF& columnRect, const QFont& font, const QColor& fill, const QColor& stroke, int strokeWidth, int letterSpacing);
-    VerticalGroupMetrics measureVerticalGroup(const RenderLine& line, bool isActive) const;
-    QFont makeMainFont(bool isActive) const;
-    QFont makeExtendedFont(bool isActive) const;
+    VerticalGroupMetrics measureVerticalGroup(const RenderLine& line, int lineIndex) const;
+    QFont makeMainFont(int lineIndex) const;
+    QFont makeExtendedFont(int lineIndex) const;
     int textFlags() const;
     QString elideForWidth(const QString& text, const QFontMetrics& fm, int availableWidth) const;
     QString elideForHeight(const QString& text, const QFontMetrics& fm, int availableHeight, int letterSpacing) const;
@@ -135,13 +144,23 @@ private:
     HorizontalLayout measureHorizontal() const;
     QVector<VerticalGroupMetrics> measureAllVerticalGroups() const;
     qreal verticalBlockWidth(const QVector<VerticalGroupMetrics>& metrics) const;
-    // Active-line zoom transition (Task H.2): eases m_zoomFactor to the
-    // target for the current active line — 1.0 for a freshly active line,
-    // back to 0.0 when the active line clears (reference .lrcActiveZoom
-    // font-size .6s ease on .line-mode .font-lrc).
-    void startZoomTransition();
-    // Scroll-range clamp: [0, max(0, blockExtent - viewportExtent)] along the
-    // scroll axis (Y for horizontal mode, X for vertical mode).
+    // Active-line color transition: one 600 ms OutCubic animation cross-fades
+    // the outgoing line from played back to unplay (1.0 -> 0.0) while the
+    // incoming line fades in (0.0 -> 1.0), over a shared 0..1 tick
+    // (reference .line-mode .font-lrc { transition: color @transition-slow }).
+    void animateLineColors(int newActiveLine);
+    // Interpolated fill color for one line: played at progress 1.0, unplay at
+    // 0.0 (reference --color-lyric-played / --color-lyric-unplay).
+    QColor colorForLine(int lineIndex) const;
+    // Active-line zoom transition: eases the per-line zoom progress — the
+    // incoming line to 1.0 and any outgoing line back to 0.0 over one shared
+    // 600 ms tick (reference .lrcActiveZoom font-size .6s ease on
+    // .line-mode .font-lrc).
+    void startZoomTransition(int newActiveLine);
+    // Scroll-range clamp: [0, max(0, kLyricSpaceInnerFactor * viewport +
+    // block)] along the scroll axis (Y for horizontal mode, X for vertical
+    // mode); the 0.6 * viewport headroom from the 80% spacers keeps the
+    // first/last line centered.
     qreal maxScrollOffset() const;
     // Offset that puts the active line at its scrollAlign target: centered in
     // the viewport, or 'top' which pins it to the leading edge — the viewport
@@ -182,11 +201,23 @@ private:
     QTimer* m_delayScrollTimer = nullptr;   // 600ms single-shot before the delayed scroll
     QVariantAnimation* m_scrollAnimation = nullptr; // InOutQuad between offsets (300ms normal / 600ms delayed)
 
-    // Task H.2 active-line zoom: one InOutQuad animation eases m_zoomFactor
-    // between 0.0 (base scale) and 1.0 (full zoom) over 600 ms, repainting on
-    // every tick. The active main line renders at 1.0 + 0.2*zoomFactor and its
-    // extended lines at kExtendedScale + 0.14*zoomFactor (reference 1.2em /
-    // 0.94em targets).
+    // Per-line active-line zoom progress (parallel to m_lines; 1.0 = fully
+    // zoomed). One shared OutCubic animation eases the incoming line 0 -> 1
+    // and the outgoing line 1 -> 0 over 600 ms; the active main line renders
+    // at 1.0 + 0.2*progress and its extended lines at kExtendedScale +
+    // 0.14*progress (reference 1.2em / 0.94em targets).
+    QVector<double> m_lineZoomProgress;
     QVariantAnimation* m_zoomAnim = nullptr;
-    double m_zoomFactor = 0.0;
+    int m_zoomOldLine = -1;   // outgoing line decaying 1.0 -> 0.0
+    int m_zoomNewLine = -1;   // incoming line growing 0.0 -> 1.0
+
+    // Per-line played/unplay color progress (parallel to m_lines; 1.0 =
+    // played). One shared OutCubic animation cross-fades the outgoing line
+    // down and the incoming line up over 600 ms (reference color transition).
+    QVector<double> m_lineColorProgress;
+    QVariantAnimation* m_colorAnim = nullptr;
+    double m_colorAnimFrom = 0.0;
+    double m_colorAnimTo = 0.0;
+    int m_colorAnimOldLine = -1;
+    int m_colorAnimNewLine = -1;
 };

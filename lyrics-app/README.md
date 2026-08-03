@@ -14,6 +14,16 @@ parsing, line selection, and rendering.
 
 - **Line-by-line synchronized lyrics** with active-line highlight. Karaoke word-fill is
   intentionally **not** included, matching lx-music-desktop's original desktop-lyric design.
+- **Fully transparent when locked**: locking the window fades the background to fully
+  transparent (no shading) over 400 ms; unlocking restores the normal shade.
+- **Smooth active-line color transition**: the active line cross-fades between the unplayed
+  and played colors over 600 ms — the outgoing line decays while the incoming line fades in.
+- **Long lyric lines wrap** when `ellipsis` is off; with `ellipsis` on they stay a single
+  truncated line with a trailing "…".
+- **Always-centered active line**: the active line stays centered even for the first and
+  last lines.
+- **Active-line zoom capped at 1.2×**: the zoom eases in and out over 600 ms — the outgoing
+  line shrinks back while the new active line grows.
 - **Horizontal and vertical** layouts (`desktopLyric.direction`).
 - **Full port of lx-music's desktop-lyric settings**: played/unplayed/shadow colors, font family,
   font size (10–80), window opacity (6–100%), line gap (0–25 px), text align, scroll align,

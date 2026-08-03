@@ -55,6 +55,10 @@ public:
     // both the pane fill and the container opacity effect; exposed for tests.
     double fadeFactor() const { return m_fadeFactor; }
 
+    // Current pane background alpha (0.2 normal / 0.0 locked). Drives the
+    // pane fill's alpha channel (parity item 1); exposed for tests.
+    double paneAlpha() const { return m_paneAlpha; }
+
 public slots:
     // Lazily creates (once) and shows the modeless settings dialog, raising it
     // if it is already open.
@@ -103,6 +107,11 @@ private:
     // into the pane paint and the container opacity effect.
     void animateFadeTo(double target);
     void applyFade();
+
+    // Pane-fill fade (parity item 1): animates m_paneAlpha between 0.2 and 0.0
+    // so the pane background goes fully transparent while the window is locked
+    // (reference .lock #main { background-color: transparent }).
+    void animatePaneAlphaTo(double target);
 
     // Hover-hide (Task H.1): while desktopLyric.isHoverHide is enabled and the
     // window is locked, a 500 ms cursor poll (reference mouseCheckTools) drives
@@ -156,6 +165,9 @@ private:
     double m_fadeFactor = 1.0;     // 1.0 = full, kFaintFactor = pause-faint.
     bool m_shouldBeFaint = false;  // Pause-faint state active (last faint()).
     bool m_hoverOverride = false;  // Mouse is over while faint is active.
+
+    QVariantAnimation* m_paneAnim = nullptr;
+    double m_paneAlpha = 0.2;      // Pane fill alpha: 0.2 normal / 0.0 locked.
 
     // Task H.1 hover-hide: 500 ms poll re-armed on isLock/isHoverHide changes
     // and on show; self-stops while hidden (pollHoverHide guards isVisible).
