@@ -24,7 +24,7 @@ The two components share no source code; `docs/protocol.md` is their only contra
 | `fooyin-plugin/` | Fooyin plugin — see `fooyin-plugin/README.md` |
 | `docs/` | architecture, protocol, and research summaries |
 | `references/` | lx-music-desktop v2.12.2 source (gitignored; read-only reference) |
-| `tools/` | development helpers such as a host simulator (planned) |
+| `tools/` | build/install helpers — `tools/install.sh` builds and installs both components |
 
 ## Documentation
 
@@ -37,9 +37,18 @@ The two components share no source code; `docs/protocol.md` is their only contra
 ## Quick start
 
 ```sh
+./tools/install.sh   # builds lyrics-app + fooyin-plugin, installs both, and
+                     # auto-configures the plugin's app path (no manual entry)
+```
+
+Manual fallback (the same steps by hand):
+
+```sh
 cd lyrics-app && cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug && cmake --build build        # 1. build the display app
 cd ../fooyin-plugin && cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug && cmake --build build # 2. build the plugin
-cp fooyin-plugin/build/fyplugin_lxlyrics.so ~/.local/lib/fooyin/plugins/                        # 3. install, restart Fooyin
+cp build/fyplugin_lxlyrics.so ~/.local/lib/fooyin/plugins/                                       # 3. install, restart Fooyin
+# 4. point the plugin at the app binary (Settings -> Lyrics -> LX Lyrics -> AppPath), or put
+#    lyrics-app/build/lx-lyrics-app on your PATH so auto-detect finds it
 ```
 
 ## License

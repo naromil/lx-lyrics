@@ -45,6 +45,8 @@ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
 cmake --build build
 ```
 
+Or use the project's `tools/install.sh` to build and install both components automatically.
+
 Artifact: `build/fyplugin_lxlyrics.so`.
 
 ## Install
@@ -64,7 +66,7 @@ After restart the plugin appears as **LX Lyrics** (Category: Lyrics) in Fooyin's
 - **View → Desktop Lyrics** — toggle. Spawns the standalone lyrics app
   (`--ws=ws://127.0.0.1:PORT --exit-on-disconnect`) and feeds it the current track.
 - **Settings → Lyrics → LX Lyrics**:
-  - **AppPath** — path to the `lyrics-app` binary. Empty = auto-detect: `PATH` lookup, then the
+  - **AppPath** — path to the `lx-lyrics-app` binary. Empty = auto-detect: `PATH` lookup, then the
     plugin's app directory.
   - **AutoSpawn** — start desktop lyrics when Fooyin starts.
 - **Lyric sources** (priority order):
@@ -75,7 +77,7 @@ After restart the plugin appears as **LX Lyrics** (Category: Lyrics) in Fooyin's
 
 ## Troubleshooting
 
-- **App not found / window never appears**: set **AppPath** to the full path of the `lyrics-app`
+- **App not found / window never appears**: set **AppPath** to the full path of the `lx-lyrics-app`
   binary instead of relying on auto-detect.
 - **No lyrics**: check the track's embedded tags, or drop a same-name `.lrc` beside the audio
   file. The file must be UTF-8 / UTF-16 / GB18030 / BIG5.

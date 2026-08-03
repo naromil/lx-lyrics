@@ -39,12 +39,14 @@ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
 cmake --build build
 ```
 
+Or use the project's `tools/install.sh` to build and install both components automatically.
+
 ## Run modes
 
 ```sh
-./build/lyrics-app --demo                                    # self-fed demo
-./build/lyrics-app --ws=ws://127.0.0.1:PORT                  # host-driven
-./build/lyrics-app --ws=ws://127.0.0.1:PORT --exit-on-disconnect
+./build/lx-lyrics-app --demo                                    # self-fed demo
+./build/lx-lyrics-app --ws=ws://127.0.0.1:PORT                  # host-driven
+./build/lx-lyrics-app --ws=ws://127.0.0.1:PORT --exit-on-disconnect
 ```
 
 - `--demo` — no host. The app self-feeds a fake track through the **same** pipeline as a host

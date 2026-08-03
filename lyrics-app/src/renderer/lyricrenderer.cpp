@@ -36,6 +36,11 @@ constexpr qreal kExtendedScale = 0.8;
 // Every line uses the 4 px shadow stroke (reference .line-mode .font-lrc,
 // .extended .font-lrc stroke3); the 1 px font-mode variant is gone.
 constexpr int kLineStrokeWidth = 4;
+// The renderer never collapses below one visible line inside its layout.
+constexpr int kMinimumHeight = 80;
+// Default sizeHint: a real value so layouts that consult the hint first (or
+// place the widget outside a stretch) still give it room to paint.
+const QSize kSizeHint(400, 120);
 
 // Word-level karaoke tags are stripped; display is line-by-line per the
 // original lx-music design. Removes every <digits,digits> sequence (JS
@@ -69,6 +74,12 @@ qreal verticalExtendedGap(int lineGap)
 LyricRenderer::LyricRenderer(QWidget* parent)
     : QWidget(parent)
 {
+    // Own the lyric area: expand into whatever space the layout leaves and
+    // never collapse below one visible line (default Preferred policy + an
+    // invalid default sizeHint lets a QVBoxLayout shrink this widget to ~0).
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    setMinimumHeight(kMinimumHeight);
+
     // Auto-scroll resumes 3 s after the last wheel/drag interaction (reference
     // startLyricScrollTimeout); single-shot and re-armed on every interaction.
     m_resumeTimer = new QTimer(this);
@@ -97,6 +108,11 @@ LyricRenderer::LyricRenderer(QWidget* parent)
                 m_scrollOffset = value.toReal();
                 update();
             });
+}
+
+QSize LyricRenderer::sizeHint() const
+{
+    return kSizeHint;
 }
 
 void LyricRenderer::setLines(const QVector<RenderLine>& lines)

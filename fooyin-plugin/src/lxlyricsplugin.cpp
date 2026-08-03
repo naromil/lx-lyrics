@@ -163,7 +163,16 @@ void LxLyricsPlugin::startDesktopLyrics()
     }
     applySpawnerSettings(); // path + auto-spawn from settings before every launch
 
-    m_appSpawner->stop(); // forget any stale instance flag before (re)launching
+    // Idempotency guard: the app may already be running (e.g. the init-time
+    // auto-spawn followed by a manual toggle click, or a double invocation).
+    // Skipping the early return would spawn a SECOND detached lyrics-app.
+    // When the app has exited on its own (crashed / socket closed) isRunning()
+    // is false and the spawn below proceeds normally.
+    if (m_appSpawner->isRunning()) {
+        qInfo() << "[LX Lyrics] lyrics-app already running, skipping duplicate spawn";
+        return;
+    }
+
     // Forced spawn: both callers (manual View-menu toggle and the init-time
     // auto-spawn) only run when the user wants the app up; the AutoSpawn
     // setting key already gates whether the auto path fires at all.

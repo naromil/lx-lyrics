@@ -52,6 +52,7 @@ private:
                         const QString& rlyric, const QString& lxlyric);
     void reapplyLyricSelection();
     void pushLyricsToRenderer();
+    void showNoLyricsPlaceholder();
     void onSettingChanged(const QString& key, const QVariant& value);
     void onLineChanged(int line);
 
@@ -63,6 +64,9 @@ private:
     // Last raw lyric fields, kept so a selection-config change can re-select
     // without a fresh host snapshot.
     QString m_lastLrc, m_lastTlrc, m_lastRlrc, m_lastLxlrc;
+    // Last track metadata, kept so the no-lyrics placeholder has a name to show.
+    QString m_trackName;
+    QString m_trackSinger;
     bool m_hasLyric = false;
     qint64 m_userOffsetMs = 0;
 };

@@ -55,7 +55,7 @@ bool AppSpawner::spawn(const QUrl& wsUrl, bool force)
 
     const QString program = resolveAppPath();
     if (program.isEmpty()) {
-        qWarning() << "[LX Lyrics] lyrics-app binary not found (PATH / fooyin bin dir)";
+        qWarning() << "[LX Lyrics] lx-lyrics-app binary not found (PATH / fooyin bin dir)";
         return false;
     }
 
@@ -95,10 +95,10 @@ QString AppSpawner::resolveAppPath() const
         return m_appPath;
     }
 
-    const QString onPath = QStandardPaths::findExecutable(QStringLiteral("lyrics-app"));
+    const QString onPath = QStandardPaths::findExecutable(QStringLiteral("lx-lyrics-app"));
     if (!onPath.isEmpty()) {
         return onPath;
     }
 
-    return QCoreApplication::applicationDirPath() + QLatin1Char('/') + QStringLiteral("lyrics-app");
+    return QCoreApplication::applicationDirPath() + QLatin1Char('/') + QStringLiteral("lx-lyrics-app");
 }

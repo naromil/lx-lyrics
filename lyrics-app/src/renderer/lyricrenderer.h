@@ -9,6 +9,7 @@
 #include <QColor>
 #include <QFont>
 #include <QPoint>
+#include <QSize>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -79,6 +80,10 @@ signals:
     void userInteractingChanged(bool interacting);
 
 protected:
+    // The renderer owns the lyric area of the window, so layouts must be able
+    // to ask it for a real size: without an explicit hint a QVBoxLayout gives a
+    // Preferred-policy widget its (invalid) sizeHint and the widget collapses.
+    QSize sizeHint() const override;
     void paintEvent(QPaintEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;

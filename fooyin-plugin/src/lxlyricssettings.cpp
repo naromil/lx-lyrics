@@ -51,7 +51,7 @@ LxLyricsSettingsPage::LxLyricsSettingsPage(Fooyin::SettingsManager* settings, QO
 {
     setId(Fooyin::Id(QStringLiteral("Fooyin.Page.LxLyrics")));
     setName(tr("LX Lyrics"));
-    setCategory({QStringLiteral("Lyrics")});
+    setCategory({QStringLiteral("LX Lyrics")});
     setWidgetCreator([settings] {
         return new LxLyricsSettingsPageWidget(settings);
     });

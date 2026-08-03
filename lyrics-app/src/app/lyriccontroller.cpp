@@ -86,6 +86,17 @@ Qt::Alignment alignFromString(const QString& align)
     return Qt::AlignHCenter;
 }
 
+// No-lyrics placeholder text: "Name - Singer", falling back to just the name,
+// then to a plain "No lyrics" when the track has no title either.
+QString placeholderTextFor(const QString& name, const QString& singer)
+{
+    if (name.isEmpty())
+        return QStringLiteral("No lyrics");
+    if (singer.isEmpty())
+        return name;
+    return QStringLiteral("%1 - %2").arg(name, singer);
+}
+
 } // namespace
 
 LyricController::LyricController(AppContext& ctx, LyricWindow& window, QObject* parent)
@@ -123,6 +134,11 @@ LyricController::~LyricController() = default;
 
 void LyricController::setTrack(const TrackSnapshot& track)
 {
+    // Remember the metadata: the no-lyrics placeholder falls back to the track
+    // title when the player has no lyric lines to paint.
+    m_trackName = track.name;
+    m_trackSinger = track.singer;
+
     applyLyricText(track.lrc, track.tlrc, track.rlrc, track.lxlrc);
 
     // Window title from the track metadata (name - singer).
@@ -222,10 +238,26 @@ void LyricController::reapplyLyricSelection()
     // Re-run the selector over the last raw fields: [awlrc:] extraction is
     // idempotent, so re-feeding is safe for config-driven re-selection too.
     m_selector->setLyrics(m_lastLrc, m_lastTlrc, m_lastRlrc, m_lastLxlrc);
-    if (m_selector->hasLyrics())
+    if (m_selector->hasLyrics()) {
         m_player->setLyric(m_selector->selectedLyric(), m_selector->extendedLyrics());
-    else
-        m_player->setLyric(QString()); // Blank: no playable lyric.
+        return;
+    }
+    // No playable lyric (no embedded tags, no sidecar .lrc): clear any stale
+    // player lines (a later play() must not resurrect the previous track), then
+    // show the track placeholder so the window isn't a blank pane.
+    m_player->setLyric(QString());
+    showNoLyricsPlaceholder();
+}
+
+void LyricController::showNoLyricsPlaceholder()
+{
+    // A single inactive line in the unplay color: informative but never
+    // mistaken for a real highlight. Replaced by the real lines as soon as a
+    // lyric arrives (pushLyricsToRenderer feeds from the player).
+    QVector<RenderLine> lines;
+    lines.append(RenderLine{ placeholderTextFor(m_trackName, m_trackSinger), {} });
+    m_renderer->setLines(lines);
+    m_renderer->setActiveLine(-1);
 }
 
 void LyricController::pushLyricsToRenderer()
