@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/translations">
+        <file alias="zh-cn.json">translations/zh-cn.json</file>
+        <file alias="zh-tw.json">translations/zh-tw.json</file>
+        <file alias="en-us.json">translations/en-us.json</file>
+    </qresource>
+</RCC>

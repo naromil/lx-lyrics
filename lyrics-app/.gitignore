@@ -1,0 +1,14 @@
+# Build output
+/build/
+
+# CMake-generated artifacts
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+*.ninja
+.ninja_deps
+.ninja_log
+Makefile
+CMakeLists.txt.user

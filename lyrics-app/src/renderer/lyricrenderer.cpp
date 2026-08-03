@@ -1,0 +1,738 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * Portions derived from lx-music-desktop (https://github.com/lyswhut/lx-music-desktop),
+ * Copyright (c) lyswhut, licensed under Apache-2.0.
+ * Copyright (c) 2026 LX Lyrics contributors.
+ */
+#include "renderer/lyricrenderer.h"
+
+#include <QEasingCurve>
+#include <QFontMetrics>
+#include <QMouseEvent>
+#include <QPainter>
+#include <QRegularExpression>
+#include <QRectF>
+#include <QResizeEvent>
+#include <QTimer>
+#include <QVariantAnimation>
+#include <QWheelEvent>
+
+#include <cmath>
+
+namespace {
+
+// Vertical line-mode letter-spacing (CSS .line-content.line-mode, vertical).
+constexpr int kVerticalLetterSpacing = 5;
+// Scroll timing (reference useLyric.js): 3 s of manual scrolling before the
+// auto-scroll resumes, 600 ms delay before an animated scroll, 300 ms scroll.
+constexpr int kResumeDelayMs = 3000;
+constexpr int kDelayScrollMs = 600;
+constexpr int kScrollAnimationMs = 300;
+// Active-line zoom factors (reference .lrcActiveZoom).
+constexpr qreal kActiveMainZoom = 1.2;
+constexpr qreal kActiveExtendedZoom = 0.94;
+// Extended lines render at 0.8x the main size (reference .extended).
+constexpr qreal kExtendedScale = 0.8;
+// Every line uses the 4 px shadow stroke (reference .line-mode .font-lrc,
+// .extended .font-lrc stroke3); the 1 px font-mode variant is gone.
+constexpr int kLineStrokeWidth = 4;
+
+// Word-level karaoke tags are stripped; display is line-by-line per the
+// original lx-music design. Removes every <digits,digits> sequence (JS
+// timeRxpAll: /<(\d+),(\d+)>/g); extended lines arrive pre-tagged too.
+const QRegularExpression kKaraokeTagRxp(QStringLiteral("<\\d+,\\d+>"));
+
+QString stripWordTags(QString text)
+{
+    text.remove(kKaraokeTagRxp);
+    return text;
+}
+
+// Horizontal gap formulas from the reference --line-extended-gap / --line-gap.
+qreal horizontalExtendedGap(int lineGap)
+{
+    return lineGap / 3.0;
+}
+
+qreal verticalGroupGap(int lineGap)
+{
+    return std::ceil(lineGap * 1.06);
+}
+
+qreal verticalExtendedGap(int lineGap)
+{
+    return std::ceil(lineGap * 1.06 / 8.0);
+}
+
+} // namespace
+
+LyricRenderer::LyricRenderer(QWidget* parent)
+    : QWidget(parent)
+{
+    // Auto-scroll resumes 3 s after the last wheel/drag interaction (reference
+    // startLyricScrollTimeout); single-shot and re-armed on every interaction.
+    m_resumeTimer = new QTimer(this);
+    m_resumeTimer->setSingleShot(true);
+    m_resumeTimer->setInterval(kResumeDelayMs);
+    connect(m_resumeTimer, &QTimer::timeout, this, [this] {
+        m_userScrolling = false;
+        scrollToActiveAnimated(kScrollAnimationMs);
+    });
+
+    // isDelayScroll: the active-line change waits 600 ms, then scrolls smoothly
+    // (reference scrollLine's setTimeout + handleScrollLrc(600)).
+    m_delayScrollTimer = new QTimer(this);
+    m_delayScrollTimer->setSingleShot(true);
+    m_delayScrollTimer->setInterval(kDelayScrollMs);
+    connect(m_delayScrollTimer, &QTimer::timeout, this, [this] {
+        if (m_userScrolling)
+            return; // User grabbed the lyrics meanwhile: leave it to the resume timer.
+        scrollToActiveAnimated(kScrollAnimationMs);
+    });
+
+    m_scrollAnimation = new QVariantAnimation(this);
+    m_scrollAnimation->setEasingCurve(QEasingCurve(QEasingCurve::OutCubic));
+    connect(m_scrollAnimation, &QVariantAnimation::valueChanged, this,
+            [this](const QVariant& value) {
+                m_scrollOffset = value.toReal();
+                update();
+            });
+}
+
+void LyricRenderer::setLines(const QVector<RenderLine>& lines)
+{
+    m_lines = lines;
+    resetScroll();
+    if (!m_userScrolling && m_activeLine >= 0 && m_activeLine < m_lines.size())
+        scrollToActiveInstant();
+    update();
+}
+
+void LyricRenderer::setActiveLine(int index)
+{
+    // Parse at the boundary: out-of-range indexes mean "no active line".
+    const int clamped = (index >= 0 && index < m_lines.size()) ? index : -1;
+    if (m_activeLine == clamped)
+        return;
+    const int oldLine = m_activeLine;
+    m_activeLine = clamped;
+    update();
+
+    if (m_userScrolling)
+        return; // Suspended: the resume timer re-centers to the new line later.
+
+    // Only consecutive +1 steps honour the delay (reference scrollLine); jumps
+    // and the first line scroll immediately.
+    const bool consecutiveStep = oldLine >= 0 && clamped == oldLine + 1;
+    if (m_delayScroll && consecutiveStep)
+        startDelayScrollTimer();
+    else
+        scrollToActiveInstant();
+}
+
+void LyricRenderer::setVertical(bool on)
+{
+    m_vertical = on;
+    update();
+}
+
+void LyricRenderer::setAlign(Qt::Alignment align)
+{
+    m_align = align;
+    update();
+}
+
+void LyricRenderer::setFontFamily(const QString& family)
+{
+    m_fontFamily = family;
+    update();
+}
+
+void LyricRenderer::setFontSize(int px)
+{
+    m_fontSize = qBound(10, px, 80);
+    update();
+}
+
+void LyricRenderer::setLineGap(int px)
+{
+    m_lineGap = qBound(0, px, 25);
+    update();
+}
+
+void LyricRenderer::setOpacityPercent(int percent)
+{
+    m_opacityPercent = qBound(6, percent, 100);
+    update();
+}
+
+void LyricRenderer::setEllipsis(bool on)
+{
+    m_ellipsis = on;
+    update();
+}
+
+void LyricRenderer::setZoomActiveLrc(bool on)
+{
+    m_zoomActiveLrc = on;
+    update();
+}
+
+void LyricRenderer::setFontWeightFont(bool /*on*/)
+{
+    // No-op: write-only, the value no longer affects rendering (line-by-line
+    // mode); retained for API compatibility with the host config sync.
+}
+
+void LyricRenderer::setFontWeightLine(bool on)
+{
+    m_fontWeightLine = on;
+    update();
+}
+
+void LyricRenderer::setFontWeightExtended(bool on)
+{
+    m_fontWeightExtended = on;
+    update();
+}
+
+void LyricRenderer::setUnplayColor(const QColor& c)
+{
+    m_unplayColor = c;
+    update();
+}
+
+void LyricRenderer::setPlayedColor(const QColor& c)
+{
+    m_playedColor = c;
+    update();
+}
+
+void LyricRenderer::setShadowColor(const QColor& c)
+{
+    m_shadowColor = c;
+    update();
+}
+
+void LyricRenderer::setShadowFontModeColor(const QColor& /*color*/)
+{
+    // No-op: write-only, the value no longer affects rendering (line-by-line
+    // mode; the stroke always uses m_shadowColor); retained for API
+    // compatibility with the host config sync.
+}
+
+void LyricRenderer::setScrollAlign(bool top)
+{
+    if (m_scrollAlignTop == top)
+        return;
+    m_scrollAlignTop = top;
+    if (!m_userScrolling)
+        scrollToActiveAnimated(kScrollAnimationMs);
+}
+
+void LyricRenderer::setDelayScroll(bool on)
+{
+    m_delayScroll = on;
+    if (!on)
+        m_delayScrollTimer->stop();
+}
+
+void LyricRenderer::setUserScrolling(bool on)
+{
+    if (m_userScrolling == on)
+        return;
+    m_userScrolling = on;
+    if (on) {
+        suspendAutoScroll();
+    } else {
+        rearmResumeTimer(); // 3 s later the auto-scroll re-centers the active line.
+    }
+}
+
+void LyricRenderer::setInteractive(bool on)
+{
+    if (m_interactive == on)
+        return;
+    m_interactive = on;
+    if (on) {
+        setCursor(Qt::OpenHandCursor);
+    } else {
+        if (m_dragging) {
+            m_dragging = false;
+            emit userInteractingChanged(false);
+        }
+        unsetCursor();
+    }
+}
+
+void LyricRenderer::resetScroll()
+{
+    m_delayScrollTimer->stop();
+    if (m_scrollAnimation)
+        m_scrollAnimation->stop();
+    m_scrollOffset = 0;
+    update();
+}
+
+void LyricRenderer::paintEvent(QPaintEvent*)
+{
+    if (m_lines.isEmpty())
+        return;
+
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setOpacity(m_opacityPercent / 100.0); // Fresh painter: reset per paint.
+
+    if (m_vertical)
+        paintVertical(painter);
+    else
+        paintHorizontal(painter);
+}
+
+QFont LyricRenderer::makeMainFont(bool isActive) const
+{
+    QFont font;
+    if (!m_fontFamily.isEmpty())
+        font.setFamily(m_fontFamily);
+    const qreal zoom = (m_zoomActiveLrc && isActive) ? kActiveMainZoom : 1.0;
+    font.setPixelSize(qRound(m_fontSize * zoom));
+    font.setBold(m_fontWeightLine); // Every line renders line-mode style.
+    return font;
+}
+
+QFont LyricRenderer::makeExtendedFont(bool isActive) const
+{
+    QFont font;
+    if (!m_fontFamily.isEmpty())
+        font.setFamily(m_fontFamily);
+    const qreal zoom = (m_zoomActiveLrc && isActive) ? kActiveExtendedZoom : kExtendedScale;
+    font.setPixelSize(qRound(m_fontSize * zoom));
+    font.setBold(m_fontWeightExtended);
+    return font;
+}
+
+int LyricRenderer::textFlags() const
+{
+    if (m_vertical)
+        return Qt::AlignCenter; // Each vertical character fills its own cell.
+    int flags = Qt::AlignVCenter;
+    switch (m_align & Qt::AlignHorizontal_Mask) {
+    case Qt::AlignLeft:
+        flags |= Qt::AlignLeft;
+        break;
+    case Qt::AlignRight:
+        flags |= Qt::AlignRight;
+        break;
+    case Qt::AlignHCenter:
+    default:
+        flags |= Qt::AlignHCenter;
+        break;
+    }
+    return flags;
+}
+
+QString LyricRenderer::elideForWidth(const QString& text, const QFontMetrics& fm, int availableWidth) const
+{
+    if (!m_ellipsis || text.isEmpty() || availableWidth <= 0)
+        return text;
+    if (fm.horizontalAdvance(text) <= availableWidth)
+        return text;
+    return fm.elidedText(text, Qt::ElideRight, availableWidth);
+}
+
+QString LyricRenderer::elideForHeight(const QString& text, const QFontMetrics& fm, int availableHeight, int letterSpacing) const
+{
+    if (!m_ellipsis || text.isEmpty() || availableHeight <= 0)
+        return text;
+    if (columnHeight(text, fm, letterSpacing) <= availableHeight)
+        return text;
+    // Qt 6.11 removed Qt::ElideBottom, so the vertical column is elided by
+    // hand with the same semantics: drop trailing characters until the column
+    // (ellipsis included) fits the available height, then append "…".
+    const int step = fm.height() + letterSpacing;
+    const int maxChars = availableHeight / step;
+    if (maxChars <= 1)
+        return QStringLiteral("…");
+    return text.left(maxChars - 1) + QStringLiteral("…");
+}
+
+int LyricRenderer::columnWidth(const QString& text, const QFontMetrics& fm) const
+{
+    int widest = 0;
+    for (const QChar ch : text)
+        widest = qMax(widest, fm.horizontalAdvance(ch));
+    return widest;
+}
+
+int LyricRenderer::columnHeight(const QString& text, const QFontMetrics& fm, int letterSpacing) const
+{
+    if (text.isEmpty())
+        return 0;
+    const int step = fm.height() + letterSpacing;
+    return text.size() * step - letterSpacing; // N boxes, N-1 inter-char gaps.
+}
+
+LyricRenderer::VerticalGroupMetrics LyricRenderer::measureVerticalGroup(const RenderLine& line, bool isActive) const
+{
+    VerticalGroupMetrics m;
+    m.mainFont = makeMainFont(isActive);
+    m.extendedFont = makeExtendedFont(isActive);
+    const QFontMetrics mainFm(m.mainFont);
+    const QFontMetrics extendedFm(m.extendedFont);
+
+    const int availableHeight = height();
+    // Every line renders line-mode style, so the vertical line-mode
+    // letter-spacing applies to all columns.
+    const int letterSpacing = kVerticalLetterSpacing;
+
+    m.mainText = elideForHeight(stripWordTags(line.text), mainFm, availableHeight, letterSpacing);
+    m.mainColumnWidth = columnWidth(m.mainText, mainFm);
+    m.mainColumnHeight = columnHeight(m.mainText, mainFm, letterSpacing);
+    m.groupWidth = m.mainColumnWidth;
+    m.groupHeight = m.mainColumnHeight;
+
+    for (const QString& rawExtended : line.extended) {
+        const QString extText = elideForHeight(stripWordTags(rawExtended), extendedFm, availableHeight, letterSpacing);
+        m.extendedTexts << extText;
+        m.groupWidth += columnWidth(extText, extendedFm);
+        m.groupHeight = qMax(m.groupHeight, columnHeight(extText, extendedFm, letterSpacing));
+    }
+    if (!line.extended.isEmpty())
+        m.groupWidth += qRound(verticalExtendedGap(m_lineGap)) * line.extended.size();
+
+    return m;
+}
+
+void LyricRenderer::paintHorizontal(QPainter& p)
+{
+    const qreal gap = m_lineGap;
+    const qreal lineWidth = width();
+
+    // Measure each group (main + extended rows) so the block can be centered,
+    // then shift the whole block by the scroll offset (content moves up as the
+    // offset grows).
+    const HorizontalLayout layout = measureHorizontal();
+    const qreal yOffset = qMax<qreal>(0, (height() - layout.blockHeight) / 2);
+
+    qreal y = yOffset - m_scrollOffset;
+    for (int i = 0; i < m_lines.size(); ++i) {
+        drawHorizontalGroup(p, m_lines.at(i), i == m_activeLine, QRectF(0, y, lineWidth, layout.groupHeights.at(i)));
+        y += layout.groupHeights.at(i) + gap;
+    }
+}
+
+void LyricRenderer::paintVertical(QPainter& p)
+{
+    const qreal gap = verticalGroupGap(m_lineGap);
+
+    // Measure every column group so the whole block can be centered; scrolling
+    // shifts the block left (content moves left as the offset grows).
+    const QVector<VerticalGroupMetrics> metrics = measureAllVerticalGroups();
+    const qreal blockWidth = verticalBlockWidth(metrics);
+
+    const qreal xOffset = qMax<qreal>(0, (width() - blockWidth) / 2);
+
+    // writing-mode: vertical-rl — blocks stack right-to-left, line 0 rightmost.
+    qreal right = xOffset + blockWidth - m_scrollOffset;
+    for (int i = 0; i < m_lines.size(); ++i) {
+        const qreal groupWidth = metrics.at(i).groupWidth;
+        drawVerticalGroup(p, metrics.at(i), i == m_activeLine,
+                          QRectF(right - groupWidth, 0, groupWidth, metrics.at(i).groupHeight));
+        right -= groupWidth + gap;
+    }
+}
+
+void LyricRenderer::drawHorizontalGroup(QPainter& p, const RenderLine& line, bool isActive, const QRectF& rect)
+{
+    const QFont mainFont = makeMainFont(isActive);
+    const QFont extendedFont = makeExtendedFont(isActive);
+    const QFontMetrics mainFm(mainFont);
+    const QFontMetrics extendedFm(extendedFont);
+    const qreal extGap = horizontalExtendedGap(m_lineGap);
+
+    // Line-by-line highlight: the whole active line switches to the played
+    // color, inactive lines stay unplay (reference .line-mode.active
+    // .font-lrc; .extended .font-lrc shares the stroke).
+    const QColor fill = isActive ? m_playedColor : m_unplayColor;
+    const QString mainText = elideForWidth(stripWordTags(line.text), mainFm, int(rect.width()));
+
+    const QRectF mainRect(rect.x(), rect.y(), rect.width(), mainFm.height());
+    drawTextWithStroke(p, mainText, mainRect, mainFont, fill, m_shadowColor, kLineStrokeWidth);
+
+    qreal y = rect.y() + mainFm.height();
+    for (const QString& rawExtended : line.extended) {
+        y += extGap;
+        const QString extText = elideForWidth(stripWordTags(rawExtended), extendedFm, int(rect.width()));
+        drawTextWithStroke(p, extText, QRectF(rect.x(), y, rect.width(), extendedFm.height()),
+                           extendedFont, fill, m_shadowColor, kLineStrokeWidth);
+        y += extendedFm.height();
+    }
+}
+
+void LyricRenderer::drawVerticalGroup(QPainter& p, const VerticalGroupMetrics& m, bool isActive, const QRectF& rect)
+{
+    const QFontMetrics extendedFm(m.extendedFont);
+    const int letterSpacing = kVerticalLetterSpacing; // Every line renders line-mode style.
+    const qreal extGap = verticalExtendedGap(m_lineGap);
+
+    // Line-by-line highlight: the whole active column group switches to the
+    // played color, inactive groups stay unplay.
+    const QColor fill = isActive ? m_playedColor : m_unplayColor;
+
+    // Main column sits at the right edge; extended columns go left of it, each
+    // separated by the extended gap (reference .extended { margin-right: ... }).
+    qreal right = rect.right();
+    const QRectF mainRect(right - m.mainColumnWidth, rect.top(), m.mainColumnWidth, m.mainColumnHeight);
+    drawVerticalText(p, m.mainText, mainRect, m.mainFont, fill, m_shadowColor, kLineStrokeWidth, letterSpacing);
+    right = mainRect.left() - extGap;
+
+    for (const QString& extText : m.extendedTexts) {
+        const int colWidth = columnWidth(extText, extendedFm);
+        const QRectF extRect(right - colWidth, rect.top(), colWidth, m.groupHeight);
+        drawVerticalText(p, extText, extRect, m.extendedFont, fill, m_shadowColor, kLineStrokeWidth, letterSpacing);
+        right = extRect.left() - extGap;
+    }
+}
+
+void LyricRenderer::drawVerticalText(QPainter& p, const QString& text, const QRectF& columnRect, const QFont& font, const QColor& fill, const QColor& stroke, int strokeWidth, int letterSpacing)
+{
+    if (text.isEmpty())
+        return;
+    const QFontMetrics fm(font);
+    const qreal step = fm.height() + letterSpacing;
+    qreal y = columnRect.y();
+    for (const QChar ch : text) {
+        drawTextWithStroke(p, QString(ch), QRectF(columnRect.x(), y, columnRect.width(), fm.height()),
+                           font, fill, stroke, strokeWidth);
+        y += step;
+    }
+}
+
+void LyricRenderer::drawTextWithStroke(QPainter& p, const QString& text, const QRectF& rect, const QFont& font, const QColor& fill, const QColor& stroke, int strokeWidth)
+{
+    if (text.isEmpty())
+        return;
+
+    p.setFont(font);
+    const int flags = textFlags();
+
+    // Four offset passes in the stroke color, then the fill on top
+    // (reference .stroke3/.stroke4 for line-mode and extended lines).
+    p.setPen(stroke);
+    p.setBrush(stroke);
+    p.drawText(rect.translated(strokeWidth, 0), flags, text);
+    p.drawText(rect.translated(-strokeWidth, 0), flags, text);
+    p.drawText(rect.translated(0, strokeWidth), flags, text);
+    p.drawText(rect.translated(0, -strokeWidth), flags, text);
+
+    p.setPen(fill);
+    p.setBrush(fill);
+    p.drawText(rect, flags, text);
+}
+
+LyricRenderer::HorizontalLayout LyricRenderer::measureHorizontal() const
+{
+    HorizontalLayout layout;
+    layout.groupHeights.resize(m_lines.size());
+    for (int i = 0; i < m_lines.size(); ++i) {
+        const RenderLine& line = m_lines.at(i);
+        const QFontMetrics mainFm(makeMainFont(i == m_activeLine));
+        const QFontMetrics extendedFm(makeExtendedFont(i == m_activeLine));
+        qreal groupHeight = mainFm.height();
+        if (!line.extended.isEmpty())
+            groupHeight += line.extended.size() * (horizontalExtendedGap(m_lineGap) + extendedFm.height());
+        layout.groupHeights[i] = groupHeight;
+        layout.blockHeight += groupHeight;
+    }
+    if (m_lines.size() > 1)
+        layout.blockHeight += m_lineGap * (m_lines.size() - 1);
+    return layout;
+}
+
+QVector<LyricRenderer::VerticalGroupMetrics> LyricRenderer::measureAllVerticalGroups() const
+{
+    QVector<VerticalGroupMetrics> metrics(m_lines.size());
+    for (int i = 0; i < m_lines.size(); ++i)
+        metrics[i] = measureVerticalGroup(m_lines.at(i), i == m_activeLine);
+    return metrics;
+}
+
+qreal LyricRenderer::verticalBlockWidth(const QVector<VerticalGroupMetrics>& metrics) const
+{
+    qreal blockWidth = 0;
+    for (const VerticalGroupMetrics& m : metrics)
+        blockWidth += m.groupWidth;
+    if (metrics.size() > 1)
+        blockWidth += verticalGroupGap(m_lineGap) * (metrics.size() - 1);
+    return blockWidth;
+}
+
+qreal LyricRenderer::maxScrollOffset() const
+{
+    if (m_lines.isEmpty())
+        return 0;
+    const qreal blockExtent = m_vertical
+        ? verticalBlockWidth(measureAllVerticalGroups())
+        : measureHorizontal().blockHeight;
+    const int viewportExtent = m_vertical ? width() : height();
+    return qMax<qreal>(0, blockExtent - viewportExtent);
+}
+
+qreal LyricRenderer::autoScrollTarget() const
+{
+    if (m_lines.isEmpty() || m_activeLine < 0 || m_activeLine >= m_lines.size())
+        return 0;
+
+    if (m_vertical) {
+        const QVector<VerticalGroupMetrics> metrics = measureAllVerticalGroups();
+        const qreal blockWidth = verticalBlockWidth(metrics);
+        const qreal xOffset = qMax<qreal>(0, (width() - blockWidth) / 2);
+        const qreal gap = verticalGroupGap(m_lineGap);
+
+        // Base left edge of the active group in the centered layout (line 0 is
+        // rightmost, so scan right-to-left).
+        qreal right = xOffset + blockWidth;
+        qreal baseLeft = 0;
+        for (int i = 0; i <= m_activeLine; ++i) {
+            baseLeft = right - metrics.at(i).groupWidth;
+            right -= metrics.at(i).groupWidth + gap;
+        }
+
+        // 'top' alignment pins the active line's left edge to the viewport
+        // left; center keeps it horizontally centered.
+        const qreal groupExtent = metrics.at(m_activeLine).groupWidth;
+        const qreal target = m_scrollAlignTop ? 0 : (width() - groupExtent) / 2.0;
+        return qBound<qreal>(0, baseLeft - target, maxScrollOffset());
+    }
+
+    const HorizontalLayout layout = measureHorizontal();
+    const qreal yOffset = qMax<qreal>(0, (height() - layout.blockHeight) / 2);
+    qreal baseTop = yOffset;
+    for (int i = 0; i < m_activeLine; ++i)
+        baseTop += layout.groupHeights.at(i) + m_lineGap;
+
+    const qreal groupExtent = layout.groupHeights.at(m_activeLine);
+    const qreal target = m_scrollAlignTop ? 0 : (height() - groupExtent) / 2.0;
+    return qBound<qreal>(0, baseTop - target, maxScrollOffset());
+}
+
+void LyricRenderer::scrollToActiveInstant()
+{
+    m_delayScrollTimer->stop();
+    if (m_scrollAnimation)
+        m_scrollAnimation->stop();
+    m_scrollOffset = autoScrollTarget();
+    update();
+}
+
+void LyricRenderer::scrollToActiveAnimated(int durationMs)
+{
+    m_delayScrollTimer->stop();
+    if (m_scrollAnimation)
+        m_scrollAnimation->stop();
+
+    const qreal target = autoScrollTarget();
+    if (durationMs <= 0 || qAbs(target - m_scrollOffset) < 0.5) {
+        m_scrollOffset = target;
+        update();
+        return;
+    }
+    m_scrollAnimation->setStartValue(m_scrollOffset);
+    m_scrollAnimation->setEndValue(target);
+    m_scrollAnimation->setDuration(durationMs);
+    m_scrollAnimation->start();
+}
+
+void LyricRenderer::suspendAutoScroll()
+{
+    m_userScrolling = true;
+    if (m_scrollAnimation)
+        m_scrollAnimation->stop();
+    m_delayScrollTimer->stop();
+}
+
+void LyricRenderer::rearmResumeTimer()
+{
+    m_resumeTimer->start();
+}
+
+void LyricRenderer::startDelayScrollTimer()
+{
+    m_delayScrollTimer->start();
+}
+
+void LyricRenderer::resizeEvent(QResizeEvent* event)
+{
+    QWidget::resizeEvent(event);
+    if (m_lines.isEmpty())
+        return;
+    // The block re-centers on resize; clamp any manual offset to the new range
+    // and, when not mid-interaction, keep the active line at its target.
+    m_scrollOffset = qBound<qreal>(0, m_scrollOffset, maxScrollOffset());
+    if (!m_userScrolling)
+        scrollToActiveInstant();
+    update();
+}
+
+void LyricRenderer::wheelEvent(QWheelEvent* event)
+{
+    if (!m_interactive) {
+        QWidget::wheelEvent(event);
+        return;
+    }
+    const int deltaY = event->angleDelta().y();
+    if (deltaY != 0) {
+        suspendAutoScroll();
+        // Horizontal: wheel down scrolls forward (offset grows, matching the
+        // reference scrollTop += deltaY). Vertical-rl scrolls left instead, so
+        // the sign is flipped (reference scrollLeft -= deltaY).
+        const qreal delta = m_vertical ? -qreal(deltaY) : qreal(deltaY);
+        m_scrollOffset = qBound<qreal>(0, m_scrollOffset + delta, maxScrollOffset());
+        update();
+        rearmResumeTimer();
+    }
+    event->accept();
+}
+
+void LyricRenderer::mousePressEvent(QMouseEvent* event)
+{
+    if (!m_interactive || event->button() != Qt::LeftButton) {
+        QWidget::mousePressEvent(event);
+        return;
+    }
+    m_dragging = true;
+    m_dragStartPos = event->position().toPoint();
+    m_dragStartOffset = m_scrollOffset;
+    suspendAutoScroll();
+    setCursor(Qt::ClosedHandCursor);
+    emit userInteractingChanged(true);
+    event->accept();
+}
+
+void LyricRenderer::mouseMoveEvent(QMouseEvent* event)
+{
+    if (!m_interactive || !m_dragging) {
+        QWidget::mouseMoveEvent(event);
+        return;
+    }
+    // Grab the content: the offset follows the pointer, clamped to its range.
+    const QPoint delta = m_dragStartPos - event->position().toPoint();
+    const qreal d = m_vertical ? delta.x() : delta.y();
+    m_scrollOffset = qBound<qreal>(0, m_dragStartOffset + d, maxScrollOffset());
+    update();
+    rearmResumeTimer();
+    event->accept();
+}
+
+void LyricRenderer::mouseReleaseEvent(QMouseEvent* event)
+{
+    if (!m_interactive || !m_dragging || event->button() != Qt::LeftButton) {
+        QWidget::mouseReleaseEvent(event);
+        return;
+    }
+    m_dragging = false;
+    setCursor(Qt::OpenHandCursor);
+    emit userInteractingChanged(false);
+    rearmResumeTimer(); // Auto-scroll resumes 3 s after the last interaction.
+    event->accept();
+}

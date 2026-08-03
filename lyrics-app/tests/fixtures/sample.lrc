@@ -1,0 +1,11 @@
+[ti:Sample Song]
+[ar:Test Artist]
+[al:Sample Album]
+[by:lx-lyrics]
+[offset:0]
+[00:00.00]First line
+[00:03.00]<0,500>word<0,1500>tags here
+[00:06.00]第三行是中文歌词
+[00:09.00]Fourth line
+[00:09.00]Fourth line (extended translation)
+[00:12.00]Fifth line

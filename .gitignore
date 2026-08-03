@@ -72,4 +72,7 @@ publish/utils/githubToken.js
 
 src/**/*-internal.js
 
+.vscode/
+.kilo/
 references/
+.cache/
