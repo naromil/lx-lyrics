@@ -24,13 +24,19 @@ namespace {
 // Vertical line-mode letter-spacing (CSS .line-content.line-mode, vertical).
 constexpr int kVerticalLetterSpacing = 5;
 // Scroll timing (reference useLyric.js): 3 s of manual scrolling before the
-// auto-scroll resumes, 600 ms delay before an animated scroll, 300 ms scroll.
+// auto-scroll resumes; a delayed scroll waits 600 ms then animates over
+// 600 ms (handleScrollLrc(600)), every other auto-scroll animates over 300 ms
+// (handleScrollLrc()'s default).
 constexpr int kResumeDelayMs = 3000;
-constexpr int kDelayScrollMs = 600;
-constexpr int kScrollAnimationMs = 300;
+constexpr int kDelayScrollMs = 600;         // pre-delay before a delayed scroll
+constexpr int kDelayScrollAnimationMs = 600; // duration of a delayed scroll
+constexpr int kScrollAnimationMs = 300;     // duration of a normal auto-scroll
 // Active-line zoom factors (reference .lrcActiveZoom).
 constexpr qreal kActiveMainZoom = 1.2;
 constexpr qreal kActiveExtendedZoom = 0.94;
+// Zoom transition duration (reference .line-mode .font-lrc transition:
+// font-size .6s ease).
+constexpr int kZoomAnimationMs = 600;
 // Extended lines render at 0.8x the main size (reference .extended).
 constexpr qreal kExtendedScale = 0.8;
 // Every line uses the 4 px shadow stroke (reference .line-mode .font-lrc,
@@ -82,6 +88,8 @@ LyricRenderer::LyricRenderer(QWidget* parent)
 
     // Auto-scroll resumes 3 s after the last wheel/drag interaction (reference
     // startLyricScrollTimeout); single-shot and re-armed on every interaction.
+    // The reference gates the resume on isPlay; the renderer has no playing
+    // signal, so it re-centers whenever the timer fires (documented deviation).
     m_resumeTimer = new QTimer(this);
     m_resumeTimer->setSingleShot(true);
     m_resumeTimer->setInterval(kResumeDelayMs);
@@ -90,22 +98,38 @@ LyricRenderer::LyricRenderer(QWidget* parent)
         scrollToActiveAnimated(kScrollAnimationMs);
     });
 
-    // isDelayScroll: the active-line change waits 600 ms, then scrolls smoothly
-    // (reference scrollLine's setTimeout + handleScrollLrc(600)).
+    // isDelayScroll: the active-line change waits 600 ms, then scrolls
+    // smoothly (reference scrollLine's setTimeout + handleScrollLrc(600)).
     m_delayScrollTimer = new QTimer(this);
     m_delayScrollTimer->setSingleShot(true);
     m_delayScrollTimer->setInterval(kDelayScrollMs);
     connect(m_delayScrollTimer, &QTimer::timeout, this, [this] {
         if (m_userScrolling)
             return; // User grabbed the lyrics meanwhile: leave it to the resume timer.
-        scrollToActiveAnimated(kScrollAnimationMs);
+        scrollToActiveAnimated(kDelayScrollAnimationMs);
     });
 
+    // Every auto-scroll is animated with InOutQuad (reference handleScrollY's
+    // easeInOutQuad stepping). Restarting from the current value mid-flight is
+    // smooth: stop() keeps the last interpolated value, which m_scrollOffset
+    // already holds.
     m_scrollAnimation = new QVariantAnimation(this);
-    m_scrollAnimation->setEasingCurve(QEasingCurve(QEasingCurve::OutCubic));
+    m_scrollAnimation->setEasingCurve(QEasingCurve(QEasingCurve::InOutQuad));
     connect(m_scrollAnimation, &QVariantAnimation::valueChanged, this,
             [this](const QVariant& value) {
                 m_scrollOffset = value.toReal();
+                update();
+            });
+
+    // Active-line zoom transition (Task H.2): the reference .lrcActiveZoom CSS
+    // transitions font-size over 0.6s ease; InOutQuad matches the Task G scroll
+    // easing. One animation eases the zoom progress 0..1 and repaints each tick.
+    m_zoomAnim = new QVariantAnimation(this);
+    m_zoomAnim->setDuration(kZoomAnimationMs);
+    m_zoomAnim->setEasingCurve(QEasingCurve(QEasingCurve::InOutQuad));
+    connect(m_zoomAnim, &QVariantAnimation::valueChanged, this,
+            [this](const QVariant& value) {
+                m_zoomFactor = value.toDouble();
                 update();
             });
 }
@@ -134,16 +158,22 @@ void LyricRenderer::setActiveLine(int index)
     m_activeLine = clamped;
     update();
 
+    // Active-line zoom (Task H.2) runs before the scroll math so the auto-scroll
+    // target measures the layout at the base scale — matching the reference,
+    // whose isComputeHeight (layout-with-zoom) only holds when isDelayScroll is
+    // OFF (the default here is on).
+    startZoomTransition();
+
     if (m_userScrolling)
         return; // Suspended: the resume timer re-centers to the new line later.
 
-    // Only consecutive +1 steps honour the delay (reference scrollLine); jumps
-    // and the first line scroll immediately.
+    // Only consecutive +1 steps honour the delay (reference scrollLine); jumps,
+    // seeks and the first line animate immediately over the normal 300 ms.
     const bool consecutiveStep = oldLine >= 0 && clamped == oldLine + 1;
     if (m_delayScroll && consecutiveStep)
         startDelayScrollTimer();
     else
-        scrollToActiveInstant();
+        scrollToActiveAnimated(kScrollAnimationMs);
 }
 
 void LyricRenderer::setVertical(bool on)
@@ -190,7 +220,20 @@ void LyricRenderer::setEllipsis(bool on)
 
 void LyricRenderer::setZoomActiveLrc(bool on)
 {
+    if (m_zoomActiveLrc == on)
+        return;
     m_zoomActiveLrc = on;
+    if (on) {
+        // Toggled on with a line active: grow it in over the transition
+        // (reference class add -> CSS font-size transition).
+        if (m_activeLine >= 0)
+            startZoomTransition();
+    } else {
+        // Toggled off: no transition — the active line renders at base scale
+        // (reference .lrcActiveZoom class removal snaps the font-size back).
+        m_zoomAnim->stop();
+        m_zoomFactor = 0.0;
+    }
     update();
 }
 
@@ -290,6 +333,37 @@ void LyricRenderer::resetScroll()
     update();
 }
 
+void LyricRenderer::startZoomTransition()
+{
+    if (!m_zoomActiveLrc) {
+        // Zoom disabled: the active line always renders at base scale — jump
+        // there instantly, no animation (reference .lrcActiveZoom class off).
+        m_zoomAnim->stop();
+        m_zoomFactor = 0.0;
+        update();
+        return;
+    }
+
+    // The zoom progress belongs to the active line. A freshly active line
+    // starts from its base (progress 0) and eases up to the full zoom; clearing
+    // the active line eases the progress back down (invisible, but keeps the
+    // state consistent for the next activation). Restart-from-current — stop()
+    // then start from the live value — is safe in Qt 6.11.1, the same pattern
+    // as the Task G scroll animation.
+    const double target = (m_activeLine >= 0) ? 1.0 : 0.0;
+    const double start = (m_activeLine >= 0) ? 0.0 : m_zoomFactor;
+    if (qAbs(start - target) < 1e-6) {
+        m_zoomAnim->stop();
+        m_zoomFactor = target;
+        update();
+        return;
+    }
+    m_zoomAnim->stop();
+    m_zoomAnim->setStartValue(start);
+    m_zoomAnim->setEndValue(target);
+    m_zoomAnim->start();
+}
+
 void LyricRenderer::paintEvent(QPaintEvent*)
 {
     if (m_lines.isEmpty())
@@ -310,7 +384,11 @@ QFont LyricRenderer::makeMainFont(bool isActive) const
     QFont font;
     if (!m_fontFamily.isEmpty())
         font.setFamily(m_fontFamily);
-    const qreal zoom = (m_zoomActiveLrc && isActive) ? kActiveMainZoom : 1.0;
+    // Active-line zoom (Task H.2): 1.0x at progress 0, kActiveMainZoom at
+    // progress 1 (reference .lrcActiveZoom .line { font-size: 1.2em }).
+    const qreal zoom = (m_zoomActiveLrc && isActive)
+        ? 1.0 + (kActiveMainZoom - 1.0) * m_zoomFactor
+        : 1.0;
     font.setPixelSize(qRound(m_fontSize * zoom));
     font.setBold(m_fontWeightLine); // Every line renders line-mode style.
     return font;
@@ -321,7 +399,12 @@ QFont LyricRenderer::makeExtendedFont(bool isActive) const
     QFont font;
     if (!m_fontFamily.isEmpty())
         font.setFamily(m_fontFamily);
-    const qreal zoom = (m_zoomActiveLrc && isActive) ? kActiveExtendedZoom : kExtendedScale;
+    // Extended lines sit at kExtendedScale; the active zoomed group grows them
+    // to kActiveExtendedZoom (reference .extended 0.8em -> .lrcActiveZoom
+    // .active .extended .94em).
+    const qreal zoom = (m_zoomActiveLrc && isActive)
+        ? kExtendedScale + (kActiveExtendedZoom - kExtendedScale) * m_zoomFactor
+        : kExtendedScale;
     font.setPixelSize(qRound(m_fontSize * zoom));
     font.setBold(m_fontWeightExtended);
     return font;
@@ -614,10 +697,11 @@ qreal LyricRenderer::autoScrollTarget() const
             right -= metrics.at(i).groupWidth + gap;
         }
 
-        // 'top' alignment pins the active line's left edge to the viewport
-        // left; center keeps it horizontally centered.
+        // 'top' alignment pins the active column 2 px from the far/right
+        // content edge (reference getOffsetTop: contentWidth - lineWidth - 2
+        // on the negative-scroll axis); center keeps it horizontally centered.
         const qreal groupExtent = metrics.at(m_activeLine).groupWidth;
-        const qreal target = m_scrollAlignTop ? 0 : (width() - groupExtent) / 2.0;
+        const qreal target = m_scrollAlignTop ? (width() - groupExtent - 2) : (width() - groupExtent) / 2.0;
         return qBound<qreal>(0, baseLeft - target, maxScrollOffset());
     }
 

@@ -7,36 +7,47 @@
 #include "renderer/controlbar.h"
 
 #include <QApplication>
+#include <QCursor>
+#include <QGraphicsOpacityEffect>
 #include <QHBoxLayout>
 #include <QPainter>
 #include <QPainterPath>
 #include <QShowEvent>
 #include <QSignalBlocker>
 #include <QToolButton>
+#include <QVariantAnimation>
+
+#include <cmath>
+#include <numbers>
 
 #include "config/desktoplyricconfig.h"
 #include "i18n/translationmanager.h"
 
 namespace {
 
-constexpr int kBarHeight = 28;
-constexpr int kButtonSize = 22;
+// Reference ControlBar.vue: .btns { min-height: 38px } with .btn { padding:
+// 0 10px } laid out full-width over a rgba(0, 0, 0, .7) strip; the strip's top
+// corners follow the window radius (border-top-left/right-radius: 4px).
+constexpr int kBarHeight = 38;
+constexpr int kButtonPadding = 10; // reference .btn horizontal padding
 constexpr int kIconSize = 16;
-constexpr int kPillInset = 4;         // horizontal float margin inside the window frame
-constexpr int kPillCornerRadius = 8;
-constexpr int kPillButtonPadding = 2; // buttons inset from the pill edge
+constexpr int kBarCornerRadius = 4; // reference border-top-left/right-radius
 
 constexpr int kFontStep = 2;
 constexpr int kFontSizeMin = 10;
 constexpr int kFontSizeMax = 80;
-constexpr int kOpacityStep = 2;
+constexpr int kOpacityStepClick = 10;        // left-click steps by ten
+constexpr int kOpacityStepContextMenu = 2;   // right-click steps by two
 constexpr int kOpacityMin = 6;
 constexpr int kOpacityMax = 100;
 
-const QColor kPillFill(0, 0, 0, 115);        // rgba(0, 0, 0, 0.45)
-const QColor kPillBorder(255, 255, 255, 45); // thin light border, like the window pane
+// Hover reveal durations: reference animate.less enter fadeIn .3s, leave
+// fadeOut .5s (the #main:hover CSS transition is .4s; the .less override wins).
+constexpr int kBarFadeInMs = 300;
+constexpr int kBarFadeOutMs = 500;
+
+const QColor kBarFill(0, 0, 0, 178);        // rgba(0, 0, 0, 0.7)
 const QColor kIconColor(255, 255, 255, 235); // white/light-gray strokes
-const QColor kHoverFill(255, 255, 255, 26);  // rgba(255, 255, 255, 0.1)
 const QColor kCheckedFill(255, 255, 255, 51); // rgba(255, 255, 255, 0.2)
 
 const QString kKeyIsLock = QStringLiteral("desktopLyric.isLock");
@@ -47,10 +58,11 @@ const QString kKeyOpacity = QStringLiteral("desktopLyric.style.opacity");
 
 } // namespace
 
-// Icon button with a fully custom paintEvent: draws a subtle hover/checked
-// backdrop and then the requested glyph with QPainter. Checkable buttons pick
-// between two glyphs so the icon mirrors the reference ControlBar.vue
-// (e.g. the "zoom off" glyph shows while zoom is active).
+// Icon button with a fully custom paintEvent: draws a subtle checked backdrop
+// and then the requested glyph with QPainter. Checkable buttons pick between
+// two glyphs so the icon mirrors the reference ControlBar.vue (e.g. the "zoom
+// off" glyph shows while zoom is active). Hovering dims the glyph to 0.7
+// opacity (reference .btn:hover { opacity: .7 }).
 class ControlBar::IconButton : public QToolButton {
 public:
     IconButton(Icon iconOn, Icon iconOff, ControlBar* bar)
@@ -59,7 +71,10 @@ public:
         , m_iconOff(iconOff)
         , m_bar(bar)
     {
-        setFixedSize(kButtonSize, kButtonSize);
+        // Full strip height with reference .btn padding: 0 10px — the glyph
+        // stays centered, so the padding is the 10px around it.
+        setFixedHeight(kBarHeight);
+        setMinimumWidth(kIconSize + 2 * kButtonPadding);
         setCursor(Qt::PointingHandCursor);
         setFocusPolicy(Qt::NoFocus);
         setAutoRaise(true);
@@ -71,22 +86,25 @@ protected:
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing, true);
 
-        const QRectF backdrop = QRectF(rect()).adjusted(2.0, 2.0, -2.0, -2.0);
-        if (isChecked()) {
-            painter.setPen(Qt::NoPen);
-            painter.setBrush(kCheckedFill);
-            painter.drawEllipse(backdrop);
-        } else if (underMouse()) {
-            painter.setPen(Qt::NoPen);
-            painter.setBrush(kHoverFill);
-            painter.drawEllipse(backdrop);
-        }
-
-        const Icon icon = isChecked() ? m_iconOn : m_iconOff;
         const QRectF iconRect = QRectF((width() - kIconSize) / 2.0,
                                        (height() - kIconSize) / 2.0,
                                        kIconSize, kIconSize);
-        m_bar->paintIcon(painter, icon, iconRect);
+
+        // Active state: a subtle halo behind the swapped glyph. The reference
+        // marks active purely by the glyph swap; the halo keeps it readable
+        // against the dark strip.
+        if (isChecked()) {
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(kCheckedFill);
+            painter.drawEllipse(iconRect.adjusted(-4.0, -4.0, 4.0, 4.0));
+        }
+
+        // Reference .btn:hover { opacity: .7 } — the glyph dims; the bar's own
+        // opacity factor (hover reveal) compounds through the painter stack.
+        if (underMouse())
+            painter.setOpacity(0.7);
+
+        m_bar->paintIcon(painter, isChecked() ? m_iconOn : m_iconOff, iconRect);
     }
 
 private:
@@ -102,15 +120,31 @@ ControlBar::ControlBar(DesktopLyricConfig& config, TranslationManager& i18n, QWi
 {
     setFixedHeight(kBarHeight);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    setAttribute(Qt::WA_TranslucentBackground); // the pill shape shows through
+    setAttribute(Qt::WA_TranslucentBackground); // the rounded-top strip shows through
 
+    // Hover reveal (reference .control-bar opacity 0 / #main:hover opacity 1):
+    // a graphics effect fades the whole strip — background and buttons — as
+    // one unit, exactly like the CSS opacity transition. The window's own
+    // container fade (LyricWindow) compounds with this multiplier.
+    m_hoverEffect = new QGraphicsOpacityEffect(this);
+    m_hoverEffect->setOpacity(0.0);
+    setGraphicsEffect(m_hoverEffect);
+
+    m_hoverAnim = new QVariantAnimation(this);
+    connect(m_hoverAnim, &QVariantAnimation::valueChanged, this,
+            [this](const QVariant& value) {
+                m_hoverFactor = value.toDouble();
+                m_hoverEffect->setOpacity(m_hoverFactor);
+            });
+
+    // Full-width strip: no margins, no gaps — each button carries its own
+    // 10px horizontal padding (reference .btns row + .btn padding: 0 10px).
     m_layout = new QHBoxLayout(this);
-    m_layout->setContentsMargins(kPillInset + kPillButtonPadding, 0,
-                                 kPillInset + kPillButtonPadding, 0);
-    m_layout->setSpacing(2);
+    m_layout->setContentsMargins(0, 0, 0, 0);
+    m_layout->setSpacing(0);
 
     // Reference order (ControlBar.vue): close, lock, font+, font-, opacity+,
-    // opacity-, zoom, always-on-top.
+    // opacity-, zoom, always-on-top; the settings gear is appended last.
     auto* closeButton = addIconButton(Icon::Close, QStringLiteral("desktop_lyric__close"));
     connect(closeButton, &QToolButton::clicked, this, [] { QApplication::quit(); });
 
@@ -123,11 +157,19 @@ ControlBar::ControlBar(DesktopLyricConfig& config, TranslationManager& i18n, QWi
     auto* fontDecreaseButton = addIconButton(Icon::FontDecrease, QStringLiteral("desktop_lyric__font_decrease"));
     connect(fontDecreaseButton, &QToolButton::clicked, this, [this] { changeFontSize(-kFontStep); });
 
+    // Opacity: left-click steps by ten, right-click (context menu) by two —
+    // reference click +10/-10, contextmenu +2/-2, both clamped 6..100.
     auto* opacityIncreaseButton = addIconButton(Icon::OpacityIncrease, QStringLiteral("desktop_lyric__opacity_increase"));
-    connect(opacityIncreaseButton, &QToolButton::clicked, this, [this] { changeOpacity(+kOpacityStep); });
+    connect(opacityIncreaseButton, &QToolButton::clicked, this, [this] { changeOpacity(+kOpacityStepClick); });
+    opacityIncreaseButton->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(opacityIncreaseButton, &QWidget::customContextMenuRequested,
+            this, [this] { changeOpacity(+kOpacityStepContextMenu); });
 
     auto* opacityDecreaseButton = addIconButton(Icon::OpacityDecrease, QStringLiteral("desktop_lyric__opacity_decrease"));
-    connect(opacityDecreaseButton, &QToolButton::clicked, this, [this] { changeOpacity(-kOpacityStep); });
+    connect(opacityDecreaseButton, &QToolButton::clicked, this, [this] { changeOpacity(-kOpacityStepClick); });
+    opacityDecreaseButton->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(opacityDecreaseButton, &QWidget::customContextMenuRequested,
+            this, [this] { changeOpacity(-kOpacityStepContextMenu); });
 
     m_zoomButton = addIconButton(Icon::ZoomOff, Icon::Zoom,
                                  QStringLiteral("desktop_lyric__lrc_active_zoom_on"),
@@ -144,6 +186,12 @@ ControlBar::ControlBar(DesktopLyricConfig& config, TranslationManager& i18n, QWi
     connect(m_alwaysOnTopButton, &QToolButton::toggled, this, [this](bool on) {
         m_config.set(kKeyAlwaysOnTop, on);
     });
+
+    // Settings gear: opens the modeless settings dialog. There is no reference
+    // i18n key for this button in the language packs, so the tooltip is the
+    // literal English string (tr() falls back to the key itself when unknown).
+    m_settingsButton = addIconButton(Icon::Settings, QStringLiteral("Lyric settings"));
+    connect(m_settingsButton, &QToolButton::clicked, this, &ControlBar::settingsRequested);
 
     connect(&m_config, &DesktopLyricConfig::settingChanged,
             this, &ControlBar::onSettingChanged);
@@ -174,17 +222,61 @@ void ControlBar::paintEvent(QPaintEvent*)
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
 
-    const QRectF pill = QRectF(rect()).adjusted(kPillInset + 0.5, 0.5,
-                                                -(kPillInset + 0.5), -0.5);
-    painter.setPen(QPen(kPillBorder, 1.0));
-    painter.setBrush(kPillFill);
-    painter.drawRoundedRect(pill, kPillCornerRadius, kPillCornerRadius);
+    // Full-width rgba(0, 0, 0, .7) strip; only the top corners follow the
+    // window's 4px radius (reference .control-bar border-top-left/right-radius:
+    // 4px) so the strip meets the content below on a straight edge.
+    const qreal r = kBarCornerRadius;
+    QPainterPath strip;
+    strip.moveTo(0, height());
+    strip.lineTo(0, r);
+    strip.quadTo(0, 0, r, 0);
+    strip.lineTo(width() - r, 0);
+    strip.quadTo(width(), 0, width(), r);
+    strip.lineTo(width(), height());
+    strip.closeSubpath();
+
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(kBarFill);
+    painter.drawPath(strip);
 }
 
 void ControlBar::showEvent(QShowEvent* event)
 {
     QWidget::showEvent(event);
     raise(); // Stay above future siblings (the lyric renderer) inside the container.
+
+    // The window's enter/leave events only fire on boundary crossings; a
+    // lock->unlock flip while the pointer sits inside emits no new enter, so
+    // seed the hover factor from the pointer position (reference #main:hover
+    // is a position-based CSS evaluation too).
+    setHovered(isPointerInsideWindow());
+}
+
+void ControlBar::setHovered(bool hovered)
+{
+    const double target = hovered ? 1.0 : 0.0;
+    if (qAbs(m_hoverFactor - target) < 1e-6) {
+        m_hoverAnim->stop();
+        return;
+    }
+    // Retarget smoothly: a running fade is stopped and restarted from the last
+    // delivered frame (m_hoverFactor stays live via valueChanged), so a rapid
+    // enter/leave never jumps. Durations follow reference animate.less: fadeIn
+    // .3s on enter, fadeOut .5s on leave.
+    m_hoverAnim->stop();
+    m_hoverAnim->setDuration(hovered ? kBarFadeInMs : kBarFadeOutMs);
+    m_hoverAnim->setEasingCurve(QEasingCurve::OutCubic); // CSS 'ease' mapping
+    m_hoverAnim->setStartValue(m_hoverFactor);
+    m_hoverAnim->setEndValue(target);
+    m_hoverAnim->start();
+}
+
+bool ControlBar::isPointerInsideWindow() const
+{
+    const QWidget* top = window();
+    if (!top || !top->isVisible())
+        return false;
+    return top->frameGeometry().contains(QCursor::pos());
 }
 
 void ControlBar::syncCheckableStates()
@@ -333,6 +425,19 @@ void ControlBar::paintIcon(QPainter& painter, Icon icon, const QRectF& rect) con
         painter.drawPath(tip);
         if (icon == Icon::PinOff)
             painter.drawLine(QPointF(3.5, 3.5), QPointF(13.5, 13.5));
+        break;
+    }
+    case Icon::Settings: {
+        // Simple cog: a center ring with eight short teeth radiating outward.
+        constexpr double kPi = std::numbers::pi_v<double>;
+        for (int i = 0; i < 8; ++i) {
+            const double angle = i * kPi / 4.0;
+            const double c = std::cos(angle);
+            const double s = std::sin(angle);
+            painter.drawLine(QPointF(8.0 + 4.2 * c, 8.0 + 4.2 * s),
+                             QPointF(8.0 + 7.0 * c, 8.0 + 7.0 * s));
+        }
+        painter.drawEllipse(QRectF(3.8, 3.8, 8.4, 8.4));
         break;
     }
     }

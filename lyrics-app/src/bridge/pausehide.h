@@ -14,8 +14,10 @@ class DesktopLyricConfig;
 
 // Port of the reference usePauseHide.ts: when the host reports that playback
 // has stopped (isPlay == false) and the `desktopLyric.pauseHide` setting is
-// enabled, the window is hidden after a short delay so brief pauses do not
-// flicker. The window is shown again immediately when playback resumes.
+// enabled, the window is dimmed (fainted) after a short delay so brief pauses
+// do not flicker. The window is restored (unfainted) immediately when playback
+// resumes. This module never hides or shows the window — it only requests a
+// change of opacity.
 //
 // Any state message that conveys the play boolean feeds this via
 // setPlayState(): set_info/set_status carry isPlay; set_play implies true;
@@ -27,22 +29,22 @@ public:
     explicit PauseHide(DesktopLyricConfig& config, QObject* parent = nullptr);
 
     // Feeds the current play boolean. When pauseHide is enabled, a false
-    // schedules hideRequested() after the 200 ms delay; a true cancels any
-    // pending hide and emits showRequested() immediately if the window was
-    // hidden by this module.
+    // schedules faintRequested() after the 200 ms delay; a true cancels any
+    // pending faint and emits unfaintRequested() immediately if the window
+    // was fainted by this module.
     void setPlayState(bool isPlay);
 
 signals:
-    void hideRequested();
-    void showRequested();
+    void faintRequested();
+    void unfaintRequested();
 
 private:
     void applySetting(const QString& key, const QVariant& value);
-    void cancelPendingHide();
-    void revealIfHidden();
+    void cancelPendingFaint();
+    void unfaintIfFainted();
 
     DesktopLyricConfig& m_config;
-    QTimer m_hideTimer;
+    QTimer m_faintTimer;
     bool m_pauseHideEnabled = false;
-    bool m_isHidden = false;
+    bool m_isFainted = false;
 };

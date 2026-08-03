@@ -77,13 +77,15 @@ int main(int argc, char* argv[])
     // modes below (host-driven and --demo self-feed).
     auto* lyricController = new LyricController(appContext, *window, &appContext);
 
-    // Pause-hide watcher (port of usePauseHide.ts): the play boolean carried by
-    // any state message decides whether the lyric window hides on pause.
+    // Pause-faint watcher (port of usePauseHide.ts): the play boolean carried by
+    // any state message decides whether the lyric window dims on pause. The
+    // window is NEVER hidden or shown here — only content-faded via
+    // LyricWindow::faint/unfaint (CSS-style opacity, not window opacity).
     appContext.pauseHide = std::make_unique<PauseHide>(appContext.config, &appContext);
-    QObject::connect(appContext.pauseHide.get(), &PauseHide::hideRequested,
-                     window, &QWidget::hide);
-    QObject::connect(appContext.pauseHide.get(), &PauseHide::showRequested,
-                     window, &QWidget::show);
+    QObject::connect(appContext.pauseHide.get(), &PauseHide::faintRequested,
+                     window, &LyricWindow::faint);
+    QObject::connect(appContext.pauseHide.get(), &PauseHide::unfaintRequested,
+                     window, &LyricWindow::unfaint);
 
     // WebSocket bridge to the host plugin (docs/protocol.md). Every parsed host
     // message is routed into the music-state machine (task 2.13): the lyric

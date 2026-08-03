@@ -42,7 +42,7 @@ public:
     // CLI supplies --ws; signals are wired into the app pipeline there
     // (LyricController + PauseHide + SpectrumBridge).
     std::unique_ptr<WsClient> wsClient;
-    // Pause-hide watcher (port of usePauseHide.ts). Always present so the
+    // Pause-faint watcher (port of usePauseHide.ts). Always present so the
     // window honors desktopLyric.pauseHide regardless of the connection mode.
     std::unique_ptr<PauseHide> pauseHide;
     // Spectrum-only wiring for the visualizer (task 2.11): forwards analyser

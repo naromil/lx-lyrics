@@ -10,7 +10,7 @@
 
 namespace {
 
-constexpr int kPauseHideDelayMs = 200; // Mirrors the reference usePauseHide.ts.
+constexpr int kPauseFaintDelayMs = 200; // Mirrors the reference usePauseHide.ts.
 
 } // namespace
 
@@ -19,11 +19,11 @@ PauseHide::PauseHide(DesktopLyricConfig& config, QObject* parent)
     , m_config(config)
     , m_pauseHideEnabled(m_config.get(QStringLiteral("desktopLyric.pauseHide")).toBool())
 {
-    m_hideTimer.setSingleShot(true);
-    m_hideTimer.setInterval(kPauseHideDelayMs);
-    connect(&m_hideTimer, &QTimer::timeout, this, [this] {
-        m_isHidden = true;
-        emit hideRequested();
+    m_faintTimer.setSingleShot(true);
+    m_faintTimer.setInterval(kPauseFaintDelayMs);
+    connect(&m_faintTimer, &QTimer::timeout, this, [this] {
+        m_isFainted = true;
+        emit faintRequested();
     });
 
     connect(&m_config, &DesktopLyricConfig::settingChanged,
@@ -35,12 +35,12 @@ void PauseHide::setPlayState(bool isPlay)
     if (!m_pauseHideEnabled)
         return; // Setting disabled: the reference installs no watcher at all.
 
-    cancelPendingHide();
+    cancelPendingFaint();
     if (isPlay) {
-        revealIfHidden();
+        unfaintIfFainted();
         return;
     }
-    m_hideTimer.start();
+    m_faintTimer.start();
 }
 
 void PauseHide::applySetting(const QString& key, const QVariant& value)
@@ -56,20 +56,20 @@ void PauseHide::applySetting(const QString& key, const QVariant& value)
     if (enabled)
         return; // The next setPlayState applies the new behavior.
 
-    // Disabled mid-pause: cancel a pending hide and reveal a hidden window.
-    cancelPendingHide();
-    revealIfHidden();
+    // Disabled mid-pause: cancel a pending faint and restore full opacity.
+    cancelPendingFaint();
+    unfaintIfFainted();
 }
 
-void PauseHide::cancelPendingHide()
+void PauseHide::cancelPendingFaint()
 {
-    m_hideTimer.stop();
+    m_faintTimer.stop();
 }
 
-void PauseHide::revealIfHidden()
+void PauseHide::unfaintIfFainted()
 {
-    if (!m_isHidden)
+    if (!m_isFainted)
         return;
-    m_isHidden = false;
-    emit showRequested();
+    m_isFainted = false;
+    emit unfaintRequested();
 }

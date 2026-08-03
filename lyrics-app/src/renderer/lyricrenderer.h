@@ -37,11 +37,13 @@ struct RenderLine {
 // renders in the played color while inactive lines stay in the unplay color
 // (line-by-line highlight per the original lx-music design).
 //
-// Scrolling ports the reference useLyric.js behavior: the scroll offset keeps
-// the active line centered (or pinned top with setScrollAlign(true)), manual
-// wheel/drag adjust the offset with auto-scroll suspended for 3 s after the
-// last interaction, and setDelayScroll(true) delays the auto-scroll 600 ms and
-// then animates it ~300 ms (OutCubic) instead of jumping instantly.
+// Scrolling ports the reference useLyric.js behavior: every auto-scroll is
+// animated with InOutQuad (reference handleScrollY's easeInOutQuad) — normal
+// line advances and seek/jump moves take 300 ms, and setDelayScroll(true)
+// first waits 600 ms and then animates over 600 ms. Manual wheel/drag adjust
+// the offset with auto-scroll suspended for 3 s after the last interaction;
+// the scroll offset is only ever set instantly for the initial/reset state,
+// when target == current, or while the user is dragging/wheeling.
 class LyricRenderer : public QWidget {
     Q_OBJECT
 public:
@@ -68,11 +70,16 @@ public:
     void setShadowFontModeColor(const QColor& c); // write-only: no longer affects rendering (line-by-line mode); retained for API compatibility
 
     // --- scrolling & interaction (port of useLyric.js) ---
-    void setScrollAlign(bool top);   // false=center (default), true=pin active line to top
-    void setDelayScroll(bool on);    // false=instant jump (default), true=600ms delay + 300ms animated
+    void setScrollAlign(bool top);   // false=center (default), true=pin active line to the leading edge
+    void setDelayScroll(bool on);    // false=immediate 300ms animation (default), true=600ms delay + 600ms animation
     void setUserScrolling(bool on);  // suspend auto-scroll while true; re-arm the resume timer when false
     void setInteractive(bool on);    // gate wheel + drag (window lock state)
     void resetScroll();              // clear offset and any scroll animation (lyric change)
+
+    // Current active-line zoom progress (0.0 = base scale, 1.0 = fully zoomed
+    // at kActiveMainZoom / kActiveExtendedZoom); exposed for tests like
+    // LyricWindow::fadeFactor().
+    double zoomProgress() const { return m_zoomFactor; }
 
 signals:
     // Emitted when a drag starts/stops (reference isMsDown), so the app can
@@ -128,11 +135,18 @@ private:
     HorizontalLayout measureHorizontal() const;
     QVector<VerticalGroupMetrics> measureAllVerticalGroups() const;
     qreal verticalBlockWidth(const QVector<VerticalGroupMetrics>& metrics) const;
+    // Active-line zoom transition (Task H.2): eases m_zoomFactor to the
+    // target for the current active line — 1.0 for a freshly active line,
+    // back to 0.0 when the active line clears (reference .lrcActiveZoom
+    // font-size .6s ease on .line-mode .font-lrc).
+    void startZoomTransition();
     // Scroll-range clamp: [0, max(0, blockExtent - viewportExtent)] along the
     // scroll axis (Y for horizontal mode, X for vertical mode).
     qreal maxScrollOffset() const;
     // Offset that puts the active line at its scrollAlign target: centered in
-    // the viewport, or 0 ('top' alignment; left edge for vertical mode).
+    // the viewport, or 'top' which pins it to the leading edge — the viewport
+    // top for horizontal mode, 2 px from the right edge for vertical mode
+    // (reference getOffsetTop: 0 vs contentWidth - lineWidth - 2).
     qreal autoScrollTarget() const;
     void scrollToActiveInstant();
     void scrollToActiveAnimated(int durationMs);
@@ -158,13 +172,21 @@ private:
 
     qreal m_scrollOffset = 0;         // manual/auto scroll along the scroll axis
     bool m_scrollAlignTop = false;    // false=center (default), true='top'
-    bool m_delayScroll = false;       // false=instant (default), true=600ms delay + 300ms animated
+    bool m_delayScroll = false;       // false=immediate 300ms animation (default), true=600ms delay + 600ms animation
     bool m_userScrolling = false;     // auto-scroll suspended (interaction + 3s resume window)
     bool m_interactive = false;       // gate for wheel + drag handlers
     bool m_dragging = false;
     QPoint m_dragStartPos;
     qreal m_dragStartOffset = 0;
     QTimer* m_resumeTimer = nullptr;        // 3s single-shot, re-armed on every interaction
-    QTimer* m_delayScrollTimer = nullptr;   // 600ms single-shot before the animated scroll
-    QVariantAnimation* m_scrollAnimation = nullptr; // 300ms OutCubic between offsets
+    QTimer* m_delayScrollTimer = nullptr;   // 600ms single-shot before the delayed scroll
+    QVariantAnimation* m_scrollAnimation = nullptr; // InOutQuad between offsets (300ms normal / 600ms delayed)
+
+    // Task H.2 active-line zoom: one InOutQuad animation eases m_zoomFactor
+    // between 0.0 (base scale) and 1.0 (full zoom) over 600 ms, repainting on
+    // every tick. The active main line renders at 1.0 + 0.2*zoomFactor and its
+    // extended lines at kExtendedScale + 0.14*zoomFactor (reference 1.2em /
+    // 0.94em targets).
+    QVariantAnimation* m_zoomAnim = nullptr;
+    double m_zoomFactor = 0.0;
 };

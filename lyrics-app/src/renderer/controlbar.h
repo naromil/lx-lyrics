@@ -10,11 +10,13 @@
 #include <QVector>
 #include <QWidget>
 
+class QGraphicsOpacityEffect;
 class QPaintEvent;
 class QPainter;
 class QRectF;
 class QShowEvent;
 class QVariant;
+class QVariantAnimation;
 class QHBoxLayout;
 class DesktopLyricConfig;
 class TranslationManager;
@@ -34,11 +36,29 @@ class TranslationManager;
 // Close is the only action that does not touch config: the standalone app has
 // no main window, so closing the lyric quits the application (the lx-music
 // plugin would respawn the app, which does not exist here).
+//
+// Hover reveal (reference #main:hover .control-bar): the bar is drawn at
+// opacity 0 and fades in only while the pointer is over the lyric window.
+// LyricWindow drives this via setHovered() from its enter/leave events; the
+// bar animates its own QGraphicsOpacityEffect factor 0<->1 (300 ms in, 500 ms
+// out per reference animate.less). The lock visibility gate is unaffected —
+// a locked bar is simply hidden, hover or not.
 class ControlBar : public QWidget {
     Q_OBJECT
 
 public:
     explicit ControlBar(DesktopLyricConfig& config, TranslationManager& i18n, QWidget* parent = nullptr);
+
+    // Hover reveal: animates the bar's opacity factor to 1 (hovered) or 0
+    // (not). Safe to call while hidden/locked — the visibility gate still
+    // governs presence, and the next show re-seeds the factor from the
+    // pointer position.
+    void setHovered(bool hovered);
+
+signals:
+    // Emitted when the settings gear is clicked; LyricWindow opens the
+    // modeless settings dialog in response.
+    void settingsRequested();
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -69,6 +89,7 @@ private:
         ZoomOff,         // vibration glyph with a slash (zoom on)
         PinOn,           // thumbtack (always-on-top on)
         PinOff,          // thumbtack with a slash (always-on-top off)
+        Settings,        // gear (opens the settings dialog)
     };
 
     IconButton* addIconButton(Icon icon, const QString& tooltipKey);
@@ -80,6 +101,7 @@ private:
     void onSettingChanged(const QString& key, const QVariant& value);
     void changeFontSize(int delta);
     void changeOpacity(int delta);
+    bool isPointerInsideWindow() const;
 
     DesktopLyricConfig& m_config;
     TranslationManager& m_i18n;
@@ -87,4 +109,11 @@ private:
     QVector<TooltipBinding> m_tooltipBindings;
     IconButton* m_zoomButton = nullptr;
     IconButton* m_alwaysOnTopButton = nullptr;
+    IconButton* m_settingsButton = nullptr;
+
+    // Hover reveal: the animation drives the effect's opacity factor
+    // (reference .control-bar { opacity: 0 } / #main:hover { opacity: 1 }).
+    QVariantAnimation* m_hoverAnim = nullptr;
+    QGraphicsOpacityEffect* m_hoverEffect = nullptr;
+    double m_hoverFactor = 0.0; // current bar opacity factor, 0 = hidden
 };

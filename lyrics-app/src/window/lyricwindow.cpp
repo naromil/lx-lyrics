@@ -6,15 +6,21 @@
  */
 #include "window/lyricwindow.h"
 
+#include <QCursor>
+#include <QEnterEvent>
+#include <QGraphicsOpacityEffect>
 #include <QGuiApplication>
 #include <QMouseEvent>
+#include <QMoveEvent>
 #include <QPainter>
 #include <QResizeEvent>
 #include <QScreen>
 #include <QShortcut>
 #include <QShowEvent>
 #include <QTimer>
+#include <QVariantAnimation>
 #include <QVBoxLayout>
+#include <QWindow>
 
 #include "config/desktoplyricconfig.h"
 #include "i18n/translationmanager.h"
@@ -24,15 +30,33 @@
 
 namespace {
 
-constexpr int kCornerRadius = 12;
+// Reference App.vue look: #main has border-radius 4px and a static
+// rgba(0,0,0,.2) background with NO border; body { opacity: .8 } dims the
+// whole window underneath the container fade.
+constexpr int kRadiusBorder = 4;
 constexpr int kAlwaysOnTopReassertMs = 500;
 
 constexpr int kResizeHandleSize = 8; // 8 px edge/corner hit regions.
-constexpr int kMinWindowWidth = 38;
-constexpr int kMinWindowHeight = 38;
 
-const QColor kPaneFill(0, 0, 0, 51);       // rgba(0, 0, 0, 0.2)
-const QColor kPaneBorder(255, 255, 255, 45); // Thin light border.
+// Task E: after a compositor-native move/resize (startSystemMove /
+// startSystemResize) the platform stops delivering move/resize events when the
+// user releases; this idle window turns that quiet stream into one final
+// saveBounds() + flush.
+constexpr int kNativeOpSaveDebounceMs = 200;
+
+// Pause-faint (Task D): the container fades between 1.0 and 0.05 over 300 ms
+// (reference #container transition: opacity .3s ease, .hide { opacity: .05 }).
+constexpr int kFadeAnimationMs = 300;
+constexpr double kFaintFactor = 0.05;
+constexpr double kBodyOpacity = 0.8; // reference body { opacity: .8 }
+
+// Hover-hide (Task H.1): the reference mouseCheckTools polls the cursor every
+// 500 ms while the window is locked and isHoverHide is on (setTimeout chain in
+// mouseCheckTools.ts), fading the content to kFaintFactor while the cursor is
+// over the window and restoring it once the cursor leaves.
+constexpr int kHoverPollMs = 500;
+
+const QColor kPaneFill(0, 0, 0, 51); // rgba(0, 0, 0, 0.2)
 
 } // namespace
 
@@ -114,10 +138,57 @@ LyricWindow::LyricWindow(DesktopLyricConfig& config, TranslationManager& i18n)
     setWindowFlags(flags);
 
     setAttribute(Qt::WA_TranslucentBackground);
+    // Parity with the reference browserWindow.blur() after show: the lyric
+    // window must never steal keyboard focus from the host application.
+    setAttribute(Qt::WA_ShowWithoutActivating);
+    // No minimum size: the window may shrink to a thin strip (user request).
+    setMinimumSize(0, 0);
+
+    // Pause-faint animation (Task D): content-level fade, never window opacity.
+    m_fadeAnim = new QVariantAnimation(this);
+    m_fadeAnim->setDuration(kFadeAnimationMs);
+    // OutCubic is the closest Qt mapping of the reference CSS 'ease' timing.
+    m_fadeAnim->setEasingCurve(QEasingCurve::OutCubic);
+    connect(m_fadeAnim, &QVariantAnimation::valueChanged, this,
+            [this](const QVariant& value) {
+                m_fadeFactor = value.toDouble();
+                applyFade();
+            });
+
+    // Task E: bounds persistence for compositor-native move/resize. The system
+    // drives geometry and delivers a stream of move/resize events; each one
+    // re-arms this timer, so saveBounds() runs once the stream goes quiet. The
+    // save's config.set() re-applies geometry (applySavedPosition /
+    // resizeToConfigSize) and delivers one more event; the re-armed timer then
+    // fires once more and converges on a no-op set() (same values), so this
+    // cannot loop.
+    m_nativeOpSaveTimer = new QTimer(this);
+    m_nativeOpSaveTimer->setSingleShot(true);
+    m_nativeOpSaveTimer->setInterval(kNativeOpSaveDebounceMs);
+    connect(m_nativeOpSaveTimer, &QTimer::timeout, this,
+            [this] { saveBounds(); });
+
+    // Hover-hide (Task H.1): 500 ms cursor poll (reference mouseCheckTools)
+    // re-armed while desktopLyric.isHoverHide && isLock. A locked window is
+    // mouse-transparent, so enter/leave events never fire; the cursor position
+    // is sampled against frameGeometry() instead.
+    m_hoverPollTimer = new QTimer(this);
+    m_hoverPollTimer->setInterval(kHoverPollMs);
+    connect(m_hoverPollTimer, &QTimer::timeout, this, &LyricWindow::pollHoverHide);
 
     m_contentContainer = new QWidget(this);
     m_contentContainer->setAttribute(Qt::WA_TranslucentBackground);
     m_contentContainer->setGeometry(rect());
+
+    // The container holds every child (control bar, lyric renderer, spectrum);
+    // a graphics effect over it reproduces the reference #container { opacity }
+    // rule, multiplied by the static body opacity. NOTE: QGraphicsOpacityEffect
+    // can glitch on translucent top-levels on some platforms; if Wayland ever
+    // misrenders the fade, the fallback is per-widget painter opacity driven by
+    // the same fadeFactor() (children paint through the effect today).
+    m_contentEffect = new QGraphicsOpacityEffect(m_contentContainer);
+    m_contentEffect->setOpacity(kBodyOpacity * m_fadeFactor);
+    m_contentContainer->setGraphicsEffect(m_contentEffect);
 
     // Control bar floats at the top; the spectrum visualizer sits below it and
     // the stretch reserves the area for the lyric renderer (attached in a later
@@ -163,6 +234,12 @@ LyricWindow::LyricWindow(DesktopLyricConfig& config, TranslationManager& i18n)
     connect(settingsShortcut, &QShortcut::activated,
             this, &LyricWindow::openSettingsDialog);
 
+    // The gear button in the control bar is the always-visible mouse path to
+    // the same dialog (the shortcut alone fails when the window has no focus,
+    // e.g. on Wayland).
+    connect(m_controlBar, &ControlBar::settingsRequested,
+            this, &LyricWindow::openSettingsDialog);
+
     applyTransparentForMouseEvents();
 }
 
@@ -170,14 +247,118 @@ void LyricWindow::openSettingsDialog()
 {
     if (!m_settingsDialog)
         m_settingsDialog = new SettingsDialog(m_config, m_i18n, this);
-    if (m_settingsDialog->isVisible()) {
+
+    const bool alreadyVisible = m_settingsDialog->isVisible();
+
+    // Keep the modeless dialog above the always-on-top lyric window. The flag
+    // must be applied before show(): changing window flags on a visible widget
+    // hides it. Best-effort only — some Wayland compositors ignore the hint.
+    if (!alreadyVisible
+        && !(m_settingsDialog->windowFlags() & Qt::WindowStaysOnTopHint)) {
+        m_settingsDialog->setWindowFlag(Qt::WindowStaysOnTopHint, true);
+    }
+
+    // A minimized dialog must be restored before raise() can bring it back.
+    m_settingsDialog->setWindowState(m_settingsDialog->windowState()
+                                     & ~Qt::WindowMinimized);
+
+    if (alreadyVisible) {
         m_settingsDialog->raise();
         m_settingsDialog->activateWindow();
         return;
     }
+
     m_settingsDialog->show();
     m_settingsDialog->raise();
     m_settingsDialog->activateWindow();
+}
+
+void LyricWindow::faint()
+{
+    m_shouldBeFaint = true;
+
+    // Reference #container.hide:not(.lock):hover — if the pointer is already
+    // over the window and it is unlocked, the hover rule wins and the window
+    // stays bright instead of fading underneath the cursor.
+    if (!m_config.isLock() && underMouse()) {
+        m_hoverOverride = true;
+        animateFadeTo(1.0);
+        return;
+    }
+    m_hoverOverride = false;
+    animateFadeTo(kFaintFactor);
+}
+
+void LyricWindow::unfaint()
+{
+    m_shouldBeFaint = false;
+    m_hoverOverride = false;
+    animateFadeTo(1.0);
+}
+
+void LyricWindow::animateFadeTo(double target)
+{
+    // Retarget smoothly: a running fade is stopped, then restarted from the
+    // last delivered frame (m_fadeFactor is kept live by valueChanged) to the
+    // new target. QVariantAnimation::stop() does not emit a final valueChanged,
+    // so m_fadeFactor never jumps to the old end value mid-retarget.
+    if (qAbs(m_fadeFactor - target) < 1e-6) {
+        m_fadeAnim->stop();
+        return;
+    }
+    m_fadeAnim->stop();
+    m_fadeAnim->setStartValue(m_fadeFactor);
+    m_fadeAnim->setEndValue(target);
+    m_fadeAnim->start();
+}
+
+void LyricWindow::applyFade()
+{
+    m_contentEffect->setOpacity(kBodyOpacity * m_fadeFactor);
+    update(); // Repaint the pane with the new opacity.
+}
+
+void LyricWindow::updateHoverHidePolling()
+{
+    m_hoverHideActive = m_config.get(QStringLiteral("desktopLyric.isHoverHide")).toBool()
+        && m_config.isLock();
+
+    if (!m_hoverHideActive) {
+        m_hoverPollTimer->stop();
+        unfaint(); // Hover-hide off (or unlocked): content returns to full.
+        return;
+    }
+    if (!isVisible()) {
+        m_hoverPollTimer->stop(); // Re-armed by showEvent.
+        return;
+    }
+    m_hoverPollTimer->start();
+    pollHoverHide(); // Sample immediately; do not wait for the first tick.
+}
+
+void LyricWindow::pollHoverHide()
+{
+    // Hidden (or about to be): stop polling against stale geometry instead of
+    // fading under the cursor; showEvent re-arms the poll.
+    if (!m_hoverHideActive || !isVisible()) {
+        m_hoverPollTimer->stop();
+        return;
+    }
+    // Same faint()/unfaint() machinery and the same 300 ms fade as pause-hide:
+    // cursor over the locked window dims the content to kFaintFactor, leaving
+    // it restores full opacity.
+    if (isCursorInsideWindow())
+        faint();
+    else
+        unfaint();
+}
+
+bool LyricWindow::isCursorInsideWindow() const
+{
+    const QRect geo = frameGeometry();
+    if (!geo.isValid())
+        return false;
+    return geo.contains(QCursor::pos());
 }
 
 void LyricWindow::paintEvent(QPaintEvent*)
@@ -185,10 +366,42 @@ void LyricWindow::paintEvent(QPaintEvent*)
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
 
-    const QRectF pane = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
-    painter.setPen(QPen(kPaneBorder, 1.0));
+    // Reference body { opacity: .8 } compounded with the container fade: the
+    // pane's static rgba(0,0,0,.2) background dims alongside the content.
+    painter.setOpacity(kBodyOpacity * m_fadeFactor);
+
+    const QRectF pane = QRectF(rect());
+    painter.setPen(Qt::NoPen);
     painter.setBrush(kPaneFill);
-    painter.drawRoundedRect(pane, kCornerRadius, kCornerRadius);
+    painter.drawRoundedRect(pane, kRadiusBorder, kRadiusBorder);
+}
+
+void LyricWindow::enterEvent(QEnterEvent* event)
+{
+    // Reference #container.hide:not(.lock):hover — hovering the fainted window
+    // while unlocked restores full content opacity; leaving fades it back.
+    if (m_shouldBeFaint && !m_config.isLock()) {
+        m_hoverOverride = true;
+        animateFadeTo(1.0);
+    }
+    // Task F: hovering the window reveals the control bar (reference
+    // #main:hover .control-bar). Fires on boundary crossing only, so the bar
+    // never flickers while its own buttons are hovered (a child of this
+    // window).
+    m_controlBar->setHovered(true);
+    QWidget::enterEvent(event);
+}
+
+void LyricWindow::leaveEvent(QEvent* event)
+{
+    // Only fade back if this window was brightened by hover; a plain leave
+    // while playing (m_shouldBeFaint false) must not dim the window.
+    if (m_hoverOverride) {
+        m_hoverOverride = false;
+        animateFadeTo(kFaintFactor);
+    }
+    m_controlBar->setHovered(false);
+    QWidget::leaveEvent(event);
 }
 
 void LyricWindow::showEvent(QShowEvent* event)
@@ -200,6 +413,7 @@ void LyricWindow::showEvent(QShowEvent* event)
         applyWindowGeometry();
     }
     updateAlwaysOnTopLoop();
+    updateHoverHidePolling(); // (Re)start the hover-hide cursor poll on show.
 }
 
 void LyricWindow::resizeEvent(QResizeEvent* event)
@@ -207,27 +421,67 @@ void LyricWindow::resizeEvent(QResizeEvent* event)
     QWidget::resizeEvent(event);
     m_contentContainer->setGeometry(rect());
     relayoutResizeHandles();
+
+    // A compositor-native resize delivers a stream of resize events; re-arm
+    // the persistence timer so the final size is flushed once it settles.
+    if (m_nativeResizeActive)
+        m_nativeOpSaveTimer->start();
 }
 
 void LyricWindow::mousePressEvent(QMouseEvent* event)
 {
-    if (m_config.isLock()) {
+    if (m_config.isLock() || event->button() != Qt::LeftButton) {
         QWidget::mousePressEvent(event);
         return;
     }
 
-    if (event->button() == Qt::LeftButton) {
-        m_dragging = true;
-        m_dragOffset = event->globalPosition().toPoint() - frameGeometry().topLeft();
-        event->accept();
-        return;
+    // Window-drag press (Task E routing): the reference moves the window from
+    // anywhere except lyric text. Text presses never reach this handler —
+    // LyricRenderer owns them for its scroll-drag — and bar buttons plus the
+    // resize handles consume theirs, so any press left here (ControlBar
+    // background, pane gaps, margins) is a drag region. That keeps the user
+    // override (drag from the top control panel) and extends dragging to the
+    // non-text lyric-area presses that escape the renderer.
+    beginWindowDrag(event->globalPosition().toPoint());
+    event->accept();
+}
+
+void LyricWindow::beginWindowDrag(const QPoint& globalPos)
+{
+    m_dragging = true;
+    // A previous native move may have ended without a release event reaching
+    // us; clear the stale flag so this press can still use the manual path
+    // when the platform declines a new native move.
+    m_nativeMoveActive = false;
+    m_dragOffset = globalPos - frameGeometry().topLeft();
+
+    // Compositor-native move: the system keeps the grab point under the cursor
+    // and delivers move events while it moves the window (X11 + Wayland);
+    // manual move() fights Wayland compositors. When the platform cannot move
+    // natively (offscreen test platform, WMs without _NET_WM_MOVERESIZE), fall
+    // back to the manual Task C drag below (mouseMoveEvent / mouseReleaseEvent).
+    if (QWindow* handle = windowHandle(); handle && handle->startSystemMove()) {
+        m_nativeMoveActive = true;
+        m_nativeOpSaveTimer->start();
     }
-    QWidget::mousePressEvent(event);
+}
+
+void LyricWindow::moveEvent(QMoveEvent* event)
+{
+    QWidget::moveEvent(event);
+    // A compositor-native move drives geometry from the system; every move
+    // event re-arms the persistence timer so x/y is flushed once the drag
+    // settles (release events are not reliably delivered during a system move).
+    if (m_nativeMoveActive)
+        m_nativeOpSaveTimer->start();
 }
 
 void LyricWindow::mouseMoveEvent(QMouseEvent* event)
 {
-    if (!m_dragging) {
+    // During a compositor-native move the system owns the geometry; a manual
+    // move() here would fight it. The manual Task C fallback below only runs
+    // when the platform could not start a native move.
+    if (m_nativeMoveActive || !m_dragging) {
         QWidget::mouseMoveEvent(event);
         return;
     }
@@ -245,7 +499,12 @@ void LyricWindow::mouseReleaseEvent(QMouseEvent* event)
 {
     if (m_dragging && event->button() == Qt::LeftButton) {
         m_dragging = false;
-        saveBounds(); // config.save() debounces the actual write.
+        // Some platforms deliver the release even after a native move; stop
+        // the pending debounce and persist immediately. On platforms that do
+        // not, moveEvent's re-armed timer performs this same save.
+        m_nativeMoveActive = false;
+        m_nativeOpSaveTimer->stop();
+        saveBounds(); // Saves x/y/size and flushes them to disk immediately.
         event->accept();
         return;
     }
@@ -257,10 +516,13 @@ void LyricWindow::applySetting(const QString& key, const QVariant& value)
     if (key == QStringLiteral("desktopLyric.isLock")) {
         if (value.toBool() && m_resizing) {
             m_resizing = false; // Lock can flip mid-drag; stop resizing cleanly.
+            m_nativeResizeActive = false;
+            m_nativeOpSaveTimer->stop();
             saveBounds();
         }
         applyTransparentForMouseEvents();
         updateResizeHandles();
+        updateHoverHidePolling(); // Hover-hide only runs while locked.
     } else if (key == QStringLiteral("desktopLyric.isAlwaysOnTop")) {
         setWindowFlagKeepingVisible(Qt::WindowStaysOnTopHint, value.toBool());
         updateAlwaysOnTopLoop();
@@ -269,6 +531,8 @@ void LyricWindow::applySetting(const QString& key, const QVariant& value)
     } else if (key == QStringLiteral("desktopLyric.isLockScreen")) {
         if (value.toBool())
             clampToAvailableGeometry();
+    } else if (key == QStringLiteral("desktopLyric.isHoverHide")) {
+        updateHoverHidePolling(); // Re-arm/stop the cursor poll on toggle.
     } else if (key == QStringLiteral("desktopLyric.width")
                || key == QStringLiteral("desktopLyric.height")) {
         resizeToConfigSize();
@@ -307,7 +571,11 @@ void LyricWindow::applyWindowGeometry()
                          available.y() + (available.height() - height) / 2);
     }
 
-    if (m_config.isLockScreen())
+    // A stored position is trusted only while it is still visible on some
+    // screen; one that has drifted off-screen (monitor unplugged, resolution
+    // change) is rescued back into the primary screen's available area so the
+    // window is always findable on restart.
+    if (!intersectsAnyScreen(topLeft, QSize(width, height)))
         topLeft = clampedTopLeft(topLeft, QSize(width, height), available);
 
     resize(width, height);
@@ -372,16 +640,40 @@ void LyricWindow::setWindowFlagKeepingVisible(Qt::WindowType flag, bool on)
 
 void LyricWindow::saveBounds()
 {
-    m_config.set(QStringLiteral("desktopLyric.x"), pos().x());
-    m_config.set(QStringLiteral("desktopLyric.y"), pos().y());
-    m_config.set(QStringLiteral("desktopLyric.width"), width());
-    m_config.set(QStringLiteral("desktopLyric.height"), height());
+    // Snapshot the whole bounds first: each config.set() below synchronously
+    // re-applies geometry (applySetting -> applySavedPosition/resizeToConfigSize),
+    // so reading width()/height() after the first set() would capture a
+    // partially re-applied size and corrupt the saved values.
+    const int x = pos().x();
+    const int y = pos().y();
+    const int w = width();
+    const int h = height();
+
+    m_config.set(QStringLiteral("desktopLyric.x"), x);
+    m_config.set(QStringLiteral("desktopLyric.y"), y);
+    m_config.set(QStringLiteral("desktopLyric.width"), w);
+    m_config.set(QStringLiteral("desktopLyric.height"), h);
+    // Persist immediately: the 500 ms debounced write would be lost on a crash
+    // or kill right after a drag/resize, and the position must survive any
+    // abrupt exit to be remembered on the next start.
+    m_config.flush();
 }
 
 QRect LyricWindow::primaryScreenAvailableGeometry() const
 {
     const QScreen* screen = QGuiApplication::primaryScreen();
     return screen ? screen->availableGeometry() : QRect();
+}
+
+bool LyricWindow::intersectsAnyScreen(const QPoint& topLeft, const QSize& size) const
+{
+    const QRect windowRect(topLeft, size);
+    const auto screens = QGuiApplication::screens();
+    for (const QScreen* screen : screens) {
+        if (screen->availableGeometry().intersects(windowRect))
+            return true;
+    }
+    return false;
 }
 
 QPoint LyricWindow::clampedTopLeft(const QPoint& topLeft, const QSize& windowSize, const QRect& available) const
@@ -402,18 +694,23 @@ void LyricWindow::updateResizeHandles()
 void LyricWindow::relayoutResizeHandles()
 {
     const int h = kResizeHandleSize;
-    const int w = width();
-    const int hh = height();
+    const int w = qMax(0, width());
+    const int hh = qMax(0, height());
+    // With no minimum size the window can shrink below 2 * handle width; the
+    // side/top strips must never get a negative dimension, and the 8 px corner
+    // squares stay put so an edge is always grabbable.
+    const int sideHeight = qMax(0, hh - 2 * h);
+    const int topWidth = qMax(0, w - 2 * h);
 
     // Order matches the constructor's m_resizeHandles[] assignment.
     m_resizeHandles[0]->setGeometry(0, 0, h, h);              // TopLeft
     m_resizeHandles[1]->setGeometry(w - h, 0, h, h);          // TopRight
     m_resizeHandles[2]->setGeometry(0, hh - h, h, h);         // BottomLeft
     m_resizeHandles[3]->setGeometry(w - h, hh - h, h, h);     // BottomRight
-    m_resizeHandles[4]->setGeometry(0, h, h, hh - 2 * h);     // Left
-    m_resizeHandles[5]->setGeometry(w - h, h, h, hh - 2 * h); // Right
-    m_resizeHandles[6]->setGeometry(h, 0, w - 2 * h, h);      // Top
-    m_resizeHandles[7]->setGeometry(h, hh - h, w - 2 * h, h); // Bottom
+    m_resizeHandles[4]->setGeometry(0, h, h, sideHeight);     // Left
+    m_resizeHandles[5]->setGeometry(w - h, h, h, sideHeight); // Right
+    m_resizeHandles[6]->setGeometry(h, 0, topWidth, h);       // Top
+    m_resizeHandles[7]->setGeometry(h, hh - h, topWidth, h);  // Bottom
 }
 
 void LyricWindow::beginResize(ResizeEdge edge, const QPoint& globalPos)
@@ -422,8 +719,45 @@ void LyricWindow::beginResize(ResizeEdge edge, const QPoint& globalPos)
         return;
     m_resizeEdge = edge;
     m_resizing = true;
+    // A previous native resize may have ended without a release event reaching
+    // us; clear the stale flag so this press can still use the manual path
+    // when the platform declines a new native resize.
+    m_nativeResizeActive = false;
     m_resizeStartMouse = globalPos;
     m_resizeStartGeometry = frameGeometry();
+
+    // Compositor-native resize: the system drives the requested edges while Qt
+    // delivers the resize event stream (X11 + Wayland; manual setGeometry()
+    // fights Wayland compositors). When the platform cannot resize natively
+    // (offscreen test platform), the manual Task C path — the handle's
+    // mouseMoveEvent -> updateResize() and release -> endResize() — stays.
+    if (QWindow* handle = windowHandle(); handle && handle->startSystemResize(nativeEdgesFor(edge))) {
+        m_nativeResizeActive = true;
+        m_nativeOpSaveTimer->start();
+    }
+}
+
+Qt::Edges LyricWindow::nativeEdgesFor(ResizeEdge edge) const
+{
+    switch (edge) {
+    case ResizeEdge::TopLeft:
+        return Qt::TopEdge | Qt::LeftEdge;
+    case ResizeEdge::TopRight:
+        return Qt::TopEdge | Qt::RightEdge;
+    case ResizeEdge::BottomLeft:
+        return Qt::BottomEdge | Qt::LeftEdge;
+    case ResizeEdge::BottomRight:
+        return Qt::BottomEdge | Qt::RightEdge;
+    case ResizeEdge::Left:
+        return Qt::LeftEdge;
+    case ResizeEdge::Right:
+        return Qt::RightEdge;
+    case ResizeEdge::Top:
+        return Qt::TopEdge;
+    case ResizeEdge::Bottom:
+        return Qt::BottomEdge;
+    }
+    return Qt::Edges();
 }
 
 void LyricWindow::updateResize(const QPoint& globalPos)
@@ -432,7 +766,8 @@ void LyricWindow::updateResize(const QPoint& globalPos)
         m_resizing = false;
         return;
     }
-    if (!m_resizing)
+    // A native resize owns the geometry; the manual delta math must not run.
+    if (!m_resizing || m_nativeResizeActive)
         return;
     setGeometry(resizeGeometryFor(globalPos));
 }
@@ -442,7 +777,12 @@ void LyricWindow::endResize()
     if (!m_resizing)
         return;
     m_resizing = false;
-    saveBounds(); // config.save() debounces the actual write.
+    // Some platforms deliver the release even after a native resize; stop the
+    // pending debounce and persist immediately. On platforms that do not,
+    // resizeEvent's re-armed timer performs this same save.
+    m_nativeResizeActive = false;
+    m_nativeOpSaveTimer->stop();
+    saveBounds(); // Saves x/y/size and flushes them to disk immediately.
 }
 
 QRect LyricWindow::resizeGeometryFor(const QPoint& globalPos) const
@@ -482,30 +822,35 @@ QRect LyricWindow::resizeGeometryFor(const QPoint& globalPos) const
         break;
     }
 
-    // Enforce the minimum first so shrinking below 38 px keeps the opposite
-    // edge fixed instead of letting the window collapse.
-    if (geo.width() < kMinWindowWidth) {
-        if (m_resizeEdge == ResizeEdge::Left
-            || m_resizeEdge == ResizeEdge::TopLeft
-            || m_resizeEdge == ResizeEdge::BottomLeft)
-            geo.setLeft(geo.right() - kMinWindowWidth + 1);
-        else
-            geo.setRight(geo.left() + kMinWindowWidth - 1);
-    }
-    if (geo.height() < kMinWindowHeight) {
-        if (m_resizeEdge == ResizeEdge::Top
-            || m_resizeEdge == ResizeEdge::TopLeft
-            || m_resizeEdge == ResizeEdge::TopRight)
-            geo.setTop(geo.bottom() - kMinWindowHeight + 1);
-        else
-            geo.setBottom(geo.top() + kMinWindowHeight - 1);
-    }
+    // No minimum size: an edge may collapse the window to a zero-wide strip,
+    // but the rect must never invert (left <= right, top <= bottom). The
+    // moving edge stops at its opposite edge, like a normal window.
+    const auto keepNonInverted = [this, &geo] {
+        if (geo.width() < 0) {
+            if (m_resizeEdge == ResizeEdge::Left
+                || m_resizeEdge == ResizeEdge::TopLeft
+                || m_resizeEdge == ResizeEdge::BottomLeft)
+                geo.setLeft(geo.right());
+            else
+                geo.setRight(geo.left());
+        }
+        if (geo.height() < 0) {
+            if (m_resizeEdge == ResizeEdge::Top
+                || m_resizeEdge == ResizeEdge::TopLeft
+                || m_resizeEdge == ResizeEdge::TopRight)
+                geo.setTop(geo.bottom());
+            else
+                geo.setBottom(geo.top());
+        }
+    };
+    keepNonInverted();
 
     if (m_config.isLockScreen()) {
         const QRect available = primaryScreenAvailableGeometry();
         if (available.isValid()) {
-            // Every edge stays inside the available area; on any screen at
-            // least 38 px wide the minimum-size clamp above still holds.
+            // Every edge stays inside the available area. Re-snap afterwards:
+            // clamping one edge can push a rect that sits fully off one side
+            // into an inverted shape again.
             if (geo.left() < available.left())
                 geo.setLeft(available.left());
             if (geo.right() > available.right())
@@ -514,6 +859,7 @@ QRect LyricWindow::resizeGeometryFor(const QPoint& globalPos) const
                 geo.setTop(available.top());
             if (geo.bottom() > available.bottom())
                 geo.setBottom(available.bottom());
+            keepNonInverted();
         }
     }
     return geo;
