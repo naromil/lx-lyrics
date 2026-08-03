@@ -148,6 +148,12 @@ int main(int argc, char* argv[])
                              appContext.pauseHide->setPlayState(false);
                          });
 
+        // Host control messages (§5): open_settings raises the app's own
+        // configuration dialog — the same path as Ctrl+, / the control-bar gear
+        // button — so the host can reconfigure even a locked lyric window.
+        QObject::connect(ws, &WsClient::openSettingsRequested,
+                         window, &LyricWindow::openSettingsDialog);
+
         // Spectrum visualizer wiring (task 2.11, unchanged): the bridge owns
         // all spectrum-only couplings (frames -> widget, requests -> host, the
         // (isPlay && audioVisualization) gate). The controller does NOT own it.

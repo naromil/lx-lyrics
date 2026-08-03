@@ -109,6 +109,11 @@ void HostServer::sendSetStop()
     sendJson(QStringLiteral("set_stop"), {});
 }
 
+void HostServer::sendOpenSettings()
+{
+    sendJson(QStringLiteral("open_settings"), {});
+}
+
 void HostServer::sendAnalyserData(const QByteArray& data)
 {
     Q_ASSERT(data.size() == 128);

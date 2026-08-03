@@ -92,6 +92,9 @@ signals:
     void playReceived(qint64 timeMs);
     void pauseReceived();
     void stopReceived();
+    // Host requested the app to open its configuration dialog
+    // ({"v":1,"action":"open_settings"}); no payload.
+    void openSettingsRequested();
     // Exactly 128 bytes of log-scaled spectrum magnitudes.
     void analyserDataReceived(const QByteArray& data);
 

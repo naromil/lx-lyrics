@@ -284,6 +284,8 @@ void WsClient::dispatchIncomingText(const QString& frame)
         emit pauseReceived();
     } else if (action == QStringLiteral("set_stop")) {
         emit stopReceived();
+    } else if (action == QStringLiteral("open_settings")) {
+        emit openSettingsRequested();
     } else {
         failProtocol(QStringLiteral("unknown action '%1'").arg(action));
     }

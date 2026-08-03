@@ -96,6 +96,7 @@ All host→app messages are JSON text frames **except** `send_analyser_data_arra
 | `set_play` | `time` | Resume/seek to `time` (ms). App resumes/restarts playback of the lyric timer at that position. |
 | `set_pause` | *(none)* | Pause lyric rendering. |
 | `set_stop` | *(none)* | Stop playback entirely; clear the active lyric line. |
+| `open_settings` | *(none)* | Requests the lyrics app to open its configuration dialog (equivalent to the app's settings gear / Ctrl+,). Used by hosts to let users reconfigure a locked lyrics window. |
 | `send_analyser_data_array` | *(binary frame)* | Spectrum data. **Exactly 128 bytes**, each byte 0–255, log-scaled spectrum magnitudes. See conversion contract below. |
 
 ### `send_analyser_data_array` conversion contract
@@ -174,6 +175,9 @@ spectrum:
 req bars: app  → host    {"v":1,"action":"get_analyser_data_array"}
 bars:     host → app     <binary frame, exactly 128 bytes>
 
+open settings (from the host plugin's LX Lyrics settings page):
+          host → app     {"v":1,"action":"open_settings"}      # app opens/raises its config dialog
+
 close:    host socket closes → app started with --exit-on-disconnect terminates.
 ```
 
@@ -183,4 +187,5 @@ close:    host socket closes → app started with --exit-on-disconnect terminate
 
 - **`tlrc` / `rlrc` / `lxlrc` are carried but empty in v1 from the Fooyin plugin.** v1 lyric sources are embedded tags and local `.lrc` files only. The wire format already supports them (§5/§6) so richer sources can be enabled without a protocol change.
 - **`set_playbackRate` is reserved.** Fooyin sends `1.0`; the field exists so rate-capable hosts can use it later.
+- **`open_settings` is a control message, not a state message.** It carries no payload and expects no reply; the app opens its configuration dialog, or raises an already-open one. Apps built before this action treat it as an unknown `action` and close the connection per §7, so hosts SHOULD only send it when they know the connected app supports it (e.g. a version-negotiated spawn).
 - **Wayland always-on-top caveat is app-level, not protocol.** Making the lyric window stay on top under Wayland compositors is entirely the display app's concern and out of scope for this wire contract.

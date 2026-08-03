@@ -1,14 +1,10 @@
 {
-    "IID": "org.fooyin.fooyin.plugin/1.0",
-    "MetaData": {
-        "Name": "LX Lyrics",
-        "Version": "@PROJECT_VERSION@",
-        "Category": "Lyrics",
-        "Author": "naromil",
-        "Copyright": "2026, naromil",
-        "License": ["GPL-3.0-only"],
-        "Url": "https://github.com/naromil/lx-music-desktop-lyrics",
-        "Description": "Desktop lyrics display bridge — spawns the standalone lx-lyrics app and feeds it track/lyrics/playback/spectrum over a local WebSocket"
-    },
-    "className": "LxLyricsPlugin"
+    "Name": "LX Lyrics",
+    "Version": "@PROJECT_VERSION@",
+    "Category": "Lyrics",
+    "Author": "naromil",
+    "Copyright": "Copyright © 2026, naromil",
+    "License": ["GPL-3.0-only"],
+    "Url": "https://github.com/naromil/lx-music-desktop-lyrics",
+    "Description": "Desktop lyrics display bridge — spawns the standalone lx-lyrics app and feeds it track/lyrics/playback/spectrum over a local WebSocket"
 }

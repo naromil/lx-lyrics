@@ -40,6 +40,9 @@ public:
     void sendSetPlay(qint64 time);
     void sendSetPause();
     void sendSetStop();
+    /// Requests the display app to open its configuration dialog
+    /// ({"v":1,"action":"open_settings"}); no payload fields.
+    void sendOpenSettings();
     /// Binary frame, must be exactly 128 bytes per protocol.md §5.
     void sendAnalyserData(const QByteArray& data);
 

@@ -58,6 +58,19 @@ void LxLyricsPlugin::initialise(const Fooyin::GuiPluginContext& context)
     // valid from GuiPlugin::initialise onwards (see settingsmanager.h).
     m_settingsPage = new LxLyricsSettingsPage(m_settingsManager, this);
 
+    // "Open lyrics settings" button on that page: clicking it asks the running
+    // lyrics app to open its own configuration dialog (protocol.md §5
+    // open_settings) — so the user can reconfigure even when the lyric window
+    // is locked. sendOpenSettings() is a safe no-op when the app is not
+    // running; the callback dereferences m_hostServer at click time, which is
+    // safe because startDesktopLyrics() creates it before the app exists and
+    // stopDesktopLyrics() resets it before the app is gone.
+    m_settingsPage->setOpenSettingsCallback([this] {
+        if (m_hostServer != nullptr) {
+            m_hostServer->sendOpenSettings();
+        }
+    });
+
     // Feed the AppSpawner on setting change (the page's apply() writes through
     // SettingsManager::set, which notifies these subscribers). The spawner is
     // also fed inside startDesktopLyrics() before every launch.
