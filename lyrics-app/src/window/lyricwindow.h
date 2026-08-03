@@ -13,6 +13,7 @@
 #include <QVariant>
 #include <QWidget>
 
+class QCloseEvent;
 class QEnterEvent;
 class QGraphicsOpacityEffect;
 class QMouseEvent;
@@ -70,6 +71,7 @@ protected:
     void showEvent(QShowEvent* event) override;
     void moveEvent(QMoveEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
+    void closeEvent(QCloseEvent* event) override;
     void enterEvent(QEnterEvent* event) override;
     void leaveEvent(QEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;

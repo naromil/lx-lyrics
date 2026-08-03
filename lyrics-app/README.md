@@ -101,6 +101,10 @@ same lyrics encoded as GBK bytes) are rerunnable e2e fixtures for the encoding p
 Always-on-top, click-through, and window transparency are X11-native best effort. Under a Wayland
 compositor Qt has no standard way to raise the window above others — use KDE window rules
 (System Settings → Window Management → Window Rules) to force e.g. **Keep Above** for the app.
+The app forces the X11 (xcb) platform at startup so client-side `move()` is honored and the saved
+window position/size restores reliably on restart (Wayland compositors ignore client-set
+positions). Set `QT_QPA_PLATFORM` beforehand to override the forced platform. Always-on-top
+remains compositor best-effort on Wayland — rely on the KDE window rules there.
 
 ## License
 

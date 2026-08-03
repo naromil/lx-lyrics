@@ -7,6 +7,8 @@
 #include "window/lyricwindow.h"
 
 #include <QCursor>
+#include <QCloseEvent>
+#include <QCoreApplication>
 #include <QEnterEvent>
 #include <QGraphicsOpacityEffect>
 #include <QGuiApplication>
@@ -168,6 +170,16 @@ LyricWindow::LyricWindow(DesktopLyricConfig& config, TranslationManager& i18n)
     connect(m_nativeOpSaveTimer, &QTimer::timeout, this,
             [this] { saveBounds(); });
 
+    // Quit-time bounds persistence: the host plugin exits this app with
+    // QCoreApplication::quit() (--exit-on-disconnect) when its socket drops,
+    // and that path never delivers a closeEvent to the window — the final
+    // position would be lost if the last native move happened < 200 ms before
+    // the quit (the debounce timer above never fires). aboutToQuit covers every
+    // event-loop exit, closeEvent covers explicit window closes; saveBounds()
+    // is idempotent, so the two may both run.
+    connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, this,
+            [this] { saveBounds(); });
+
     // Hover-hide (Task H.1): 500 ms cursor poll (reference mouseCheckTools)
     // re-armed while desktopLyric.isHoverHide && isLock. A locked window is
     // mouse-transparent, so enter/leave events never fire; the cursor position
@@ -263,6 +275,11 @@ void LyricWindow::openSettingsDialog()
                                      & ~Qt::WindowMinimized);
 
     if (alreadyVisible) {
+        // The dialog can exist in a hidden state (e.g. a parent window-flag
+        // flip hid it with the window); re-show it before raising, or the
+        // settings stay unreachable until restart.
+        if (!m_settingsDialog->isVisible())
+            m_settingsDialog->show();
         m_settingsDialog->raise();
         m_settingsDialog->activateWindow();
         return;
@@ -411,6 +428,15 @@ void LyricWindow::showEvent(QShowEvent* event)
     if (!m_geometryApplied) {
         m_geometryApplied = true;
         applyWindowGeometry();
+        // Startup diagnostics for the position-restore report: Wayland ignores
+        // QWidget::move(), so log which platform ran, what geometry was
+        // applied, and what the config wanted — if the position is still lost
+        // on restart, this shows whether the platform honored the move().
+        qInfo() << "[LX Lyrics] platform:" << QGuiApplication::platformName()
+                << "geometry:" << geometry()
+                << "config x/y:"
+                << m_config.get(QStringLiteral("desktopLyric.x"))
+                << m_config.get(QStringLiteral("desktopLyric.y"));
     }
     updateAlwaysOnTopLoop();
     updateHoverHidePolling(); // (Re)start the hover-hide cursor poll on show.
@@ -426,6 +452,15 @@ void LyricWindow::resizeEvent(QResizeEvent* event)
     // the persistence timer so the final size is flushed once it settles.
     if (m_nativeResizeActive)
         m_nativeOpSaveTimer->start();
+}
+
+void LyricWindow::closeEvent(QCloseEvent* event)
+{
+    // Persist the final bounds on an explicit close (WM close, session end,
+    // quit button) before teardown; the quit-boundary save in the constructor
+    // covers event-loop exits that never deliver this event. Idempotent.
+    saveBounds();
+    QWidget::closeEvent(event);
 }
 
 void LyricWindow::mousePressEvent(QMouseEvent* event)
@@ -617,9 +652,21 @@ void LyricWindow::clampToAvailableGeometry()
 
 void LyricWindow::applyTransparentForMouseEvents()
 {
-    const bool ignoreMouse = m_config.isLock()
-        && !m_config.get(QStringLiteral("desktopLyric.isHoverHide")).toBool();
-    setAttribute(Qt::WA_TransparentForMouseEvents, ignoreMouse);
+    // A locked lyric window is ALWAYS click-through: the pointer passes
+    // straight through to whatever is underneath. isHoverHide must not opt out
+    // — hover-hide runs off the 500 ms cursor poll (m_hoverPollTimer), not
+    // mouse events, so a locked window never needs to consume pointer input.
+    const bool locked = m_config.isLock();
+    setAttribute(Qt::WA_TransparentForMouseEvents, locked);
+
+    // The window flag is the documented input-transparency mechanism ("Window
+    // is transparent to input events, that is, all input events are passed to
+    // the window behind it") and covers platforms where the attribute alone is
+    // unreliable. Best-effort on Wayland: KWin rules cannot express input
+    // transparency, so click-through depends on the compositor honoring either
+    // mechanism. The hide/show inside setWindowFlagKeepingVisible preserves an
+    // open settings dialog automatically (Bug 3 fix).
+    setWindowFlagKeepingVisible(Qt::WindowTransparentForInput, locked);
 }
 
 void LyricWindow::updateAlwaysOnTopLoop()
@@ -632,14 +679,37 @@ void LyricWindow::updateAlwaysOnTopLoop()
 
 void LyricWindow::setWindowFlagKeepingVisible(Qt::WindowType flag, bool on)
 {
+    // Early exit: QWidget::setWindowFlags already no-ops on an unchanged flag,
+    // but this guard makes the intent explicit — an unchanged flag must never
+    // trigger the hide/show cycle below (the 500 ms always-on-top re-assert
+    // would otherwise flicker the window and re-raise it every tick).
+    if (windowFlags().testFlag(flag) == on)
+        return;
+
+    // Changing window flags hides the widget — and with it any modeless child
+    // dialog (the settings dialog). Qt does NOT re-show the child when the
+    // parent is re-shown, so it must be brought back explicitly.
+    const bool dialogWasVisible = m_settingsDialog && m_settingsDialog->isVisible();
     const bool wasVisible = isVisible();
     setWindowFlag(flag, on); // Changing window flags hides the widget.
-    if (wasVisible)
+    if (wasVisible) {
         show();
+        if (dialogWasVisible) {
+            m_settingsDialog->show();
+            m_settingsDialog->raise();
+        }
+    }
 }
 
 void LyricWindow::saveBounds()
 {
+    // Startup guard: before showEvent applies the config geometry,
+    // pos()/size() are pre-geometry defaults that would overwrite the persisted
+    // position with a stale one. Safe to call from any exit boundary after the
+    // window has been shown; a no-op before it.
+    if (!m_geometryApplied)
+        return;
+
     // Snapshot the whole bounds first: each config.set() below synchronously
     // re-applies geometry (applySetting -> applySavedPosition/resizeToConfigSize),
     // so reading width()/height() after the first set() would capture a

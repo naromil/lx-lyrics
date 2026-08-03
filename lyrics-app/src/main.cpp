@@ -7,6 +7,7 @@
 #include <QApplication>
 #include <QCoreApplication>
 #include <QUrl>
+#include <QtGlobal>
 
 #include <memory>
 #include <utility>
@@ -58,6 +59,13 @@ TrackSnapshot makeDemoTrack()
 
 int main(int argc, char* argv[])
 {
+    // Force the X11 (xcb) platform: client-side window positioning (move()) is
+    // only honored by X11; Wayland compositors ignore client-set positions,
+    // breaking position restore. Respect an explicit user override; fall back
+    // to the platform default otherwise.
+    if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM"))
+        qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("xcb"));
+
     QApplication app(argc, argv);
 
     const CliOptions cli = parseCliOptions(app.arguments());
