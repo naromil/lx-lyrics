@@ -110,14 +110,14 @@ private:
     void drawTextWithStroke(QPainter& p, const QString& text, const QRectF& rect, const QFont& font, const QColor& fill, const QColor& stroke, int strokeWidth);
 
     // Per-group geometry for vertical (column) mode, shared by the layout pass
-    // and the drawing pass so column widths stay consistent.
+    // and the drawing pass so column widths stay consistent. Each text is held
+    // as columns in reading order: wrapped into multiple columns that stack
+    // right-to-left (wrap mode) or as a single elided column (ellipsis mode).
     struct VerticalGroupMetrics {
         QFont mainFont;
         QFont extendedFont;
-        QString mainText;          // word tags stripped, elided to fit
-        QStringList extendedTexts; // word tags stripped, elided to fit
-        int mainColumnWidth = 0;
-        int mainColumnHeight = 0;
+        QStringList mainColumns;             // word tags stripped; wrapped or single elided column
+        QVector<QStringList> extendedColumns; // ditto, one entry per extended line
         int groupWidth = 0;
         int groupHeight = 0;
     };

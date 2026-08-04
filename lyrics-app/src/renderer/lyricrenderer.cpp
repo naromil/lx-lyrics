@@ -186,6 +186,72 @@ QStringList wrapForWidth(const QString& text, const QFontMetrics& fm, int width)
     return rows;
 }
 
+// Greedy word wrap on spaces along the vertical axis (reference .line-content
+// overflow-wrap:break-word in writing-mode: vertical-rl): each character owns
+// one line box (fm.height() + letterSpacing) and a wrapped "line" (column)
+// breaks when the next word would exceed availableHeight. A word that alone
+// does not fit a column is chunked character-by-character. Empty /
+// whitespace-only input stays a single entry, like wrapForWidth.
+QStringList wrapForHeight(const QString& text, const QFontMetrics& fm, int availableHeight, int letterSpacing)
+{
+    if (availableHeight <= 0 || text.isEmpty() || text.trimmed().isEmpty())
+        return { text };
+
+    const int step = fm.height() + letterSpacing;
+    // Max chars per column so that columnHeight(n) = n*step - letterSpacing
+    // never exceeds availableHeight.
+    const int maxChars = (availableHeight + letterSpacing) / step;
+    if (maxChars <= 0)
+        return { text };
+
+    const QStringList words = text.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    QStringList columns;
+    QString column;
+    int columnChars = 0;
+
+    auto startColumn = [&](const QString& first) {
+        column = first;
+        columnChars = first.size();
+    };
+    auto commitColumn = [&]() {
+        if (!column.isEmpty()) {
+            columns << column;
+            column.clear();
+            columnChars = 0;
+        }
+    };
+    // A word longer than maxChars breaks into maxChars-char chunks.
+    auto takeWord = [&](const QString& word) {
+        startColumn(word.left(maxChars));
+        for (int i = maxChars; i < word.size(); i += maxChars) {
+            commitColumn();
+            startColumn(word.mid(i, maxChars));
+        }
+    };
+
+    for (const QString& word : words) {
+        if (column.isEmpty()) {
+            if (word.size() <= maxChars)
+                startColumn(word);
+            else
+                takeWord(word);
+            continue;
+        }
+        if (columnChars + 1 + word.size() <= maxChars) {
+            column += QLatin1Char(' ') + word;
+            columnChars += 1 + word.size();
+        } else {
+            commitColumn();
+            if (word.size() <= maxChars)
+                startColumn(word);
+            else
+                takeWord(word);
+        }
+    }
+    commitColumn();
+    return columns;
+}
+
 } // namespace
 
 LyricRenderer::LyricRenderer(QWidget* parent)
@@ -683,17 +749,37 @@ LyricRenderer::VerticalGroupMetrics LyricRenderer::measureVerticalGroup(const Re
     // letter-spacing applies to all columns.
     const int letterSpacing = kVerticalLetterSpacing;
 
-    m.mainText = elideForHeight(stripWordTags(line.text), mainFm, availableHeight, letterSpacing);
-    m.mainColumnWidth = columnWidth(m.mainText, mainFm);
-    m.mainColumnHeight = columnHeight(m.mainText, mainFm, letterSpacing);
-    m.groupWidth = m.mainColumnWidth;
-    m.groupHeight = m.mainColumnHeight;
+    // Wrap mode mirrors the reference .line-content overflow-wrap:break-word
+    // (writing-mode: vertical-rl): text taller than the container wraps into
+    // columns stacked right-to-left. Ellipsis mode clamps to one column with a
+    // trailing "…" (reference .ellipsis -webkit-line-clamp:1).
+    const QString mainText = stripWordTags(line.text);
+    m.mainColumns = m_ellipsis
+        ? QStringList{ elideForHeight(mainText, mainFm, availableHeight, letterSpacing) }
+        : wrapForHeight(mainText, mainFm, availableHeight, letterSpacing);
+
+    for (const QString& col : m.mainColumns) {
+        m.groupWidth += columnWidth(col, mainFm);
+        m.groupHeight = qMax(m.groupHeight, columnHeight(col, mainFm, letterSpacing));
+    }
+    // Wrapped columns advance by their glyph width plus the letter-spacing
+    // (the reference separates columns with line-height leading; the port
+    // uses the letter-spacing as the inter-column breathing room).
+    if (m.mainColumns.size() > 1)
+        m.groupWidth += letterSpacing * (m.mainColumns.size() - 1);
 
     for (const QString& rawExtended : line.extended) {
-        const QString extText = elideForHeight(stripWordTags(rawExtended), extendedFm, availableHeight, letterSpacing);
-        m.extendedTexts << extText;
-        m.groupWidth += columnWidth(extText, extendedFm);
-        m.groupHeight = qMax(m.groupHeight, columnHeight(extText, extendedFm, letterSpacing));
+        const QString extText = stripWordTags(rawExtended);
+        const QStringList extCols = m_ellipsis
+            ? QStringList{ elideForHeight(extText, extendedFm, availableHeight, letterSpacing) }
+            : wrapForHeight(extText, extendedFm, availableHeight, letterSpacing);
+        m.extendedColumns << extCols;
+        for (const QString& col : extCols) {
+            m.groupWidth += columnWidth(col, extendedFm);
+            m.groupHeight = qMax(m.groupHeight, columnHeight(col, extendedFm, letterSpacing));
+        }
+        if (extCols.size() > 1)
+            m.groupWidth += letterSpacing * (extCols.size() - 1);
     }
     if (!line.extended.isEmpty())
         m.groupWidth += qRound(verticalExtendedGap(m_lineGap)) * line.extended.size();
@@ -800,6 +886,7 @@ void LyricRenderer::drawHorizontalGroup(QPainter& p, const RenderLine& line, int
 
 void LyricRenderer::drawVerticalGroup(QPainter& p, const VerticalGroupMetrics& m, int lineIndex, const QRectF& rect)
 {
+    const QFontMetrics mainFm(m.mainFont);
     const QFontMetrics extendedFm(m.extendedFont);
     const int letterSpacing = kVerticalLetterSpacing; // Every line renders line-mode style.
     const qreal extGap = verticalExtendedGap(m_lineGap);
@@ -808,18 +895,26 @@ void LyricRenderer::drawVerticalGroup(QPainter& p, const VerticalGroupMetrics& m
     // played color, inactive groups stay unplay (color transition included).
     const QColor fill = colorForLine(lineIndex);
 
-    // Main column sits at the right edge; extended columns go left of it, each
-    // separated by the extended gap (reference .extended { margin-right: ... }).
+    // Columns are drawn rightmost-first: in the wrapped flow (writing-mode
+    // vertical-rl) the first column of each text sits at the right edge and
+    // wrapped columns continue to the left, separated by the letter-spacing.
+    // Extended groups sit left of the main group, separated by the extended
+    // gap (reference .extended { margin-right: ... }).
     qreal right = rect.right();
-    const QRectF mainRect(right - m.mainColumnWidth, rect.top(), m.mainColumnWidth, m.mainColumnHeight);
-    drawVerticalText(p, m.mainText, mainRect, m.mainFont, fill, m_shadowColor, kLineStrokeWidth, letterSpacing);
-    right = mainRect.left() - extGap;
-
-    for (const QString& extText : m.extendedTexts) {
-        const int colWidth = columnWidth(extText, extendedFm);
-        const QRectF extRect(right - colWidth, rect.top(), colWidth, m.groupHeight);
-        drawVerticalText(p, extText, extRect, m.extendedFont, fill, m_shadowColor, kLineStrokeWidth, letterSpacing);
-        right = extRect.left() - extGap;
+    auto drawColumns = [&](const QStringList& cols, const QFont& font, const QFontMetrics& fm) {
+        for (int i = 0; i < cols.size(); ++i) {
+            const qreal colWidth = columnWidth(cols.at(i), fm);
+            const QRectF colRect(right - colWidth, rect.top(), colWidth, m.groupHeight);
+            drawVerticalText(p, cols.at(i), colRect, font, fill, m_shadowColor, kLineStrokeWidth, letterSpacing);
+            right = colRect.left();
+            if (i < cols.size() - 1)
+                right -= letterSpacing;
+        }
+    };
+    drawColumns(m.mainColumns, m.mainFont, mainFm);
+    for (const QStringList& extCols : m.extendedColumns) {
+        right -= extGap;
+        drawColumns(extCols, m.extendedFont, extendedFm);
     }
 }
 
