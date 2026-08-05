@@ -86,17 +86,6 @@ Qt::Alignment alignFromString(const QString& align)
     return Qt::AlignHCenter;
 }
 
-// No-lyrics placeholder text: "Name - Singer", falling back to just the name,
-// then to a plain "No lyrics" when the track has no title either.
-QString placeholderTextFor(const QString& name, const QString& singer)
-{
-    if (name.isEmpty())
-        return QStringLiteral("No lyrics");
-    if (singer.isEmpty())
-        return name;
-    return QStringLiteral("%1 - %2").arg(name, singer);
-}
-
 } // namespace
 
 LyricController::LyricController(AppContext& ctx, LyricWindow& window, QObject* parent)
@@ -134,10 +123,11 @@ LyricController::~LyricController() = default;
 
 void LyricController::setTrack(const TrackSnapshot& track)
 {
-    // Remember the metadata: the no-lyrics placeholder falls back to the track
-    // title when the player has no lyric lines to paint.
+    // Remember the metadata: the no-lyrics placeholder shows the track
+    // title/artist/album when the player has no lyric lines to paint.
     m_trackName = track.name;
     m_trackSinger = track.singer;
+    m_trackAlbum = track.album;
 
     applyLyricText(track.lrc, track.tlrc, track.rlrc, track.lxlrc);
 
@@ -251,13 +241,26 @@ void LyricController::reapplyLyricSelection()
 
 void LyricController::showNoLyricsPlaceholder()
 {
-    // A single inactive line in the unplay color: informative but never
-    // mistaken for a real highlight. Replaced by the real lines as soon as a
-    // lyric arrives (pushLyricsToRenderer feeds from the player).
+    // Track title / artist / album as three inactive lines in the unplay
+    // color — centered and never highlighted (setActiveLine(-1) keeps the
+    // active-line color and zoom off), so the window shows the track instead
+    // of a blank pane. Empty fields are skipped; a track with no metadata at
+    // all falls back to a plain "No lyrics". Replaced by the real lines as
+    // soon as a lyric arrives (pushLyricsToRenderer feeds from the player).
     QVector<RenderLine> lines;
-    lines.append(RenderLine{ placeholderTextFor(m_trackName, m_trackSinger), {} });
+    if (m_trackName.isEmpty())
+        lines.append(RenderLine{ QStringLiteral("No lyrics"), {} });
+    else
+        lines.append(RenderLine{ m_trackName, {} });
+    if (!m_trackSinger.isEmpty())
+        lines.append(RenderLine{ m_trackSinger, {} });
+    if (!m_trackAlbum.isEmpty())
+        lines.append(RenderLine{ m_trackAlbum, {} });
     m_renderer->setLines(lines);
     m_renderer->setActiveLine(-1);
+    // Center the block in the viewport; the lines still follow the alignment
+    // (and font/color) settings.
+    m_renderer->setCenteredBlock(true);
 }
 
 void LyricController::pushLyricsToRenderer()
@@ -270,6 +273,7 @@ void LyricController::pushLyricsToRenderer()
     for (const LrcLine& line : playerLines)
         lines.append({ line.text, line.extendedLyrics });
 
+    m_renderer->setCenteredBlock(false); // Real lyrics: back to the scroll layout.
     m_renderer->setLines(lines);
     m_renderer->setActiveLine(m_player->currentLine());
 }
