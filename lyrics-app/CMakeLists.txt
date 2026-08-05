@@ -136,3 +136,20 @@ target_link_libraries(lyrics-app-config-tests PRIVATE
 )
 
 add_test(NAME config COMMAND lyrics-app-config-tests)
+
+# Tests for the LyricRenderer transition + scroll engines (headless/offscreen:
+# fast line changes must not snap colors/zoom back, and the scroll must keep
+# up with line changes that outpace the animation).
+add_executable(lyrics-app-renderer-tests
+    tests/tst_renderer.cpp
+    src/renderer/lyricrenderer.cpp
+)
+
+target_include_directories(lyrics-app-renderer-tests PRIVATE src/)
+
+target_link_libraries(lyrics-app-renderer-tests PRIVATE
+    Qt6::Test
+    Qt6::Widgets
+)
+
+add_test(NAME renderer COMMAND lyrics-app-renderer-tests)
