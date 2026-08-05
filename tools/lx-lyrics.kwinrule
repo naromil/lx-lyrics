@@ -1,5 +1,5 @@
-[LX Lyrics Standalone App]
-Description=LX Lyrics Standalone App
+[LX Lyrics]
+Description=LX Lyrics
 above=true
 aboverule=2
 desktops=\\0
@@ -8,6 +8,5 @@ skiptaskbar=true
 skiptaskbarrule=2
 title=^(?!Desktop Lyric Settings$).*$
 titlematch=3
-types=1
 wmclass=lx-lyrics-app
 wmclassmatch=1
