@@ -148,6 +148,23 @@ QString embeddedLyrics(const Fooyin::Track& track)
             return values.join(QLatin1Char('\n'));
         }
     }
+    // Description-suffixed fallback: TagLib maps a USLT frame with a non-empty
+    // description (e.g. "eng" or a localized label, written by many taggers)
+    // to "LYRICS:<description>" in the property map, so the exact lookups
+    // above miss it. Scan the full extra-tag map once for the suffixed keys.
+    const QStringList suffixedPrefixes{
+        QStringLiteral("LYRICS:"),
+        QStringLiteral("UNSYNCEDLYRICS:"),
+        QStringLiteral("UNSYNCED LYRICS:"),
+    };
+    for (const QString& prefix : suffixedPrefixes) {
+        const auto extraTags = track.extraTags();
+        for (auto it = extraTags.cbegin(); it != extraTags.cend(); ++it) {
+            if (it->first.startsWith(prefix) && !it->second.isEmpty()) {
+                return it->second.join(QLatin1Char('\n'));
+            }
+        }
+    }
     return QString();
 }
 
