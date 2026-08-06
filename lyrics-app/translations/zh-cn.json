@@ -54,6 +54,7 @@
   "setting__desktop_lyric_scroll_align_center": "中心",
   "setting__desktop_lyric_scroll_align_top": "顶部",
   "setting__desktop_lyric_shadow_color": "阴影颜色",
+  "setting__desktop_lyric_show_no_lyric_metadata": "无歌词时显示歌曲信息",
   "setting__desktop_lyric_show_taskbar": "在任务栏显示歌词进程",
   "setting__desktop_lyric_show_taskbar_tip": "此选项作为在录屏软件无法捕获歌词窗口时的变通解决方法",
   "setting__desktop_lyric_unplay_color": "未播放颜色",

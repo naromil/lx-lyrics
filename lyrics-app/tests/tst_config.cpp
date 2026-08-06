@@ -94,6 +94,7 @@ void TestConfig::firstRunSeedsDefaults()
     QCOMPARE(config.get(QStringLiteral("desktopLyric.isDelayScroll")).toBool(), true);
     QCOMPARE(config.get(QStringLiteral("desktopLyric.isLockScreen")).toBool(), false); // !isWin
     QCOMPARE(config.get(QStringLiteral("desktopLyric.isHoverHide")).toBool(), false);
+    QCOMPARE(config.get(QStringLiteral("desktopLyric.isShowNoLyricMetadata")).toBool(), true);
     QCOMPARE(config.get(QStringLiteral("desktopLyric.direction")).toString(), QStringLiteral("horizontal"));
     QCOMPARE(config.get(QStringLiteral("desktopLyric.scrollAlign")).toString(), QStringLiteral("center"));
     QCOMPARE(config.get(QStringLiteral("desktopLyric.width")).toInt(), 300);

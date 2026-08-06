@@ -90,6 +90,7 @@ QVector<CheckboxSpec> generalCheckboxSpecs()
         { "setting__desktop_lyric_ellipsis", "desktopLyric.style.ellipsis" },
         // The reference labels the zoom option with the control-bar tooltip key.
         { "desktop_lyric__lrc_active_zoom_on", "desktopLyric.style.isZoomActiveLrc" },
+        { "setting__desktop_lyric_show_no_lyric_metadata", "desktopLyric.isShowNoLyricMetadata" },
     };
     // QOperatingSystemVersion dropped AnyLinux in Qt 6.11, so detect Linux the
     // same compile-time way DesktopLyricConfig detects its platforms.

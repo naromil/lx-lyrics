@@ -19,7 +19,7 @@ timeout 3 ./build/lx-lyrics-app --demo # expect exit code 124 (timeout kill = no
 
 ## App quirks
 - `main.cpp` forces `QT_QPA_PLATFORM=xcb` before QApplication unless the env var is already set — client-side `move()`/position restore only works under X11. Set `QT_QPA_PLATFORM` beforehand to override. Always-on-top/click-through remain compositor best-effort on Wayland.
-- Config persists to `~/.config/lx-lyrics/config.json` (36 keys, writes debounced 500 ms). Defaults are **user-tuned**, deviating from `references/src/common/defaultSetting.ts` on 8 keys: enable, isAlwaysOnTop, isAlwaysOnTopLoop, fullscreenHide, width(300), fontSize(14), opacity(100), isZoomActiveLrc(true); x/y default null = auto-position. They live ONLY in `DesktopLyricConfig::loadDefaults()` — keep `lyricrenderer.h` member initializers and the config tests in sync.
+- Config persists to `~/.config/lx-lyrics/config.json` (37 keys, writes debounced 500 ms). Defaults are **user-tuned**, deviating from `references/src/common/defaultSetting.ts` on 8 keys: enable, isAlwaysOnTop, isAlwaysOnTopLoop, fullscreenHide, width(300), fontSize(14), opacity(100), isZoomActiveLrc(true); x/y default null = auto-position. They live ONLY in `DesktopLyricConfig::loadDefaults()` — keep `lyricrenderer.h` member initializers and the config tests in sync.
 - When locked the window is transparent and click-through and the ControlBar is hidden — `Ctrl+,` reopens the settings dialog (documented escape hatch).
 
 ## Plugin quirks

@@ -49,6 +49,7 @@ const QString kKeyScrollAlign = QStringLiteral("desktopLyric.scrollAlign");
 const QString kKeyDelayScroll = QStringLiteral("desktopLyric.isDelayScroll");
 const QString kKeyAlign = QStringLiteral("desktopLyric.style.align");
 const QString kKeyIsLock = QStringLiteral("desktopLyric.isLock");
+const QString kKeyShowNoLyricMetadata = QStringLiteral("desktopLyric.isShowNoLyricMetadata");
 
 const QString kKeyPlayLxlrc = QStringLiteral("player.isPlayLxlrc");
 const QString kKeyShowTranslation = QStringLiteral("player.isShowLyricTranslation");
@@ -255,14 +256,19 @@ void LyricController::showNoLyricsPlaceholder()
     // all falls back to a plain "No lyrics". Replaced by the real lines as
     // soon as a lyric arrives (pushLyricsToRenderer feeds from the player).
     QVector<RenderLine> lines;
-    if (m_trackName.isEmpty())
+    if (m_ctx.config.get(kKeyShowNoLyricMetadata).toBool()) {
+        if (m_trackName.isEmpty())
+            lines.append(RenderLine{ QStringLiteral("No lyrics"), {} });
+        else
+            lines.append(RenderLine{ m_trackName, {} });
+        if (!m_trackSinger.isEmpty())
+            lines.append(RenderLine{ m_trackSinger, {} });
+        if (!m_trackAlbum.isEmpty())
+            lines.append(RenderLine{ m_trackAlbum, {} });
+    }
+    // Toggle off, or a track with no metadata at all: the plain literal.
+    if (lines.isEmpty())
         lines.append(RenderLine{ QStringLiteral("No lyrics"), {} });
-    else
-        lines.append(RenderLine{ m_trackName, {} });
-    if (!m_trackSinger.isEmpty())
-        lines.append(RenderLine{ m_trackSinger, {} });
-    if (!m_trackAlbum.isEmpty())
-        lines.append(RenderLine{ m_trackAlbum, {} });
     m_renderer->setLines(lines);
     m_renderer->setActiveLine(-1);
     // Center the block in the viewport; the lines still follow the alignment
@@ -287,6 +293,14 @@ void LyricController::pushLyricsToRenderer()
 
 void LyricController::onSettingChanged(const QString& key, const QVariant& value)
 {
+    if (key == kKeyShowNoLyricMetadata) {
+        // Live apply: re-running the selector re-reads the new value inside
+        // showNoLyricsPlaceholder. Must return here so the key never falls
+        // through to the renderer/selector dispatch below.
+        if (!m_selector->hasLyrics())
+            reapplyLyricSelection();
+        return;
+    }
     if (isRendererKey(key)) {
         applyRendererConfig();
         return;

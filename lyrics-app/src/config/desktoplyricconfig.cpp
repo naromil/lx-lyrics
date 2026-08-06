@@ -87,6 +87,7 @@ void DesktopLyricConfig::loadDefaults()
         { QStringLiteral("desktopLyric.isDelayScroll"), true },
         { QStringLiteral("desktopLyric.isLockScreen"), isWindows() },
         { QStringLiteral("desktopLyric.isHoverHide"), false },
+        { QStringLiteral("desktopLyric.isShowNoLyricMetadata"), true },
         { QStringLiteral("desktopLyric.direction"), QStringLiteral("horizontal") },
         { QStringLiteral("desktopLyric.scrollAlign"), QStringLiteral("center") },
         { QStringLiteral("desktopLyric.width"), 300 },

@@ -54,6 +54,7 @@
   "setting__desktop_lyric_scroll_align_center": "Center",
   "setting__desktop_lyric_scroll_align_top": "Top",
   "setting__desktop_lyric_shadow_color": "Shadow",
+  "setting__desktop_lyric_show_no_lyric_metadata": "Show song info when no lyrics are available",
   "setting__desktop_lyric_show_taskbar": "Show lyric window process on the taskbar",
   "setting__desktop_lyric_show_taskbar_tip": "This option is used as a workaround when the screen recording program cannot capture the lyric window.",
   "setting__desktop_lyric_unplay_color": "Not Played",

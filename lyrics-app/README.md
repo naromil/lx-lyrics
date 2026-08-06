@@ -70,12 +70,12 @@ Or use the project's `tools/install.sh` to build and install both components aut
 ## Config
 
 Settings persist to `~/.config/lx-lyrics/config.json` (per `QStandardPaths::ConfigLocation`).
-There are 36 keys total — 30 `desktopLyric.*` keys plus 6 display-affecting `common.*` /
+There are 37 keys total — 31 `desktopLyric.*` keys plus 6 display-affecting `common.*` /
 `player.*` keys. Condensed defaults:
 
 | Group | Keys (default) |
 |---|---|
-| Window | `enable`(true) `isLock`(false) `isAlwaysOnTop`(true) `isAlwaysOnTopLoop`(true) `isShowTaskbar`(false) `pauseHide`(true) `audioVisualization`(false) `fullscreenHide`(false) `isDelayScroll`(true) `isLockScreen`(platform) `isHoverHide`(false) `width`(300) `height`(300) `x`/`y`(null = auto-position) |
+| Window | `enable`(true) `isLock`(false) `isAlwaysOnTop`(true) `isAlwaysOnTopLoop`(true) `isShowTaskbar`(false) `pauseHide`(true) `audioVisualization`(false) `fullscreenHide`(false) `isDelayScroll`(true) `isLockScreen`(platform) `isHoverHide`(false) `isShowNoLyricMetadata`(true) `width`(300) `height`(300) `x`/`y`(null = auto-position) |
 | Layout | `direction`(horizontal) `scrollAlign`(center) |
 | Style | `align`(center) `font`("") `fontSize`(14) `lineGap`(15) `lyricUnplayColor`(rgba(255,255,255,1)) `lyricPlayedColor`(rgba(7,197,86,1)) `lyricShadowColor`(rgba(0,0,0,0.18)) `opacity`(100) `ellipsis`(false) `isZoomActiveLrc`(true) `isFontWeightFont`(true) `isFontWeightLine`(true) `isFontWeightExtended`(true) |
 | Player | `common.langId`(null) `player.isShowLyricTranslation`(false) `player.isShowLyricRoma`(false) `player.isSwapLyricTranslationAndRoma`(false) `player.isPlayLxlrc`(platform) `player.playbackRate`(1.0) |
