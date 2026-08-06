@@ -27,7 +27,10 @@ class LyricPlayer : public QObject {
 public:
     explicit LyricPlayer(QObject* parent = nullptr);
 
-    void setLyric(const QString& lrc, const QStringList& extendedLyrics = {});
+    // Parses lrc + extendedLyrics and emits lyricsChanged. Returns false when
+    // the input is identical to the last call (dedup no-op: nothing re-parsed,
+    // no signal) and true once the lyric was re-parsed and signalled.
+    bool setLyric(const QString& lrc, const QStringList& extendedLyrics = {});
     void play(qint64 positionMs = 0);
     void pause();
     void stop();
@@ -54,6 +57,10 @@ private:
     LyricClock m_clock;
     QTimer m_timer;
     QVector<LrcLine> m_lines;
+    // Last setLyric inputs, kept so an identical host re-push is a no-op (the
+    // Fooyin plugin re-pushes set_info+set_lyric+set_play periodically).
+    QString m_lastLrc;
+    QStringList m_lastExtendedLyrics;
     qint64 m_userOffsetMs = 0;
     qint64 m_tagOffsetMs = 0;
     double m_rate = 1.0;

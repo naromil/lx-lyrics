@@ -304,13 +304,15 @@ LyricRenderer::LyricRenderer(QWidget* parent)
 
     // Auto-scroll resumes 3 s after the last wheel/drag interaction (reference
     // startLyricScrollTimeout); single-shot and re-armed on every interaction.
-    // The reference gates the resume on isPlay; the renderer has no playing
-    // signal, so it re-centers whenever the timer fires (documented deviation).
+    // The reference gates the resume on isPlay; the controller mirrors that
+    // with setPlaying() so a paused/stopped track never re-centers.
     m_resumeTimer = new QTimer(this);
     m_resumeTimer->setSingleShot(true);
     m_resumeTimer->setInterval(kResumeDelayMs);
     connect(m_resumeTimer, &QTimer::timeout, this, [this] {
         m_userScrolling = false;
+        if (!m_playing)
+            return; // Reference startLyricScrollTimeout: if (!isPlay.value) return.
         scrollToActiveAnimated(kScrollAnimationMs);
     });
 
@@ -359,24 +361,29 @@ void LyricRenderer::setLines(const QVector<RenderLine>& lines)
 {
     m_lines = lines;
     // Rebuild the per-line color/zoom progress with the lines: everything
-    // starts unplayed and unzoomed except the current active line, which snaps
-    // to its settled state — a lyric change does not animate. Transitions are
-    // dropped (fresh lyric, fresh state); m_prevActiveLine resets because the
-    // zoom compensation must not reference a line of the previous lyric.
+    // starts unplayed and unzoomed (a lyric change does not animate).
+    // Transitions are dropped (fresh lyric, fresh state); m_prevActiveLine
+    // resets because the zoom compensation must not reference a line of the
+    // previous lyric.
     m_lineColorProgress.fill(0.0, m_lines.size());
     m_lineZoomProgress.fill(0.0, m_lines.size());
     m_lineColorTransition.fill(LineTransition{}, m_lines.size());
     m_lineZoomTransition.fill(LineTransition{}, m_lines.size());
     m_prevActiveLine = -1;
-    if (m_activeLine >= 0 && m_activeLine < m_lines.size()) {
-        m_lineColorProgress[m_activeLine] = 1.0;
-        m_lineZoomProgress[m_activeLine] = 1.0;
-    }
     if (m_transitionTimer)
         m_transitionTimer->stop();
     resetScroll();
-    if (!m_userScrolling && m_activeLine >= 0 && m_activeLine < m_lines.size())
-        scrollToActiveInstant();
+    // The port resets the scroll and the active line, then the follow-up
+    // setActiveLine(currentLine()) positions the view at the new current
+    // line's CENTERED target — line 0 is centered, not parked at the top.
+    // This reset is a port choice, not reference behavior: on a non-empty
+    // lyric change the reference keeps the previous scrollTop and glides to
+    // the new line via initLrc -> nextTick -> handleScrollLrc (it only
+    // scrolls to the top for the empty/cleared case). Resetting m_activeLine
+    // here also guarantees the follow-up call proceeds (the same-line
+    // early-return in setActiveLine would otherwise swallow the centering
+    // scroll when the old active line was also 0).
+    m_activeLine = -1;
     update();
 }
 
@@ -415,6 +422,13 @@ void LyricRenderer::setActiveLine(int index)
     // zoom progress 0) — matching the reference, whose isComputeHeight
     // (layout-with-zoom) only holds when isDelayScroll is OFF (the default
     // here is on).
+    // Reference scrollLine guard (line 193): a negative/absent line never
+    // scrolls. The first line-0 after a setLines is NOT swallowed — like the
+    // reference initLrc (prevActiveLine=0, isSetedLines=true, then
+    // handleScrollLrc) it scrolls to the new lyric's centered line-0 target.
+    if (clamped < 0 || m_lines.isEmpty())
+        return; // reference scrollLine: line < 0 || !lines.length never scrolls
+
     if (m_userScrolling)
         return; // Suspended: the resume timer re-centers to the new line later.
 
@@ -574,6 +588,11 @@ void LyricRenderer::setInteractive(bool on)
         }
         unsetCursor();
     }
+}
+
+void LyricRenderer::setPlaying(bool on)
+{
+    m_playing = on;
 }
 
 void LyricRenderer::resetScroll()
@@ -1197,14 +1216,6 @@ qreal LyricRenderer::autoScrollTarget() const
     const qreal groupExtent = layout.groupHeights.at(m_activeLine);
     const qreal target = m_scrollAlignTop ? 0 : (height() - groupExtent) / 2.0;
     return qBound<qreal>(0, baseTop - zoomCompensation - target, maxScrollOffset());
-}
-
-void LyricRenderer::scrollToActiveInstant()
-{
-    m_delayScrollTimer->stop();
-    stopScrollAnimation();
-    m_scrollOffset = autoScrollTarget();
-    update();
 }
 
 void LyricRenderer::scrollToActiveAnimated(int durationMs)

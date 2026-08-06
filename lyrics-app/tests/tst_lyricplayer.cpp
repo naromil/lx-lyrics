@@ -98,6 +98,9 @@ private slots:
     void setVerticalKeepsPlaying();
     // 13. play(0) with an empty lyric is a no-op.
     void playEmptyLyricIsNoOp();
+    // 14. An identical setLyric re-push is deduped: no pause, no reset, no
+    //     lyricsChanged. A changed body or extended list still emits.
+    void setLyricTwiceEmitsOnce();
 };
 
 void TestLyricPlayer::setLyricEmitsLyricsChangedAndParsesLines()
@@ -399,6 +402,63 @@ void TestLyricPlayer::playEmptyLyricIsNoOp()
     QTest::qWait(150);
     QCOMPARE(lineSpy.count(), 0);
     QCOMPARE(lyricSpy.count(), 0);
+}
+
+void TestLyricPlayer::setLyricTwiceEmitsOnce()
+{
+    LyricPlayer player;
+    QSignalSpy lyricSpy(&player, &LyricPlayer::lyricsChanged);
+
+    // The first setLyric always emits.
+    player.setLyric(kThreeLineLrc);
+    QCOMPARE(lyricSpy.count(), 1);
+
+    // An identical re-push (the host's periodic set_info+set_lyric+set_play)
+    // must not pause/reset/re-emit: same input -> no state change -> no signal.
+    player.setLyric(kThreeLineLrc);
+    QCOMPARE(lyricSpy.count(), 1);
+
+    // A change in the extended lyrics is a real change, not deduped.
+    player.setLyric(kThreeLineLrc, QStringList{ QStringLiteral("Extra translation") });
+    QCOMPARE(lyricSpy.count(), 2);
+
+    // The identical extended list dedupes too.
+    player.setLyric(kThreeLineLrc, QStringList{ QStringLiteral("Extra translation") });
+    QCOMPARE(lyricSpy.count(), 2);
+
+    // A changed lyric body is a real change, not deduped.
+    player.setLyric(kThreeLineLrc + QStringLiteral("\n"));
+    QCOMPARE(lyricSpy.count(), 3);
+
+    // A playing player survives an identical re-push: the dedup guard returns
+    // before pause(), so playback continues (pre-dedup-fix this paused and
+    // re-emitted the current line).
+    const QStringList extended{ QStringLiteral("Extra translation") };
+    player.setLyric(kFourLineLrc, extended);
+    QCOMPARE(lyricSpy.count(), 4);
+    player.play(1000); // mid-lyric: line 0 active, next-line timer scheduled
+    QVERIFY(player.isPlaying());
+
+    player.setLyric(kFourLineLrc, extended); // identical: dedup no-op
+    QVERIFY(player.isPlaying()); // still playing — the re-push did not pause
+    QCOMPARE(lyricSpy.count(), 4);
+
+    // A real change pauses the player (setLyric pauses before re-parsing).
+    player.setLyric(kFourLineLrc + QStringLiteral("\n"), extended);
+    QVERIFY(!player.isPlaying());
+    QCOMPARE(lyricSpy.count(), 5);
+
+    // The bool contract the controller depends on: true once the lyric was
+    // re-parsed and lyricsChanged signalled, false for the identical re-push
+    // no-op. A fresh player keeps the first call unambiguous.
+    LyricPlayer freshPlayer;
+    QSignalSpy freshSpy(&freshPlayer, &LyricPlayer::lyricsChanged);
+    QVERIFY(freshPlayer.setLyric(kThreeLineLrc)); // fresh lyric -> true
+    QCOMPARE(freshSpy.count(), 1);
+    QVERIFY(!freshPlayer.setLyric(kThreeLineLrc)); // same lrc + same extended -> false
+    QCOMPARE(freshSpy.count(), 1);
+    QVERIFY(freshPlayer.setLyric(kThreeLineLrc + QStringLiteral("\n"))); // changed -> true
+    QCOMPARE(freshSpy.count(), 2);
 }
 
 QTEST_MAIN(TestLyricPlayer)

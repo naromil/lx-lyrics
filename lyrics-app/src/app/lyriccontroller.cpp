@@ -154,11 +154,15 @@ void LyricController::setStatus(const PlaybackSnapshot& status)
 void LyricController::play(qint64 timeMs)
 {
     m_player->play(timeMs);
+    // The renderer's 3 s resume re-center only runs while playing (reference
+    // isPlay gate in startLyricScrollTimeout).
+    m_renderer->setPlaying(true);
 }
 
 void LyricController::pause()
 {
     m_player->pause();
+    m_renderer->setPlaying(false);
 }
 
 void LyricController::stop()
@@ -166,6 +170,7 @@ void LyricController::stop()
     // player.stop() clears the lyric and emits lyricsChanged + lineChanged(-1),
     // which pushLyricsToRenderer turns into the blank renderer state.
     m_player->stop();
+    m_renderer->setPlaying(false);
 }
 
 void LyricController::setOffset(qint64 tempOffset)
@@ -223,20 +228,22 @@ void LyricController::applyLyricText(const QString& lrc, const QString& tlyric,
     reapplyLyricSelection();
 }
 
-void LyricController::reapplyLyricSelection()
+bool LyricController::reapplyLyricSelection()
 {
     // Re-run the selector over the last raw fields: [awlrc:] extraction is
     // idempotent, so re-feeding is safe for config-driven re-selection too.
     m_selector->setLyrics(m_lastLrc, m_lastTlrc, m_lastRlrc, m_lastLxlrc);
     if (m_selector->hasLyrics()) {
-        m_player->setLyric(m_selector->selectedLyric(), m_selector->extendedLyrics());
-        return;
+        return m_player->setLyric(m_selector->selectedLyric(), m_selector->extendedLyrics());
     }
     // No playable lyric (no embedded tags, no sidecar .lrc): clear any stale
     // player lines (a later play() must not resurrect the previous track), then
-    // show the track placeholder so the window isn't a blank pane.
-    m_player->setLyric(QString());
+    // show the track placeholder so the window isn't a blank pane. The changed
+    // flag feeds the caller's resume decision (setLyric("") returns true when
+    // it cleared a previous lyric, false when the player was already empty).
+    const bool changed = m_player->setLyric(QString());
     showNoLyricsPlaceholder();
+    return changed;
 }
 
 void LyricController::showNoLyricsPlaceholder()
@@ -288,14 +295,17 @@ void LyricController::onSettingChanged(const QString& key, const QVariant& value
         applySelectorConfig();
         if (!m_hasLyric)
             return;
-        // Re-selecting pauses the player (setLyric). The host pushes no follow
-        // up for a local config change, so resume at the pre-pause position —
-        // the reference main window's setLyric does the same via set_play.
         const bool wasPlaying = m_player->isPlaying();
         const qint64 positionMs = m_player->currentPositionMs();
-        reapplyLyricSelection();
-        if (wasPlaying)
+        const bool applied = reapplyLyricSelection();
+        // Resume only when the lyric actually changed (a dedup'd re-selection
+        // never paused the player, so replaying would re-emit the current line
+        // spuriously) and there are lines to play.
+        if (applied && wasPlaying && m_selector->hasLyrics())
             m_player->play(positionMs);
+        // Mirror the play state — isPlaying() is the single source of truth for
+        // the renderer's 3 s resume re-center gate.
+        m_renderer->setPlaying(m_player->isPlaying());
         return;
     }
     if (key == kKeyPlaybackRate)

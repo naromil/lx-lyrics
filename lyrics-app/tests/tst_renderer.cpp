@@ -42,6 +42,9 @@ private slots:
     void scrollKeepsUpWithRapidChanges();
     void delayScrollBurstConverges();
     void delayedScrollRetargetsToCurrentLine();
+    void negativeLineDoesNotScroll();
+    void rePushSettlesAtCenteredLineZero();
+    void setChangeCentersFirstLine();
 };
 
 void TestLyricRenderer::fastChangesDoNotSnapColorBack()
@@ -54,9 +57,13 @@ void TestLyricRenderer::fastChangesDoNotSnapColorBack()
     QVERIFY(qAbs(renderer.colorProgressForLine(0) - 1.0) < 0.01);
 
     renderer.setActiveLine(1);
-    QTest::qWait(150); // Line 1 mid-grow (OutCubic 600 ms -> ~0.35).
+    // Line 1 mid-grow: OutCubic over 600 ms gives ~0.58 at exactly 150 ms,
+    // but the progress is sampled at the last 16 ms transition tick, so the
+    // observed value jitters with timer scheduling (~0.53-0.68). The bound
+    // only needs to prove the transition is underway and not instant.
+    QTest::qWait(150);
     const double mid = renderer.colorProgressForLine(1);
-    QVERIFY2(mid > 0.1 && mid < 0.6, qPrintable(QStringLiteral("mid=%1").arg(mid)));
+    QVERIFY2(mid > 0.1 && mid < 0.75, qPrintable(QStringLiteral("mid=%1").arg(mid)));
 
     // A second change inside the transition: the outgoing line continues from
     // its CURRENT progress — the old shared cross-fade snapped it back to the
@@ -64,7 +71,7 @@ void TestLyricRenderer::fastChangesDoNotSnapColorBack()
     renderer.setActiveLine(2);
     QTest::qWait(100);
     const double outgoing = renderer.colorProgressForLine(1);
-    QVERIFY2(outgoing < 0.6, qPrintable(QStringLiteral("outgoing=%1").arg(outgoing)));
+    QVERIFY2(outgoing < 0.75, qPrintable(QStringLiteral("outgoing=%1").arg(outgoing)));
     const double incoming = renderer.colorProgressForLine(2);
     QVERIFY2(incoming > 0.1 && incoming < 0.7,
              qPrintable(QStringLiteral("incoming=%1").arg(incoming)));
@@ -86,14 +93,15 @@ void TestLyricRenderer::fastChangesDoNotSnapZoomBack()
     QVERIFY(qAbs(renderer.zoomProgress() - 1.0) < 0.01);
 
     renderer.setActiveLine(1);
+    // Same sampling jitter as the color test: the value at 150 ms is ~0.53-0.68.
     QTest::qWait(150);
     const double mid = renderer.zoomProgress(); // Active line 1 mid-grow.
-    QVERIFY2(mid > 0.1 && mid < 0.6, qPrintable(QStringLiteral("mid=%1").arg(mid)));
+    QVERIFY2(mid > 0.1 && mid < 0.75, qPrintable(QStringLiteral("mid=%1").arg(mid)));
 
     // Outgoing line 1 must decay from its current zoom — not snap back to 1.0.
     renderer.setActiveLine(2);
     QTest::qWait(100);
-    QVERIFY2(renderer.zoomProgressForLine(1) < 0.6,
+    QVERIFY2(renderer.zoomProgressForLine(1) < 0.75,
              qPrintable(QStringLiteral("outgoing zoom=%1").arg(renderer.zoomProgressForLine(1))));
 
     QTest::qWait(900);
@@ -108,7 +116,7 @@ void TestLyricRenderer::scrollKeepsUpWithRapidChanges()
     renderer.setLines(makeLines(12));
     renderer.setDelayScroll(false);
     renderer.setActiveLine(0);
-    QTest::qWait(700); // Settle at the first line (the leading spacer centers it).
+    QTest::qWait(700); // The first line-0 scrolls to its centered target (reference initLrc).
     const double baseline = renderer.scrollOffset();
     QVERIFY(baseline > 50);
 
@@ -147,7 +155,7 @@ void TestLyricRenderer::delayScrollBurstConverges()
     renderer.setLines(makeLines(8));
     renderer.setDelayScroll(true);
     renderer.setActiveLine(0);
-    QTest::qWait(700); // Settle at the first line (the leading spacer centers it).
+    QTest::qWait(700); // The first line-0 scrolls to its centered target (reference initLrc).
     const double baseline = renderer.scrollOffset();
     QVERIFY(baseline > 50);
 
@@ -182,7 +190,7 @@ void TestLyricRenderer::delayedScrollRetargetsToCurrentLine()
     renderer.setLines(makeLines(8));
     renderer.setDelayScroll(true);
     renderer.setActiveLine(0);
-    QTest::qWait(700);
+    QTest::qWait(700); // The first line-0 scrolls to its centered target (reference initLrc).
     const double baseline = renderer.scrollOffset();
     QVERIFY(baseline > 50);
 
@@ -200,6 +208,72 @@ void TestLyricRenderer::delayedScrollRetargetsToCurrentLine()
     // would sit far below the final position.
     QTest::qWait(700);
     QVERIFY(qAbs(renderer.scrollOffset() - settled) < 1.0);
+}
+
+void TestLyricRenderer::negativeLineDoesNotScroll()
+{
+    LyricRenderer renderer;
+    renderer.resize(600, 300);
+    renderer.setLines(makeLines(12));
+    renderer.setDelayScroll(false);
+    renderer.setActiveLine(1);
+    QTest::qWait(700); // Settle at line 1.
+    const double offset = renderer.scrollOffset();
+    QVERIFY(offset > 50);
+
+    // A negative active line (the reference lead-in / cleared state) must not
+    // animate the view back to the top: reference scrollLine returns before
+    // scrolling. Pre-fix setActiveLine(-1) animated to 0.
+    renderer.setActiveLine(-1);
+    QTest::qWait(400);
+    QCOMPARE(renderer.scrollOffset(), offset);
+}
+
+void TestLyricRenderer::rePushSettlesAtCenteredLineZero()
+{
+    LyricRenderer renderer;
+    renderer.resize(600, 300);
+    renderer.setLines(makeLines(12));
+    renderer.setDelayScroll(false);
+    renderer.setActiveLine(6);
+    QTest::qWait(700); // Settle at line 6.
+    QVERIFY(renderer.scrollOffset() > 50);
+
+    // Simulate the host re-push: a fresh setLines resets the scroll AND the
+    // active line, so the first setActiveLine(0) scrolls to line 0's CENTERED
+    // target (reference initLrc -> nextTick -> handleScrollLrc). Pre-fix
+    // setLines snapped to line 6's offset and the swallowed line-0 left the
+    // view parked at the top.
+    renderer.setLines(makeLines(12));
+    renderer.setActiveLine(0);
+    const qreal justAfter = renderer.scrollOffset();
+    QVERIFY2(justAfter < 50, qPrintable(QStringLiteral("justAfter=%1").arg(justAfter))); // No stale snap to line 6.
+
+    QTest::qWait(400); // The 300 ms centering scroll finishes.
+    const qreal settled = renderer.scrollOffset();
+    QVERIFY2(settled > 50 && settled < 200,
+             qPrintable(QStringLiteral("settled=%1").arg(settled))); // Centered line 0 — not top, not line 6.
+
+    QTest::qWait(300);
+    QVERIFY(qAbs(renderer.scrollOffset() - settled) < 1.0); // No roll back.
+}
+
+void TestLyricRenderer::setChangeCentersFirstLine()
+{
+    LyricRenderer renderer;
+    renderer.resize(600, 300);
+    renderer.setLines(makeLines(12));
+    renderer.setDelayScroll(false);
+    renderer.setActiveLine(0);
+    QTest::qWait(500); // The first line-0 scrolls to its centered target.
+    const qreal lineZero = renderer.scrollOffset();
+    QVERIFY2(lineZero > 50 && lineZero < 200,
+             qPrintable(QStringLiteral("lineZero=%1").arg(lineZero)));
+
+    // A real consecutive line change still scrolls normally on top of that.
+    renderer.setActiveLine(1);
+    QTest::qWait(700);
+    QVERIFY(renderer.scrollOffset() > lineZero + 10);
 }
 
 QTEST_MAIN(TestLyricRenderer)

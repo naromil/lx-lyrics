@@ -83,6 +83,7 @@ public:
     void setDelayScroll(bool on);    // false=immediate 300ms animation (default), true=600ms delay + 600ms animation
     void setUserScrolling(bool on);  // suspend auto-scroll while true; re-arm the resume timer when false
     void setInteractive(bool on);    // gate wheel + drag (window lock state)
+    void setPlaying(bool on);        // gate the 3s resume re-center (reference isPlay)
     void resetScroll();              // clear offset and any scroll animation (lyric change)
 
     // Current active-line zoom progress (0.0 = base scale, 1.0 = fully zoomed
@@ -191,14 +192,13 @@ private:
     // top for horizontal mode, 2 px from the right edge for vertical mode
     // (reference getOffsetTop: 0 vs contentWidth - lineWidth - 2).
     qreal autoScrollTarget() const;
-    void scrollToActiveInstant();
     void scrollToActiveAnimated(int durationMs);
     void suspendAutoScroll();
     void rearmResumeTimer();
     void startDelayScrollTimer();
 
     QVector<RenderLine> m_lines;
-    int m_activeLine = -1;
+    int m_activeLine = -1;              // current active line; setLines resets to -1 so the first active-line event re-positions the view
     bool m_vertical = false;
     Qt::Alignment m_align = Qt::AlignHCenter;
     QString m_fontFamily;
@@ -218,6 +218,12 @@ private:
     bool m_scrollAlignTop = false;    // false=center (default), true='top'
     bool m_delayScroll = false;       // false=immediate 300ms animation (default), true=600ms delay + 600ms animation
     bool m_userScrolling = false;     // auto-scroll suspended (interaction + 3s resume window)
+    // The 3 s resume re-centers only while playing (reference isPlay gate in
+    // startLyricScrollTimeout). Accepted Finding-4 behavior: the player's
+    // internal pause() at the max line (lyricplayer.cpp _handleMaxLine) is not
+    // mirrored here — the gate stays open only until the host's
+    // set_status(isPlay=false) arrives, matching the reference's isPlay window.
+    bool m_playing = false;
     bool m_interactive = false;       // gate for wheel + drag handlers
     bool m_dragging = false;
     QPoint m_dragStartPos;

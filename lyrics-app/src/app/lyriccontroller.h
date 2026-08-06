@@ -50,7 +50,10 @@ private:
     void applySelectorConfig();
     void applyLyricText(const QString& lrc, const QString& tlyric,
                         const QString& rlyric, const QString& lxlyric);
-    void reapplyLyricSelection();
+    // Re-runs the selector over the last raw lyric fields and pushes the
+    // result into the player. Returns whether the player actually re-parsed
+    // (false = identical re-push deduped into a no-op).
+    bool reapplyLyricSelection();
     void pushLyricsToRenderer();
     void showNoLyricsPlaceholder();
     void onSettingChanged(const QString& key, const QVariant& value);

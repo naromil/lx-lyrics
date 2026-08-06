@@ -29,8 +29,21 @@ LyricPlayer::LyricPlayer(QObject* parent)
     connect(&m_timer, &QTimer::timeout, this, &LyricPlayer::onTimerTimeout);
 }
 
-void LyricPlayer::setLyric(const QString& lrc, const QStringList& extendedLyrics)
+bool LyricPlayer::setLyric(const QString& lrc, const QStringList& extendedLyrics)
 {
+    // Idempotence guard against the host's periodic re-push of the current
+    // track (deviation from line-player.js, justified: identical input -> no
+    // state change -> no signal). Returns false for the dedup'd no-op and true
+    // once the lyric was re-parsed and lyricsChanged signalled, so callers can
+    // tell a real change from an identical re-push (the controller only
+    // resumes after a real change). The reference re-runs setLyric
+    // unconditionally, which pauses, resets the line to 0 and re-emits
+    // lyricsChanged — a visible re-roll of the lyric list on every re-push.
+    if (lrc == m_lastLrc && extendedLyrics == m_lastExtendedLyrics)
+        return false;
+    m_lastLrc = lrc;
+    m_lastExtendedLyrics = extendedLyrics;
+
     if (m_playing)
         pause();
 
@@ -43,6 +56,7 @@ void LyricPlayer::setLyric(const QString& lrc, const QStringList& extendedLyrics
     m_totalOffsetMs = m_tagOffsetMs + m_userOffsetMs + (m_lineMode ? 60 : 0);
     m_curLineNum = 0;
     emit lyricsChanged();
+    return true;
 }
 
 void LyricPlayer::play(qint64 positionMs)
