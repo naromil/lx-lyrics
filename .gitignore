@@ -76,3 +76,5 @@ src/**/*-internal.js
 .kilo/
 references/
 .cache/
+.clangd
+.ruff_cache/

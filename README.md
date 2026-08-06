@@ -1,4 +1,4 @@
-# lx-music-desktop-lyrics
+# lx-lyrics
 
 A standalone desktop lyrics feature extracted from [lx-music-desktop](https://github.com/lyswhut/lx-music-desktop), delivered as two decoupled components: a self-contained lyrics display app and a Fooyin Music Player plugin that feeds it.
 
