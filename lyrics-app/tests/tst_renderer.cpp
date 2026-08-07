@@ -9,6 +9,8 @@
 // handleScrollY queue), and a burst of consecutive lines with the delayed
 // scroll must roll instead of freezing and then jumping.
 #include <QApplication>
+#include <QImage>
+#include <QPainter>
 #include <QTest>
 #include <QVector>
 
@@ -45,6 +47,8 @@ private slots:
     void negativeLineDoesNotScroll();
     void rePushSettlesAtCenteredLineZero();
     void setChangeCentersFirstLine();
+    void strokeOffsetsMatchReference();
+    void outlineVisibleOnWhiteBackground();
 };
 
 void TestLyricRenderer::fastChangesDoNotSnapColorBack()
@@ -274,6 +278,108 @@ void TestLyricRenderer::setChangeCentersFirstLine()
     renderer.setActiveLine(1);
     QTest::qWait(700);
     QVERIFY(renderer.scrollOffset() > lineZero + 10);
+}
+
+void TestLyricRenderer::strokeOffsetsMatchReference()
+{
+    // Parity guard for the replicated stroke3/stroke4 text-shadow tables
+    // (references/src/renderer-lyric/assets/styles/layout.less: .stroke3
+    // lines 120-151, .stroke4 lines 52-76). Duplicates are part of the
+    // reference — each entry is one alpha-composited pass — so the counts are
+    // asserted too. Fuzzy compares avoid FP rounding brittleness.
+    const auto containsOffset = [](const QVector<QPointF>& offsets, QPointF expected) {
+        for (const QPointF& offset : offsets) {
+            if (qAbs(offset.x() - expected.x()) < 1e-6 && qAbs(offset.y() - expected.y()) < 1e-6)
+                return true;
+        }
+        return false;
+    };
+
+    // stroke3 at em=100: 32 em offsets -> 0.04em = 4 px, 0.01em = 1 px.
+    const QVector<QPointF> stroke3 = LyricRenderer::strokeOffsetsPx(LyricRenderer::StrokeStyle::Stroke3, 100.0);
+    QVERIFY(stroke3.size() == 32);
+    const QVector<QPointF> stroke3Samples{
+        QPointF(4, 4), QPointF(4, -3), QPointF(-4, -3), QPointF(-4, 4),
+        QPointF(1, 0), QPointF(0, -1), QPointF(0, 4), QPointF(0, 1),
+    };
+    for (const QPointF& sample : stroke3Samples)
+        QVERIFY2(containsOffset(stroke3, sample),
+                 qPrintable(QStringLiteral("stroke3 missing offset (%1, %2)")
+                                .arg(sample.x()).arg(sample.y())));
+
+    // em scaling is linear: em=50 is exactly half of em=100.
+    const QVector<QPointF> stroke3Half = LyricRenderer::strokeOffsetsPx(LyricRenderer::StrokeStyle::Stroke3, 50.0);
+    QVERIFY(stroke3Half.size() == stroke3.size());
+    for (int i = 0; i < stroke3.size(); ++i) {
+        QVERIFY(qAbs(stroke3Half.at(i).x() - stroke3.at(i).x() / 2.0) < 1e-6);
+        QVERIFY(qAbs(stroke3Half.at(i).y() - stroke3.at(i).y() / 2.0) < 1e-6);
+    }
+
+    // stroke4 at em=100: 17 mixed em/px offsets. 0.02em x 100 = 2 px; px
+    // entries stay at their fixed device pixels.
+    const QVector<QPointF> stroke4 = LyricRenderer::strokeOffsetsPx(LyricRenderer::StrokeStyle::Stroke4, 100.0);
+    QVERIFY(stroke4.size() == 17);
+    const QVector<QPointF> stroke4Samples{
+        QPointF(2, -2),  // 0.02em x, -0.02em y
+        QPointF(-2, -1), // -0.02em x, -1px y
+        QPointF(-1, -1), // -1px, -1px
+        QPointF(1, 0),   // 1px, 0px
+    };
+    for (const QPointF& sample : stroke4Samples)
+        QVERIFY2(containsOffset(stroke4, sample),
+                 qPrintable(QStringLiteral("stroke4 missing offset (%1, %2)")
+                                .arg(sample.x()).arg(sample.y())));
+
+    // px stability: the px entries are em-independent even at em=1000.
+    const QVector<QPointF> stroke4Huge = LyricRenderer::strokeOffsetsPx(LyricRenderer::StrokeStyle::Stroke4, 1000.0);
+    QVERIFY(containsOffset(stroke4Huge, QPointF(-1, -1)));
+    QVERIFY(containsOffset(stroke4Huge, QPointF(1, 0)));
+}
+
+void TestLyricRenderer::outlineVisibleOnWhiteBackground()
+{
+    // Acceptance proof: white text on a white image with no active line — the
+    // fill stays white (unplay), so any pixel darker than the background must
+    // come from the stroke3 halo (the reference .stroke3 stack drawn in the
+    // 51%-alpha shadow shade).
+    LyricRenderer renderer;
+    renderer.resize(600, 200);
+    // Dump helper: the acceptance size is 48 px, but LX_LYRICS_DUMP_FONT_SIZE
+    // overrides it (e.g. 14 px, the app default) for a representative paint
+    // dump. Unset/invalid keeps 48, so the default run renders byte-identically.
+    bool sizeOk = false;
+    int fontSize = qEnvironmentVariableIntValue("LX_LYRICS_DUMP_FONT_SIZE", &sizeOk);
+    if (!sizeOk || fontSize <= 0)
+        fontSize = 48;
+    renderer.setFontSize(fontSize);
+    renderer.setLines(QVector<RenderLine>{ RenderLine{ QStringLiteral("Test"), {} } });
+
+    QImage image(renderer.size(), QImage::Format_ARGB32);
+    image.fill(Qt::white);
+    {
+        QPainter painter(&image);
+        renderer.render(&painter);
+    }
+
+    int dark = 0;
+    for (int y = 0; y < image.height(); ++y) {
+        for (int x = 0; x < image.width(); ++x) {
+            if (qGray(image.pixel(x, y)) < 170)
+                ++dark;
+        }
+    }
+
+    // The reference halo at 48 px leaves a dense ~gray-100 outline (the old
+    // 1 px 4-pass outline peaked at ~gray 210+ and read as invisible on
+    // white); it stays an outline, never a blob — bound it well below a tenth
+    // of the image.
+    QVERIFY2(dark > 20, qPrintable(QStringLiteral("dark=%1").arg(dark)));
+    QVERIFY2(dark < image.width() * image.height() / 10,
+             qPrintable(QStringLiteral("dark=%1").arg(dark)));
+
+    const QString dumpPath = qEnvironmentVariable("LX_LYRICS_DUMP_PAINT");
+    if (!dumpPath.isEmpty())
+        image.save(dumpPath);
 }
 
 QTEST_MAIN(TestLyricRenderer)

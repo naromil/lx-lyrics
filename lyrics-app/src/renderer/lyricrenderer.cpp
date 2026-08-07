@@ -18,6 +18,8 @@
 #include <QWheelEvent>
 
 #include <cmath>
+#include <cstddef>
+#include <iterator>
 
 namespace {
 
@@ -46,10 +48,15 @@ constexpr int kTransitionAnimationMs = 600;
 constexpr int kTransitionTickMs = 16;
 // Extended lines render at 0.8x the main size (reference .extended).
 constexpr qreal kExtendedScale = 0.8;
-// Reference stroke width: the line-mode stroke is a ~1 px halo
-// (stroke3/stroke4 offsets: 0.04em/0.01em and ±1px); the old 4 px outline was
-// far heavier than the reference and read as a lingering dark shadow.
-constexpr int kLineStrokeWidth = 1;
+// Reference stroke tables (layout.less .stroke3/.stroke4): each comma entry of
+// the CSS text-shadow stack is one zero-blur glyph copy drawn at an (x, y)
+// offset under the text fill, alpha-composited separately — so duplicate
+// offsets are intentional extra alpha passes. Offsets are em-based per CSS
+// text-shadow: they scale with the element's own font pixel size (the
+// active-line zoom and the 0.8x extended scale included); px offsets are fixed
+// device pixels. stroke3 is the horizontal line-mode halo (32 em offsets,
+// layout.less lines 120-151), stroke4 the vertical line-mode halo (em + px
+// offsets, layout.less lines 52-76).
 // Horizontal line-mode strokes use the shadow color at 51% alpha
 // (reference useTheme.ts: --color-lyric-shadow-font-mode =
 // RGB_Alpha_Shade(0.49, shadowColor), which stroke3 hardcodes for every
@@ -107,6 +114,56 @@ QColor shadedShadowColor(const QColor& color)
     shaded.setAlphaF(color.alphaF() * kHorizontalStrokeAlphaFactor);
     return shaded;
 }
+
+// One entry of the reference stroke3/stroke4 text-shadow stacks: a glyph-copy
+// offset. Em offsets scale with the rendering font's pixel size (CSS em = the
+// element's own font-size); px offsets are fixed device pixels — per entry,
+// per axis.
+struct StrokeOffset {
+    qreal x = 0.0;
+    bool xIsEm = false;
+    qreal y = 0.0;
+    bool yIsEm = false;
+};
+
+// Reference .stroke3(@color) (layout.less lines 120-151): the horizontal
+// line-mode halo, 32 em offsets drawn in the 51%-alpha font-mode shadow shade
+// (--color-lyric-shadow-font-mode). Duplicates are kept verbatim because each
+// entry is a separate alpha-composited text-shadow pass.
+constexpr StrokeOffset kStroke3Offsets[] = {
+    { 0.04, true,  0.04, true }, { 0.04, true, -0.03, true }, { -0.04, true, -0.03, true }, { -0.04, true,  0.04, true },
+    { 0.04, true,  0.01, true }, { 0.04, true, -0.01, true }, { -0.04, true, -0.01, true }, { -0.04, true,  0.01, true },
+    { 0.04, true,  0.00, true }, { 0.04, true,  0.00, true }, { -0.04, true,  0.00, true }, { -0.04, true,  0.00, true },
+    { 0.01, true,  0.04, true }, { 0.01, true, -0.03, true }, { -0.01, true, -0.03, true }, { -0.01, true,  0.04, true },
+    { 0.01, true,  0.01, true }, { 0.01, true, -0.01, true }, { -0.01, true, -0.01, true }, { -0.01, true,  0.01, true },
+    { 0.01, true,  0.00, true }, { 0.01, true,  0.00, true }, { -0.01, true,  0.00, true }, { -0.01, true,  0.00, true },
+    { 0.00, true,  0.04, true }, { 0.00, true, -0.03, true }, { 0.00, true, -0.03, true }, { 0.00, true,  0.04, true },
+    { 0.00, true,  0.01, true }, { 0.00, true, -0.01, true }, { 0.00, true, -0.01, true }, { 0.00, true,  0.01, true },
+};
+
+// Reference .stroke4(@color) (layout.less lines 52-76): the vertical line-mode
+// halo, 17 em + px offsets drawn in the full shadow color
+// (--color-lyric-shadow). Duplicates are kept verbatim because each entry is a
+// separate alpha-composited text-shadow pass.
+constexpr StrokeOffset kStroke4Offsets[] = {
+    { 0.02, true, -0.02, true }, // 0.02em -0.02em
+    { -0.02, true, -1, false },  // -0.02em -1px
+    { -0.02, true,  1, false },  // -0.02em 1px
+    { 0.02, true,  1, false },   // 0.02em 1px
+    { 0.02, true, -1, false },   // 0.02em -1px
+    { -0.02, true,  0, false },  // -0.02em 0px
+    { -0.02, true,  0, false },  // -0.02em 0px
+    { 0.02, true,  0, false },   // 0.02em 0px
+    { 0.02, true,  0, false },   // 0.02em 0px
+    { -1, false, -1, false },    // -1px -1px
+    { -1, false,  1, false },    // -1px 1px
+    { 1, false,  1, false },     // 1px 1px
+    { 1, false, -1, false },     // 1px -1px
+    { -1, false,  0, false },    // -1px 0px
+    { -1, false,  0, false },    // -1px 0px
+    { 1, false,  0, false },     // 1px 0px
+    { 1, false,  0, false },     // 1px 0px
+};
 
 // Horizontal gap formulas from the reference --line-extended-gap / --line-gap.
 qreal horizontalExtendedGap(int lineGap)
@@ -987,14 +1044,14 @@ void LyricRenderer::drawHorizontalGroup(QPainter& p, const RenderLine& line, int
         // .ellipsis .font-lrc { .mixin-ellipsis(1) }).
         const QString mainText = elideForWidth(stripWordTags(line.text), mainFm, int(rect.width()));
         const QRectF mainRect(rect.x(), rect.y(), rect.width(), mainFm.height());
-        drawTextWithStroke(p, mainText, mainRect, mainFont, fill, stroke, kLineStrokeWidth);
+        drawTextWithStroke(p, mainText, mainRect, mainFont, fill, stroke, StrokeStyle::Stroke3);
 
         qreal y = rect.y() + mainFm.height();
         for (const QString& rawExtended : line.extended) {
             y += extGap;
             const QString extText = elideForWidth(stripWordTags(rawExtended), extendedFm, int(rect.width()));
             drawTextWithStroke(p, extText, QRectF(rect.x(), y, rect.width(), extendedFm.height()),
-                               extendedFont, fill, stroke, kLineStrokeWidth);
+                               extendedFont, fill, stroke, StrokeStyle::Stroke3);
             y += extendedFm.height();
         }
         return;
@@ -1008,7 +1065,7 @@ void LyricRenderer::drawHorizontalGroup(QPainter& p, const RenderLine& line, int
     const QStringList mainRows = wrapForWidth(stripWordTags(line.text), mainFm, int(rect.width()));
     for (const QString& row : mainRows) {
         drawTextWithStroke(p, row, QRectF(rect.x(), y, rect.width(), mainFm.height()),
-                           mainFont, fill, stroke, kLineStrokeWidth);
+                           mainFont, fill, stroke, StrokeStyle::Stroke3);
         y += mainFm.height();
     }
     for (const QString& rawExtended : line.extended) {
@@ -1016,7 +1073,7 @@ void LyricRenderer::drawHorizontalGroup(QPainter& p, const RenderLine& line, int
         const QStringList extRows = wrapForWidth(stripWordTags(rawExtended), extendedFm, int(rect.width()));
         for (const QString& row : extRows) {
             drawTextWithStroke(p, row, QRectF(rect.x(), y, rect.width(), extendedFm.height()),
-                               extendedFont, fill, stroke, kLineStrokeWidth);
+                               extendedFont, fill, stroke, StrokeStyle::Stroke3);
             y += extendedFm.height();
         }
     }
@@ -1045,7 +1102,7 @@ void LyricRenderer::drawVerticalGroup(QPainter& p, const VerticalGroupMetrics& m
         for (int i = 0; i < cols.size(); ++i) {
             const qreal colWidth = columnWidth(cols.at(i), fm);
             const QRectF colRect(right - colWidth, rect.top(), colWidth, m.groupHeight);
-            drawVerticalText(p, cols.at(i), colRect, font, fill, m_shadowColor, kLineStrokeWidth, letterSpacing);
+            drawVerticalText(p, cols.at(i), colRect, font, fill, m_shadowColor, StrokeStyle::Stroke4, letterSpacing);
             right = colRect.left();
             if (i < cols.size() - 1)
                 right -= letterSpacing;
@@ -1058,7 +1115,7 @@ void LyricRenderer::drawVerticalGroup(QPainter& p, const VerticalGroupMetrics& m
     }
 }
 
-void LyricRenderer::drawVerticalText(QPainter& p, const QString& text, const QRectF& columnRect, const QFont& font, const QColor& fill, const QColor& stroke, int strokeWidth, int letterSpacing)
+void LyricRenderer::drawVerticalText(QPainter& p, const QString& text, const QRectF& columnRect, const QFont& font, const QColor& fill, const QColor& stroke, StrokeStyle style, int letterSpacing)
 {
     if (text.isEmpty())
         return;
@@ -1067,12 +1124,12 @@ void LyricRenderer::drawVerticalText(QPainter& p, const QString& text, const QRe
     qreal y = columnRect.y();
     for (const QChar ch : text) {
         drawTextWithStroke(p, QString(ch), QRectF(columnRect.x(), y, columnRect.width(), fm.height()),
-                           font, fill, stroke, strokeWidth);
+                           font, fill, stroke, style);
         y += step;
     }
 }
 
-void LyricRenderer::drawTextWithStroke(QPainter& p, const QString& text, const QRectF& rect, const QFont& font, const QColor& fill, const QColor& stroke, int strokeWidth)
+void LyricRenderer::drawTextWithStroke(QPainter& p, const QString& text, const QRectF& rect, const QFont& font, const QColor& fill, const QColor& stroke, StrokeStyle style)
 {
     if (text.isEmpty())
         return;
@@ -1080,18 +1137,42 @@ void LyricRenderer::drawTextWithStroke(QPainter& p, const QString& text, const Q
     p.setFont(font);
     const int flags = textFlags();
 
-    // Four offset passes in the stroke color, then the fill on top
-    // (reference .stroke3/.stroke4 for line-mode and extended lines).
+    // Replicate the reference CSS text-shadow stack (stroke3/stroke4): every
+    // table entry is one zero-blur glyph copy drawn under the text fill, and
+    // duplicate offsets are intentional alpha passes. Em offsets scale with
+    // the rendering font's pixel size (CSS em = the element's own font-size,
+    // active-line zoom and the 0.8x extended scale included); px offsets are
+    // fixed device pixels.
+    const qreal em = font.pixelSize();
+    const StrokeOffset* offsets = (style == StrokeStyle::Stroke3) ? kStroke3Offsets : kStroke4Offsets;
+    const std::size_t passCount = (style == StrokeStyle::Stroke3) ? std::size(kStroke3Offsets) : std::size(kStroke4Offsets);
+
     p.setPen(stroke);
     p.setBrush(stroke);
-    p.drawText(rect.translated(strokeWidth, 0), flags, text);
-    p.drawText(rect.translated(-strokeWidth, 0), flags, text);
-    p.drawText(rect.translated(0, strokeWidth), flags, text);
-    p.drawText(rect.translated(0, -strokeWidth), flags, text);
+    for (std::size_t i = 0; i < passCount; ++i) {
+        const StrokeOffset& offset = offsets[i];
+        const qreal dx = offset.xIsEm ? offset.x * em : offset.x;
+        const qreal dy = offset.yIsEm ? offset.y * em : offset.y;
+        p.drawText(rect.translated(dx, dy), flags, text);
+    }
 
     p.setPen(fill);
     p.setBrush(fill);
     p.drawText(rect, flags, text);
+}
+
+QVector<QPointF> LyricRenderer::strokeOffsetsPx(StrokeStyle style, qreal emPx)
+{
+    const StrokeOffset* offsets = (style == StrokeStyle::Stroke3) ? kStroke3Offsets : kStroke4Offsets;
+    const std::size_t count = (style == StrokeStyle::Stroke3) ? std::size(kStroke3Offsets) : std::size(kStroke4Offsets);
+    QVector<QPointF> result;
+    result.reserve(int(count));
+    for (std::size_t i = 0; i < count; ++i) {
+        const StrokeOffset& offset = offsets[i];
+        result.append(QPointF(offset.xIsEm ? offset.x * emPx : offset.x,
+                              offset.yIsEm ? offset.y * emPx : offset.y));
+    }
+    return result;
 }
 
 LyricRenderer::HorizontalLayout LyricRenderer::measureHorizontal(int zoomOverrideLine, double zoomOverride) const

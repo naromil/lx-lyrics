@@ -78,3 +78,4 @@ references/
 .cache/
 .clangd
 .ruff_cache/
+.opencode/

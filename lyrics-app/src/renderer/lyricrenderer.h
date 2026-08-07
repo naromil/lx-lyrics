@@ -61,6 +61,13 @@ public:
     // the spacer; line styling still follows the settings (align/font/color).
     void setCenteredBlock(bool on);
 
+    // Outline style of the reference stroke3/stroke4 text-shadow mixins
+    // (references/src/renderer-lyric/assets/styles/layout.less). Stroke3 is
+    // the horizontal line-mode halo: a dense stack of em offsets drawn in the
+    // 51%-alpha font-mode shadow shade. Stroke4 is the vertical line-mode
+    // halo: a mix of em and px offsets drawn in the full shadow color.
+    enum class StrokeStyle { Stroke3, Stroke4 };
+
     // --- styling (all setters just store; repaint on change) ---
     void setVertical(bool on);                  // false=horizontal (default)
     void setAlign(Qt::Alignment align);         // AlignLeft|AlignHCenter|AlignRight
@@ -75,7 +82,11 @@ public:
     void setFontWeightExtended(bool on);        // bold extended lines
     void setUnplayColor(const QColor& c);       // default white
     void setPlayedColor(const QColor& c);       // default green rgba(7,197,86,255)
-    void setShadowColor(const QColor& c);       // 4px stroke color for every line
+    // Shadow color used by the stroke3/stroke4 outline (reference
+    // --color-lyric-shadow): horizontal strokes render it at 51% alpha per
+    // the font-mode shade (--color-lyric-shadow-font-mode), vertical strokes
+    // use it at full alpha.
+    void setShadowColor(const QColor& c);
     void setShadowFontModeColor(const QColor& c); // write-only: no longer affects rendering (line-by-line mode); retained for API compatibility
 
     // --- scrolling & interaction (port of useLyric.js) ---
@@ -110,6 +121,12 @@ public:
     }
     double scrollOffset() const { return m_scrollOffset; }
 
+    // Test accessor for the replicated stroke3/stroke4 text-shadow tables: the
+    // table offsets converted to pixels at the given em size (em entries scale
+    // by emPx, px entries stay fixed). A parity guard against the reference
+    // layout.less tables.
+    static QVector<QPointF> strokeOffsetsPx(StrokeStyle style, qreal emPx);
+
 signals:
     // Emitted when a drag starts/stops (reference isMsDown), so the app can
     // swap cursors or suspend other UI while the user grabs the lyrics.
@@ -127,7 +144,7 @@ protected:
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
 private:
-    void drawTextWithStroke(QPainter& p, const QString& text, const QRectF& rect, const QFont& font, const QColor& fill, const QColor& stroke, int strokeWidth);
+    void drawTextWithStroke(QPainter& p, const QString& text, const QRectF& rect, const QFont& font, const QColor& fill, const QColor& stroke, StrokeStyle style);
 
     // Per-group geometry for vertical (column) mode, shared by the layout pass
     // and the drawing pass so column widths stay consistent. Each text is held
@@ -146,7 +163,7 @@ private:
     void paintVertical(QPainter& p);
     void drawHorizontalGroup(QPainter& p, const RenderLine& line, int lineIndex, const QRectF& rect);
     void drawVerticalGroup(QPainter& p, const VerticalGroupMetrics& metrics, int lineIndex, const QRectF& rect);
-    void drawVerticalText(QPainter& p, const QString& text, const QRectF& columnRect, const QFont& font, const QColor& fill, const QColor& stroke, int strokeWidth, int letterSpacing);
+    void drawVerticalText(QPainter& p, const QString& text, const QRectF& columnRect, const QFont& font, const QColor& fill, const QColor& stroke, StrokeStyle style, int letterSpacing);
     // zoomOverrideLine/zoomOverride measure ONE line at a fixed zoom progress
     // (default -1.0 = live progress), used by the isComputeHeight scroll-target
     // compensation to compare the outgoing line's zoomed and base extents.
