@@ -29,9 +29,12 @@ private slots:
     void lrcParserSingleLine();
     void lrcParserMultiTimeTagMergesIntoExtendedLyrics();
     void lrcParserDuplicateTimestampsMerge();
+    void lrcParserDuplicateTimestampExactTextDedupe();
     void lrcParserOffsetTag();
     void lrcParserLinesSortedByTime();
     void lrcParserExtendedLyricsParam();
+    void lrcParserExtendedLyricsParamDedupe();
+    void lrcParserMultiTimeTagAttachesToEveryTimestamp();
     void lrcParserSkipsExtendedLyricCommentLines();
     void lrcParserStrippedTimestampKeyMerge();
     void lrcParserFractionalSecondsMatchJs();
@@ -76,14 +79,17 @@ void TestEngine::lrcParserSingleLine()
 
 void TestEngine::lrcParserMultiTimeTagMergesIntoExtendedLyrics()
 {
-    // Both time tags strip to the same label "0:1.0"; the second occurrence
-    // pushes the text into the first line's extendedLyrics (JS linesMap merge).
-    const LrcParser::Result result = LrcParser::parse(QStringLiteral("[00:01.00][00:01.00]Hello"));
+    // Both time tags strip to the same label "0:1.0"; the multi-tag line's
+    // text becomes an extended lyric of the first line (JS linesMap merge).
+    // Updated for the exact-text dedupe: a single-line duplicate tag pair
+    // repeats the same text, so it yields exactly ONE extended entry.
+    const LrcParser::Result result = LrcParser::parse(
+        QStringLiteral("[00:01.00]First\n[00:01.00][00:01.00]Second"));
 
     QCOMPARE(result.lines.size(), 1);
     QCOMPARE(result.lines.at(0).timeMs, qint64(1000));
-    QCOMPARE(result.lines.at(0).text, QStringLiteral("Hello"));
-    QCOMPARE(result.lines.at(0).extendedLyrics, QStringList{ QStringLiteral("Hello") });
+    QCOMPARE(result.lines.at(0).text, QStringLiteral("First"));
+    QCOMPARE(result.lines.at(0).extendedLyrics, QStringList{ QStringLiteral("Second") });
 }
 
 void TestEngine::lrcParserDuplicateTimestampsMerge()
@@ -97,6 +103,26 @@ void TestEngine::lrcParserDuplicateTimestampsMerge()
     QCOMPARE(result.lines.at(0).timeMs, qint64(1000));
     QCOMPARE(result.lines.at(0).text, QStringLiteral("First"));
     QCOMPARE(result.lines.at(0).extendedLyrics, QStringList{ QStringLiteral("Second") });
+}
+
+void TestEngine::lrcParserDuplicateTimestampExactTextDedupe()
+{
+    // The plugin sends embedded-tag + sidecar unions, so the same line often
+    // arrives twice VERBATIM. Exact-text duplicates at one timestamp are
+    // suppressed; different texts (translations) still merge.
+    const LrcParser::Result result = LrcParser::parse(
+        QStringLiteral("[00:01.00]First\n[00:01.00]First\n[00:01.00]Second"));
+
+    QCOMPARE(result.lines.size(), 1);
+    QCOMPARE(result.lines.at(0).timeMs, qint64(1000));
+    QCOMPARE(result.lines.at(0).text, QStringLiteral("First"));
+    QCOMPARE(result.lines.at(0).extendedLyrics, QStringList{ QStringLiteral("Second") });
+
+    // An exact duplicate of an already-merged extended lyric is suppressed too.
+    const LrcParser::Result repeatedExtended = LrcParser::parse(
+        QStringLiteral("[00:01.00]First\n[00:01.00]A\n[00:01.00]A"));
+    QCOMPARE(repeatedExtended.lines.size(), 1);
+    QCOMPARE(repeatedExtended.lines.at(0).extendedLyrics, QStringList{ QStringLiteral("A") });
 }
 
 void TestEngine::lrcParserOffsetTag()
@@ -137,6 +163,64 @@ void TestEngine::lrcParserExtendedLyricsParam()
     QCOMPARE(result.lines.at(1).text, QStringLiteral("World"));
     // "//" is skipped; "Orphan" has no matching timed line so it is dropped.
     QCOMPARE(result.lines.at(1).extendedLyrics, QStringList{ QStringLiteral("Tr2") });
+}
+
+void TestEngine::lrcParserExtendedLyricsParamDedupe()
+{
+    // The exact-text dedupe rule is uniform across the lrc-embedded merge
+    // branch and the tlrc/rlrc attachment path (attachExtendedLyric): an
+    // exact-text duplicate at one timestamp is never meaningful content.
+    // A translation identical to the main line is not attached at all.
+    const LrcParser::Result sameAsMain = LrcParser::parse(
+        QStringLiteral("[00:01.00]First"), { QStringLiteral("[00:01.00]First") });
+
+    QCOMPARE(sameAsMain.lines.size(), 1);
+    QCOMPARE(sameAsMain.lines.at(0).text, QStringLiteral("First"));
+    QCOMPARE(sameAsMain.lines.at(0).extendedLyrics.size(), 0);
+
+    // A translation repeated verbatim within one extended-lyrics block is
+    // attached exactly once.
+    const LrcParser::Result repeatedTranslation = LrcParser::parse(
+        QStringLiteral("[00:01.00]First"),
+        { QStringLiteral("[00:01.00]Second\n[00:01.00]Second") });
+
+    QCOMPARE(repeatedTranslation.lines.size(), 1);
+    QCOMPARE(repeatedTranslation.lines.at(0).text, QStringLiteral("First"));
+    QCOMPARE(repeatedTranslation.lines.at(0).extendedLyrics,
+             QStringList{ QStringLiteral("Second") });
+}
+
+void TestEngine::lrcParserMultiTimeTagAttachesToEveryTimestamp()
+{
+    // attachExtendedLyric filters exact-text duplicates with a GUARD, not a
+    // `continue`: one extended line carrying MULTIPLE time tags must attach to
+    // EVERY matching timed line. An `else continue;` refactor would silently
+    // drop the 00:02.00 translation and CI would not catch it.
+    const LrcParser::Result result = LrcParser::parse(
+        QStringLiteral("[00:01.00]A\n[00:02.00]B"),
+        { QStringLiteral("[00:01.00][00:02.00]T") });
+
+    QCOMPARE(result.lines.size(), 2);
+    QCOMPARE(result.lines.at(0).timeMs, qint64(1000));
+    QCOMPARE(result.lines.at(0).text, QStringLiteral("A"));
+    QCOMPARE(result.lines.at(0).extendedLyrics, QStringList{ QStringLiteral("T") });
+    QCOMPARE(result.lines.at(1).timeMs, qint64(2000));
+    QCOMPARE(result.lines.at(1).text, QStringLiteral("B"));
+    QCOMPARE(result.lines.at(1).extendedLyrics, QStringList{ QStringLiteral("T") });
+
+    // The same guard filters an exact-text repeat from a later extended line:
+    // "T" is already attached to line A, so it must not be appended twice.
+    const LrcParser::Result deduped = LrcParser::parse(
+        QStringLiteral("[00:01.00]A\n[00:02.00]B"),
+        { QStringLiteral("[00:01.00][00:02.00]T\n[00:01.00]T") });
+
+    QCOMPARE(deduped.lines.size(), 2);
+    QCOMPARE(deduped.lines.at(0).timeMs, qint64(1000));
+    QCOMPARE(deduped.lines.at(0).text, QStringLiteral("A"));
+    QCOMPARE(deduped.lines.at(0).extendedLyrics, QStringList{ QStringLiteral("T") });
+    QCOMPARE(deduped.lines.at(1).timeMs, qint64(2000));
+    QCOMPARE(deduped.lines.at(1).text, QStringLiteral("B"));
+    QCOMPARE(deduped.lines.at(1).extendedLyrics, QStringList{ QStringLiteral("T") });
 }
 
 void TestEngine::lrcParserSkipsExtendedLyricCommentLines()

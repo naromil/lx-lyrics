@@ -26,8 +26,9 @@ struct LyricsResult
 class LyricSource
 {
 public:
-    /// Raw lyrics for a track. Embedded tags win over the sidecar; a missing
-    /// or undecodable source yields an empty lrc (never a half-decoded string).
+    /// Raw lyrics for a track. The sidecar and embedded-tag lyrics are unioned
+    /// when both exist (sidecar first); an empty lrc means neither source
+    /// produced decodable text.
     static LyricsResult fetch(const Fooyin::Track& track);
 };
 

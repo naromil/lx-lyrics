@@ -194,6 +194,24 @@ QString readSidecar(const Fooyin::Track& track)
     return decodeLyricsBytes(file.readAll(), candidate);
 }
 
+/// Join the .lrc sidecar and the embedded-tag lyrics into ONE raw string.
+/// Raw transport only — no LRC parsing happens here: the sidecar comes first
+/// because it is the curated source and usually the superset. With the sidecar
+/// first, its metadata tags ([offset:], [ti:] etc.) now take precedence when
+/// both sources carry them (previously embedded's won). The app-side parser
+/// merges duplicate timestamps into extended lyric lines and suppresses
+/// exact-text duplicates, so translations reach the renderer instead of being
+/// shadowed by a strict-subset embedded tag. Returns the non-empty source
+/// when only one exists, empty when neither does.
+QString combineLyricSources(const QString& sidecar, const QString& embedded)
+{
+    if (sidecar.isEmpty())
+        return embedded;
+    if (embedded.isEmpty())
+        return sidecar;
+    return sidecar + QLatin1Char('\n') + embedded;
+}
+
 } // namespace
 
 namespace LxLyrics {
@@ -201,7 +219,14 @@ namespace LxLyrics {
 LyricsResult LyricSource::fetch(const Fooyin::Track& track)
 {
     const QString embedded = embeddedLyrics(track);
-    const QString lrc = !embedded.isEmpty() ? embedded : readSidecar(track);
+    const QString sidecar = readSidecar(track);
+    // The embedded tag and the sidecar are BOTH sent when present: many
+    // sidecars are the curated superset (English lines + Chinese translations)
+    // while the embedded tag holds only a strict subset, so sending just the
+    // tag shadows the translations. No LRC parsing here — the app-side parser
+    // merges the duplicate timestamps into extended lyric lines and suppresses
+    // exact-text duplicates.
+    const QString lrc = combineLyricSources(sidecar, embedded);
     return LyricsResult{lrc, QString(), QString(), QString()};
 }
 

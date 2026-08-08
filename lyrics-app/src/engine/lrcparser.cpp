@@ -109,8 +109,16 @@ void attachExtendedLyric(QHash<QString, LrcLine>& lineMap, const QString& extend
         while (timeMatches.hasNext()) {
             const QString timeStr = formatTimeLabel(timeMatches.next().captured());
             auto it = lineMap.find(timeStr);
-            if (it != lineMap.end())
-                it->extendedLyrics.append(text);
+            if (it != lineMap.end()) {
+                // Same exact-text dedupe rule as parseLines, now uniform across
+                // the lrc-embedded and tlrc/rlrc extended-lyrics paths: an
+                // exact-text duplicate at one timestamp is never meaningful
+                // content, whichever source it came from. No `continue` here —
+                // remaining time tags of this same extended line must still be
+                // visited, so the duplicate is filtered by the guard instead.
+                if (text != it->text && !it->extendedLyrics.contains(text))
+                    it->extendedLyrics.append(text);
+            }
         }
     }
 }
@@ -175,7 +183,19 @@ QVector<LrcLine> parseLines(const QString& lrc, const QStringList& extendedLyric
                 while (timeMatches.hasNext()) {
                     const QString timeStr = formatTimeLabel(timeMatches.next().captured());
                     if (lineMap.contains(timeStr)) {
-                        lineMap[timeStr].extendedLyrics.append(text);
+                        LrcLine& line = lineMap[timeStr];
+                        // An exact-text duplicate at one timestamp is never
+                        // meaningful content in any single source either
+                        // ("[00:01.00]Ah\n[00:01.00]Ah" renders once here where
+                        // line-player.js would render it twice); the plugin's
+                        // embedded-tag + sidecar unions just make such
+                        // VERBATIM duplicates far more common. DELIBERATE,
+                        // SMALL DEVIATION from line-player.js (which appends
+                        // unconditionally): skip the duplicate. Different
+                        // texts (translations) still merge below.
+                        if (text == line.text || line.extendedLyrics.contains(text))
+                            continue;
+                        line.extendedLyrics.append(text);
                         continue;
                     }
 

@@ -118,7 +118,7 @@ byte = clamp(round(255 * log10(1 + magnitude * SCALE) / log10(256)), 0, 255)
 
 | Field | Format |
 |-------|--------|
-| `lrc`, `tlrc`, `rlrc` | LRC text (UTF-8). May be the empty string `""` when absent. |
+| `lrc`, `tlrc`, `rlrc` | LRC text (UTF-8). May be the empty string `""` when absent. A host may send the concatenation of multiple lyric sources in `lrc` (e.g. embedded tag + sidecar file); the app merges duplicate timestamps into extended lyric lines and suppresses exact-text duplicates. |
 | `lxlrc` | LX karaoke format; word tags are `<start,duration>` with both values in **ms**. May be `""` when absent. |
 | `id` | Opaque track id string. May be `""`/`null` for "no track". |
 | `singer`, `name`, `album` | Display strings. May be `""` when absent. |
@@ -185,7 +185,7 @@ close:    host socket closes → app started with --exit-on-disconnect terminate
 
 ## 11. Future extensions
 
-- **`tlrc` / `rlrc` / `lxlrc` are carried but empty in v1 from the Fooyin plugin.** v1 lyric sources are embedded tags and local `.lrc` files only. The wire format already supports them (§5/§6) so richer sources can be enabled without a protocol change.
+- **`tlrc` / `rlrc` / `lxlrc` are carried but empty in v1 from the Fooyin plugin.** v1 lyric sources are embedded tags and local `.lrc` files; when both are present the plugin sends their union (sidecar first). The wire format already supports them (§5/§6) so richer sources can be enabled without a protocol change.
 - **`set_playbackRate` is reserved.** Fooyin sends `1.0`; the field exists so rate-capable hosts can use it later.
 - **`open_settings` is a control message, not a state message.** It carries no payload and expects no reply; the app opens its configuration dialog, or raises an already-open one. Apps built before this action treat it as an unknown `action` and close the connection per §7, so hosts SHOULD only send it when they know the connected app supports it (e.g. a version-negotiated spawn).
 - **Wayland always-on-top caveat is app-level, not protocol.** Making the lyric window stay on top under Wayland compositors is entirely the display app's concern and out of scope for this wire contract.
