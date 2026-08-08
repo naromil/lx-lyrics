@@ -153,3 +153,37 @@ target_link_libraries(lyrics-app-renderer-tests PRIVATE
 )
 
 add_test(NAME renderer COMMAND lyrics-app-renderer-tests)
+
+# Tests for the lyric pipeline controller: an empty lyric shows the no-lyrics
+# placeholder, an all-static lyric (invalid timestamps) shows its centered
+# static lines, never a blank pane (headless/offscreen).
+add_executable(lyrics-app-controller-tests
+    tests/tst_controller.cpp
+    src/app/appcontext.h
+    src/app/lyriccontroller.cpp
+    src/window/lyricwindow.cpp
+    src/renderer/lyricrenderer.cpp
+    src/renderer/controlbar.cpp
+    src/renderer/spectrumwidget.cpp
+    src/settings/settingsdialog.cpp
+    src/settings/colorpickerbutton.cpp
+    src/config/desktoplyricconfig.cpp
+    src/engine/lrcparser.cpp
+    src/engine/wordparser.cpp
+    src/engine/lyricselector.cpp
+    src/engine/lyricclock.cpp
+    src/engine/lyricplayer.cpp
+    src/i18n/translationmanager.cpp
+    translations.qrc
+)
+
+target_include_directories(lyrics-app-controller-tests PRIVATE src/)
+
+target_link_libraries(lyrics-app-controller-tests PRIVATE
+    Qt6::Test
+    Qt6::Widgets
+    Qt6::Network
+    Qt6::WebSockets
+)
+
+add_test(NAME controller COMMAND lyrics-app-controller-tests)

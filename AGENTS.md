@@ -10,7 +10,7 @@ Two independent CMake/C++23 projects with **zero shared source**; the WebSocket 
 ## Build & verify (no CI, no lint config)
 ```sh
 cd lyrics-app && cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug && cmake --build build
-ctest --test-dir build                 # 4 suites: engine(31) lyricplayer(13) protocol(11) config(8)
+ctest --test-dir build                 # 6 suites: engine(34) lyricplayer(14) protocol(11) config(8) renderer(10) controller(6)
 timeout 3 ./build/lx-lyrics-app --demo # expect exit code 124 (timeout kill = no crash)
 ```
 - fooyin-plugin needs Fooyin built with `INSTALL_HEADERS=ON` and ICU; artifact is `build/fyplugin_lxlyrics.so`.

@@ -21,10 +21,18 @@ struct LrcTag {
 
 // One timed lyric line. When two timestamps strip to the same label the later
 // text is appended to extendedLyrics instead of creating a new line.
+//
+// A STATIC line is text with no valid timestamp (e.g. "[00:00.-1]作词: ..."):
+// it renders but is never visited — never the active line, never played-
+// colored, never a scroll target. isStatic implies timeMs == -1, which the
+// stable sort exploits to place static lines FIRST (before all timed lines,
+// preserving their relative file order). This is a DELIBERATE DEVIATION from
+// line-player.js, which drops such lines.
 struct LrcLine {
     qint64 timeMs = 0;
     QString text;
     QStringList extendedLyrics;
+    bool isStatic = false;
 };
 
 // Pure, static parser for LRC lyrics.

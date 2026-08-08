@@ -22,6 +22,8 @@
 #include <QVBoxLayout>
 #include <QVariant>
 
+#include <algorithm>
+
 #include "app/appcontext.h"
 #include "bridge/wsclient.h"
 #include "config/desktoplyricconfig.h"
@@ -168,8 +170,9 @@ void LyricController::pause()
 
 void LyricController::stop()
 {
-    // player.stop() clears the lyric and emits lyricsChanged + lineChanged(-1),
-    // which pushLyricsToRenderer turns into the blank renderer state.
+    // player.stop() clears the lyric and emits lyricsChanged + lineChanged(-1);
+    // the zero-line push is intercepted in pushLyricsToRenderer and becomes the
+    // no-lyrics placeholder instead of a blank pane.
     m_player->stop();
     m_renderer->setPlaying(false);
 }
@@ -235,7 +238,16 @@ bool LyricController::reapplyLyricSelection()
     // idempotent, so re-feeding is safe for config-driven re-selection too.
     m_selector->setLyrics(m_lastLrc, m_lastTlrc, m_lastRlrc, m_lastLxlrc);
     if (m_selector->hasLyrics()) {
-        return m_player->setLyric(m_selector->selectedLyric(), m_selector->extendedLyrics());
+        const bool changed = m_player->setLyric(m_selector->selectedLyric(), m_selector->extendedLyrics());
+        // Only a genuinely empty parse lands here: invalid timestamps now
+        // parse to STATIC lines (non-empty), which reach the renderer through
+        // pushLyricsToRenderer — it may already have shown the custom static
+        // placeholder on the fresh-push path, so re-showing it here is
+        // idempotent. The guard also covers the dedup path (an identical
+        // re-push emits no lyricsChanged, so the placeholder must be re-shown).
+        if (m_player->lines().isEmpty())
+            showNoLyricsPlaceholder();
+        return changed;
     }
     // No playable lyric (no embedded tags, no sidecar .lrc): clear any stale
     // player lines (a later play() must not resurrect the previous track), then
@@ -284,20 +296,55 @@ void LyricController::pushLyricsToRenderer()
     const QVector<LrcLine>& playerLines = m_player->lines();
     lines.reserve(playerLines.size());
     for (const LrcLine& line : playerLines)
-        lines.append({ line.text, line.extendedLyrics });
+        lines.append({ line.text, line.extendedLyrics, line.isStatic });
+
+    // A zero-line push (a lyric cleared via stop(), or a genuinely empty
+    // parse) must never reach the renderer as a blank pane — the placeholder
+    // wins. Invalid timestamps no longer land here: they parse to static
+    // lines (non-empty) and take the custom placeholder below. This runs on
+    // the synchronous lyricsChanged -> pushLyricsToRenderer chain (same
+    // thread, AutoConnection), so the placeholder is not overwritten by a
+    // later event.
+    if (lines.isEmpty()) {
+        showNoLyricsPlaceholder();
+        return;
+    }
+
+    // An all-static lyric (every timestamp broken, e.g. Skyland - Mich.lrc)
+    // becomes a CUSTOM placeholder: the static text itself, centered like the
+    // no-lyrics placeholder (setCenteredBlock(true)), and never active —
+    // setActiveLine(-1) keeps the played color and zoom off. DELIBERATE
+    // DEVIATION from line-player.js, which drops such lines entirely.
+    const bool allStatic = std::all_of(playerLines.cbegin(), playerLines.cend(),
+                                       [](const LrcLine& l) { return l.isStatic; });
+    if (allStatic) {
+        m_renderer->setCenteredBlock(true);
+        m_renderer->setLines(lines);
+        m_renderer->setActiveLine(-1);
+        return;
+    }
 
     m_renderer->setCenteredBlock(false); // Real lyrics: back to the scroll layout.
     m_renderer->setLines(lines);
+    // currentLine() returns -1 while the player parks on a static lead line,
+    // so mixed lyrics never activate a static line pre-play.
     m_renderer->setActiveLine(m_player->currentLine());
 }
 
 void LyricController::onSettingChanged(const QString& key, const QVariant& value)
 {
     if (key == kKeyShowNoLyricMetadata) {
-        // Live apply: re-running the selector re-reads the new value inside
-        // showNoLyricsPlaceholder. Must return here so the key never falls
-        // through to the renderer/selector dispatch below.
-        if (!m_selector->hasLyrics())
+        // Live apply: the placeholder is showing exactly when the player has
+        // zero lines (valid lyric -> lines non-empty -> skip, no useless work;
+        // empty lrc -> lines empty -> re-apply). A static lyric (invalid
+        // timestamps) also has non-empty lines, and that is CORRECT: the
+        // metadata toggle must not affect static lines — they are real text,
+        // not the metadata placeholder. Re-running the selection re-reads the
+        // new value inside showNoLyricsPlaceholder; setLyric dedups into a
+        // no-op, and the reapplyLyricSelection guard re-shows the placeholder.
+        // Must return here so the key never falls through to the
+        // renderer/selector dispatch below.
+        if (m_player->lines().isEmpty())
             reapplyLyricSelection();
         return;
     }

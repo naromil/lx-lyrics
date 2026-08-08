@@ -30,6 +30,7 @@ class QWheelEvent;
 struct RenderLine {
     QString text;          // main line text (may contain <start,dur> karaoke tags)
     QStringList extended;  // extended lines (translation/romaji)
+    bool isStatic = false; // broken-timestamp text: rendered, but never active, never colored
 };
 
 // Paints the lyric list with QPainter, mirroring the reference LyricHorizontal
@@ -120,6 +121,17 @@ public:
             : 0.0;
     }
     double scrollOffset() const { return m_scrollOffset; }
+
+    // Test accessor for the line list size (placeholder vs real lines).
+    int lineCount() const { return m_lines.size(); }
+
+    // Test accessor for the current active line (exposed for tests; -1 = none
+    // active — static lines are clamped to -1).
+    int activeLine() const { return m_activeLine; }
+
+    // Test accessor for the static-placeholder presentation mode (custom
+    // placeholder and no-lyrics placeholder both center the block).
+    bool centeredBlock() const { return m_centeredBlock; }
 
     // Test accessor for the replicated stroke3/stroke4 text-shadow tables: the
     // table offsets converted to pixels at the given em size (em entries scale

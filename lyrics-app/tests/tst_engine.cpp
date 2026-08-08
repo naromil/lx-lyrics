@@ -19,6 +19,9 @@
 // Multi-line parse behavior is a documented, deliberate deviation from the JS
 // reference: line-player.js's stateful /g exec drops every other timed line
 // (see kTimeFieldExp in lrcparser.cpp), while this port parses every line.
+// Static lines (text behind a broken timestamp like "[00:00.-1]") are a second
+// deliberate deviation: line-player.js drops them, this port keeps them as
+// rendered-but-never-visited lines (see LrcLine::isStatic).
 class TestEngine : public QObject {
     Q_OBJECT
 
@@ -34,8 +37,11 @@ private slots:
     void lrcParserFractionalSecondsMatchJs();
     void lrcParserEmptyLyric();
     void lrcParserCrlfLineEndings();
-    void lrcParserNoFractionalSecondsDropped();
+    void lrcParserNoFractionalSecondsBecomesStatic();
     void lrcParserManyColonFieldsParsedAtZero();
+    void lrcParserInvalidTimestampParsedAsStatic();
+    void lrcParserSameLineBrokenAndValidFields();
+    void lrcParserNegativeTimestampsDropped();
     void lrcParserNegativeOffset();
     void lrcParserHexOffsetDefaultsZero();
 
@@ -198,13 +204,18 @@ void TestEngine::lrcParserCrlfLineEndings()
     QCOMPARE(result.lines.at(1).text, QStringLiteral("B"));
 }
 
-void TestEngine::lrcParserNoFractionalSecondsDropped()
+void TestEngine::lrcParserNoFractionalSecondsBecomesStatic()
 {
-    // kTimeExp requires the (?:\.\d{1,3}) group, so "[00:01]" produces no match
-    // and the line is silently dropped — faithful to JS (times == null).
+    // DELIBERATE DEVIATION from the JS reference: kTimeExp requires the
+    // (?:\.\d{1,3}) group, so "[00:01]" yields no valid time (JS times ==
+    // null drops the line) — the text now becomes a STATIC lyric line instead
+    // (rendered, never visited).
     const LrcParser::Result result = LrcParser::parse(QStringLiteral("[00:01]Hello"));
 
-    QCOMPARE(result.lines.size(), 0);
+    QCOMPARE(result.lines.size(), 1);
+    QVERIFY(result.lines.at(0).isStatic);
+    QCOMPARE(result.lines.at(0).timeMs, qint64(-1));
+    QCOMPARE(result.lines.at(0).text, QStringLiteral("Hello"));
 }
 
 void TestEngine::lrcParserManyColonFieldsParsedAtZero()
@@ -217,6 +228,107 @@ void TestEngine::lrcParserManyColonFieldsParsedAtZero()
     QCOMPARE(result.lines.size(), 1);
     QCOMPARE(result.lines.at(0).timeMs, qint64(0));
     QCOMPARE(result.lines.at(0).text, QStringLiteral("X"));
+}
+
+void TestEngine::lrcParserInvalidTimestampParsedAsStatic()
+{
+    // DELIBERATE DEVIATION from the JS reference (line-player.js drops these
+    // lines): a broken timestamp such as "[00:00.-1]" (the '-' is outside
+    // kTimeFieldExp's [\d:.] class) turns the text into a STATIC lyric line —
+    // rendered but never visited (never active, never colored, never a scroll
+    // target). Skyland - Mich.lrc regression: a lyric whose timestamps are
+    // ALL broken must parse to static lines, not to zero lines.
+    const LrcParser::Result skyland = LrcParser::parse(
+        QStringLiteral("[00:00.-1]作词: Michal Wisniewski\n[00:00.-1]作曲: Michal Wisniewski"));
+
+    QCOMPARE(skyland.lines.size(), 2);
+    for (const LrcLine& line : skyland.lines) {
+        QVERIFY(line.isStatic);
+        QCOMPARE(line.timeMs, qint64(-1));
+    }
+    QCOMPARE(skyland.lines.at(0).text, QStringLiteral("作词: Michal Wisniewski"));
+    QCOMPARE(skyland.lines.at(1).text, QStringLiteral("作曲: Michal Wisniewski"));
+
+    // A valid field shape with no fractional part has no valid time either
+    // (kTimeExp requires the (?:\.\d{1,3}) group): static first, timed second.
+    const LrcParser::Result mixed = LrcParser::parse(
+        QStringLiteral("[00:01]Hello\n[00:02.00]World"));
+    QCOMPARE(mixed.lines.size(), 2);
+    QVERIFY(mixed.lines.at(0).isStatic);
+    QCOMPARE(mixed.lines.at(0).timeMs, qint64(-1));
+    QCOMPARE(mixed.lines.at(0).text, QStringLiteral("Hello"));
+    QVERIFY(!mixed.lines.at(1).isStatic);
+    QCOMPARE(mixed.lines.at(1).timeMs, qint64(2000));
+    QCOMPARE(mixed.lines.at(1).text, QStringLiteral("World"));
+
+    // A broken field before a valid timed line: the broken field is dropped
+    // and the timed line parses normally.
+    const LrcParser::Result brokenLead = LrcParser::parse(
+        QStringLiteral("[00:00.-1]lead\n[00:05.00]real"));
+    QCOMPARE(brokenLead.lines.size(), 2);
+    QVERIFY(brokenLead.lines.at(0).isStatic);
+    QCOMPARE(brokenLead.lines.at(0).timeMs, qint64(-1));
+    QCOMPARE(brokenLead.lines.at(0).text, QStringLiteral("lead"));
+    QVERIFY(!brokenLead.lines.at(1).isStatic);
+    QCOMPARE(brokenLead.lines.at(1).timeMs, qint64(5000));
+    QCOMPARE(brokenLead.lines.at(1).text, QStringLiteral("real"));
+
+    // Tags and bare text remain dropped: static lines only come from text
+    // after a broken timestamp field, never from tags or plain lines.
+    const LrcParser::Result tags = LrcParser::parse(
+        QStringLiteral("[ti:Title]\nHello"));
+    QCOMPARE(tags.lines.size(), 0);
+}
+
+void TestEngine::lrcParserSameLineBrokenAndValidFields()
+{
+    // kInvalidTimeFieldExp peels ONE broken field at a time, so a valid field
+    // AFTER a broken one on the SAME line is re-parsed — the broken field is
+    // dropped instead of swallowing the timed line into a static.
+    const LrcParser::Result brokenThenValid = LrcParser::parse(
+        QStringLiteral("[00:00.-1][00:05.00]real"));
+    QCOMPARE(brokenThenValid.lines.size(), 1);
+    QVERIFY(!brokenThenValid.lines.at(0).isStatic);
+    QCOMPARE(brokenThenValid.lines.at(0).timeMs, qint64(5000));
+    QCOMPARE(brokenThenValid.lines.at(0).text, QStringLiteral("real"));
+
+    // Tail asymmetry: a broken field AFTER the valid run is stripped from the
+    // trailing text, so the line keeps its timed anchor at 1000 ms instead of
+    // carrying the broken field as literal text.
+    const LrcParser::Result validThenBroken = LrcParser::parse(
+        QStringLiteral("[00:01.00][00:00.-1]text"));
+    QCOMPARE(validThenBroken.lines.size(), 1);
+    QVERIFY(!validThenBroken.lines.at(0).isStatic);
+    QCOMPARE(validThenBroken.lines.at(0).timeMs, qint64(1000));
+    QCOMPARE(validThenBroken.lines.at(0).text, QStringLiteral("text"));
+
+    // Consecutive broken fields: each is peeled in turn, then the trailing
+    // text becomes a static line.
+    const LrcParser::Result consecutiveBroken = LrcParser::parse(
+        QStringLiteral("[00:00.-1][00:00.-2]both"));
+    QCOMPARE(consecutiveBroken.lines.size(), 1);
+    QVERIFY(consecutiveBroken.lines.at(0).isStatic);
+    QCOMPARE(consecutiveBroken.lines.at(0).timeMs, qint64(-1));
+    QCOMPARE(consecutiveBroken.lines.at(0).text, QStringLiteral("both"));
+}
+
+void TestEngine::lrcParserNegativeTimestampsDropped()
+{
+    // Reference parity: "[-00:05.00]" is a NEGATIVE timestamp (pre-roll), not
+    // a broken fraction like "[00:00.-1]" — the whole line is dropped, exactly
+    // like line-player.js.
+    const LrcParser::Result negativeOnly = LrcParser::parse(
+        QStringLiteral("[-00:05.00]pre"));
+    QCOMPARE(negativeOnly.lines.size(), 0);
+
+    // A negative-timestamp line before a valid timed line is dropped; the
+    // timed line survives untouched.
+    const LrcParser::Result negativeThenTimed = LrcParser::parse(
+        QStringLiteral("[-00:05.00]pre\n[00:01.00]real"));
+    QCOMPARE(negativeThenTimed.lines.size(), 1);
+    QVERIFY(!negativeThenTimed.lines.at(0).isStatic);
+    QCOMPARE(negativeThenTimed.lines.at(0).timeMs, qint64(1000));
+    QCOMPARE(negativeThenTimed.lines.at(0).text, QStringLiteral("real"));
 }
 
 void TestEngine::lrcParserNegativeOffset()

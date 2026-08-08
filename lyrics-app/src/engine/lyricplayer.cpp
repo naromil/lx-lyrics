@@ -49,7 +49,16 @@ bool LyricPlayer::setLyric(const QString& lrc, const QStringList& extendedLyrics
 
     const LrcParser::Result result = LrcParser::parse(lrc, extendedLyrics);
     m_lines = result.lines;
-    m_lineMode = !m_lines.isEmpty() && !WordParser::hasTimeTags(m_lines[0].text);
+    m_firstTimedIndex = -1;
+    for (int i = 0; i < m_lines.size(); ++i) {
+        if (!m_lines[i].isStatic) {
+            m_firstTimedIndex = i;
+            break;
+        }
+    }
+    // Line-mode detection uses the first TIMED line: a static lead line
+    // (broken timestamp) must not flip a karaoke lyric into line mode.
+    m_lineMode = m_firstTimedIndex >= 0 && !WordParser::hasTimeTags(m_lines[m_firstTimedIndex].text);
     m_tagOffsetMs = result.tag.offsetMs;
     // Line mode reserves the first 60 ms for the un-timed lead-in word, exactly
     // like the Lyric facade in index.js.
@@ -61,7 +70,9 @@ bool LyricPlayer::setLyric(const QString& lrc, const QStringList& extendedLyrics
 
 void LyricPlayer::play(qint64 positionMs)
 {
-    if (m_lines.isEmpty())
+    // All-static lyrics never play: with no timed line nothing can ever become
+    // active, so the static lines are never visited.
+    if (m_lines.isEmpty() || m_firstTimedIndex < 0)
         return;
     pause();
     m_playing = true;
@@ -134,11 +145,21 @@ qint64 LyricPlayer::currentPositionMs() const
 
 int LyricPlayer::currentLine() const
 {
-    return m_curLineNum;
+    // A static line is never "current" — this is what keeps the renderer from
+    // activating a static line. Pre-play the player parks on index 0 (the
+    // LEADING static of a mixed lyric, so the lead-in state reports -1 too);
+    // after play() runs to the end it parks on the trailing index k-1, which
+    // is always timed when playing (statics sort first), so it reports k-1.
+    return (m_curLineNum >= 0 && m_curLineNum < m_lines.size() && !m_lines[m_curLineNum].isStatic)
+        ? m_curLineNum
+        : -1;
 }
 
 QString LyricPlayer::currentText() const
 {
+    // Intentional asymmetry with currentLine(): a parked static line reports
+    // its text here but -1 from currentLine() (tests only; no production
+    // caller).
     return (m_curLineNum >= 0 && m_curLineNum < m_lines.size()) ? m_lines[m_curLineNum].text : QString();
 }
 
@@ -159,11 +180,15 @@ qint64 LyricPlayer::offset() const
 
 int LyricPlayer::findCurLineNum(qint64 curTime, int startIndex) const
 {
+    // Statics are a prefix [0, m_firstTimedIndex) with timeMs == -1, so the
+    // curTime <= timeMs test below never fires on them; the first timed line k
+    // is line 0's analog — current even before its time. Behavior-identical
+    // to the old "return 0" when there are no statics (k == 0).
     if (curTime <= 0)
-        return 0;
+        return m_firstTimedIndex;
     for (int i = startIndex; i < m_lines.size(); ++i)
         if (curTime <= m_lines[i].timeMs)
-            return (i == 0 ? 0 : i - 1);
+            return (i == m_firstTimedIndex ? i : i - 1);
     return m_lines.size() - 1;
 }
 
@@ -173,6 +198,9 @@ void LyricPlayer::refresh()
     if (m_curLineNum >= m_lines.size() - 1) {
         // JS _handleMaxLine: emit the last line once, then pause. Never reads
         // past the final line, so play() far past the end lands here safely.
+        // The last line is always TIMED when playing (all-static lyrics never
+        // reach play(), and statics sort first), so this never emits a static
+        // index.
         emit lineChanged(m_lines.size() - 1, m_lines.last().text);
         pause();
         return;
@@ -198,10 +226,11 @@ void LyricPlayer::refresh()
         return;
     }
 
-    if (m_curLineNum == 0) {
-        // Before the first line: emit the (-1,"") lead-in and wait for line 0.
+    if (m_curLineNum <= m_firstTimedIndex) {
+        // Before the first timed line (static lines lead the list) the player
+        // stays in the (-1,"") lead-in state and waits for that line.
         emit lineChanged(-1, QString());
-        scheduleNext((m_lines[0].timeMs - currentTime) / m_rate);
+        scheduleNext((m_lines[m_firstTimedIndex].timeMs - currentTime) / m_rate);
         return;
     }
 

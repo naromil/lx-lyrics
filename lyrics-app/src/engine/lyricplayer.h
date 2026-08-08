@@ -57,6 +57,9 @@ private:
     LyricClock m_clock;
     QTimer m_timer;
     QVector<LrcLine> m_lines;
+    // First index in m_lines whose line is NOT static (statics form an
+    // un-visitable prefix with timeMs == -1); -1 when there is no timed line.
+    int m_firstTimedIndex = 0;
     // Last setLyric inputs, kept so an identical host re-push is a no-op (the
     // Fooyin plugin re-pushes set_info+set_lyric+set_play periodically).
     QString m_lastLrc;

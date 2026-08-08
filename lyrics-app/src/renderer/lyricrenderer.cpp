@@ -459,8 +459,11 @@ void LyricRenderer::setCenteredBlock(bool on)
 
 void LyricRenderer::setActiveLine(int index)
 {
-    // Parse at the boundary: out-of-range indexes mean "no active line".
-    const int clamped = (index >= 0 && index < m_lines.size()) ? index : -1;
+    // Parse at the boundary: out-of-range indexes mean "no active line", and a
+    // STATIC line can never become active/colored — structural guarantee at
+    // the renderer boundary, regardless of caller. The player already never
+    // emits static indices; this clamps any stray push anyway.
+    const int clamped = (index >= 0 && index < m_lines.size() && !m_lines[index].isStatic) ? index : -1;
     if (m_activeLine == clamped)
         return;
     const int oldLine = m_activeLine;
