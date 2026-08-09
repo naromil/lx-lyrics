@@ -17,8 +17,10 @@
 #include "renderer/lyricrenderer.h"
 
 // Run headless: the renderer needs no real window system, and the suite must
-// work in CI/ctest without a display. (Static init runs before QApplication.)
-static const bool s_forceOffscreen = [] {
+// work in CI/ctest without a display. (Static init runs before QApplication;
+// the NOLINT below is justified: qputenv cannot realistically throw here, and
+// if it did, a hard crash is the right failure mode for a test.)
+static const bool s_forceOffscreen = [] { // NOLINT(bugprone-throwing-static-initialization)
     qputenv("QT_QPA_PLATFORM", "offscreen");
     return true;
 }();
@@ -51,6 +53,7 @@ private slots:
     void outlineVisibleOnWhiteBackground();
     void zoomGrowsSmoothlyBetweenProgressSteps();
     void zoomStaysAnchoredToAlignment();
+    void lineFlushToAlignedBorder();
 };
 
 void TestLyricRenderer::fastChangesDoNotSnapColorBack()
@@ -509,6 +512,63 @@ void TestLyricRenderer::zoomStaysAnchoredToAlignment()
              qPrintable(QStringLiteral("left edge moved: %1 -> %2").arg(l0.first).arg(l1.first)));
     QVERIFY2(l1.second >= l0.second + 8,
              qPrintable(QStringLiteral("right edge did not grow right: %1 -> %2").arg(l0.second).arg(l1.second)));
+}
+
+void TestLyricRenderer::lineFlushToAlignedBorder()
+{
+    // Regression for the cache halo geometry: the group was drawn at a
+    // NEGATIVE offset inside its pixmap, clipping glyph tops and leaving
+    // right-aligned lyrics floating ~16 px short of the right border
+    // (reported: "gap between the lyrics and the border"; "upper part of each
+    // line is not displayed"). The painted group must sit exactly on the
+    // aligned edge.
+    LyricRenderer renderer;
+    renderer.resize(600, 300);
+    renderer.setFontSize(48);
+    renderer.setLines(QVector<RenderLine>{ RenderLine{ QStringLiteral("Test"), {} } });
+    renderer.setActiveLine(0);
+    QTest::qWait(700); // Settle: line 0 fully played AND fully zoomed.
+
+    const auto paintedEdges = [&](double progress) {
+        renderer.setZoomProgressForLine(0, progress);
+        QImage image(renderer.size(), QImage::Format_ARGB32);
+        image.fill(Qt::white);
+        {
+            QPainter painter(&image);
+            renderer.render(&painter);
+        }
+        int left = -1;
+        int right = -1;
+        for (int x = 0; x < image.width(); ++x) {
+            double columnCoverage = 0;
+            for (int y = 0; y < image.height(); ++y) {
+                const QColor px = image.pixelColor(x, y);
+                columnCoverage =
+                    qMax(columnCoverage, qBound(0.0, (px.green() - px.red()) / 190.0, 1.0));
+            }
+            if (columnCoverage > 0.5) {
+                if (left < 0)
+                    left = x;
+                right = x;
+            }
+        }
+        return QPair<int, int>(left, right);
+    };
+
+    // Right-aligned: the last painted column must sit at the right border (the
+    // bug left it ~16 px short); left-aligned: flush at the left border.
+    renderer.setAlign(Qt::AlignRight);
+    const QPair<int, int> r = paintedEdges(1.0);
+    QVERIFY2(r.first >= 0, "no text painted (right-aligned)");
+    QVERIFY2(r.second >= renderer.width() - 3,
+             qPrintable(QStringLiteral("right edge %1 not flush to border %2")
+                            .arg(r.second)
+                            .arg(renderer.width())));
+
+    renderer.setAlign(Qt::AlignLeft);
+    const QPair<int, int> l = paintedEdges(1.0);
+    QVERIFY2(l.first >= 0, "no text painted (left-aligned)");
+    QVERIFY2(l.first <= 3, qPrintable(QStringLiteral("left edge %1 not flush").arg(l.first)));
 }
 
 QTEST_MAIN(TestLyricRenderer)

@@ -6,9 +6,12 @@
  */
 #pragma once
 
+#include <cstdint>
+
 #include <QColor>
 #include <QElapsedTimer>
 #include <QFont>
+#include <QPixmap>
 #include <QPoint>
 #include <QSize>
 #include <QString>
@@ -67,7 +70,7 @@ public:
     // the horizontal line-mode halo: a dense stack of em offsets drawn in the
     // 51%-alpha font-mode shadow shade. Stroke4 is the vertical line-mode
     // halo: a mix of em and px offsets drawn in the full shadow color.
-    enum class StrokeStyle { Stroke3, Stroke4 };
+    enum class StrokeStyle : std::uint8_t { Stroke3, Stroke4 };
 
     // --- styling (all setters just store; repaint on change) ---
     void setVertical(bool on);                  // false=horizontal (default)
@@ -211,6 +214,9 @@ private:
         qreal blockHeight = 0;
     };
     HorizontalLayout measureHorizontal(int zoomOverrideLine = -1, double zoomOverride = 0.0) const;
+    // Per-line height math shared by measureHorizontal and the paint-time
+    // measure cache (only transitioning lines re-measure per frame).
+    qreal measureLineGroupHeight(int lineIndex, double zoomOverride = -1.0) const;
     QVector<VerticalGroupMetrics> measureAllVerticalGroups(int zoomOverrideLine = -1,
                                                            double zoomOverride = 0.0) const;
     qreal verticalBlockWidth(const QVector<VerticalGroupMetrics>& metrics) const;
@@ -241,6 +247,25 @@ private:
     void suspendAutoScroll();
     void rearmResumeTimer();
     void startDelayScrollTimer();
+
+    // --- per-line raster cache (settled-state paint cost) ---
+    // Settled lines rasterize once into a pixmap and are blitted every frame;
+    // only lines with a mid-flight zoom/color transition re-rasterize (the
+    // CPU analogue of Chromium's cached layer textures — Qt Widgets has no GPU
+    // raster path, and a full 40-line window costs ~17 ms/frame of text +
+    // stroke raster vs ~0.1 ms for a 1:1 pixmap blit, measured).
+    void invalidateLineCaches();
+    // A line whose zoom or color progress is mid-flight re-rasterizes every
+    // frame; the cache only ever holds settled content.
+    bool isLineTransitioning(int lineIndex) const;
+    // (Re)rasterize line lineIndex into its cache pixmap for rect (widget
+    // logical coords; the group is drawn into the pixmap at local
+    // (+kCacheHaloPadPx, +kCacheHaloPadPx, w, h) and the blit offsets the
+    // pixmap by -pad, so the content lands exactly on rect). Vertical group
+    // metrics, when given, feed drawVerticalGroup. The cache painter matches
+    // paintEvent except opacity, which is applied at the blit.
+    void renderLineToCache(int lineIndex, const QRectF& rect,
+                           const VerticalGroupMetrics* verticalMetrics = nullptr);
 
     QVector<RenderLine> m_lines;
     int m_activeLine = -1;              // current active line; setLines resets to -1 so the first active-line event re-positions the view
@@ -318,6 +343,25 @@ private:
     // extended lines at kExtendedScale + 0.14*progress (reference 1.2em /
     // 0.94em targets).
     QVector<double> m_lineZoomProgress;
+
+    // One pixmap per line, rasterized at its settled state (dirty =
+    // re-rasterize on the next paint). Blits are 1:1 copies, so settled
+    // pixels match the old direct raster exactly.
+    struct LineCache {
+        QPixmap pixmap;
+        bool dirty = true;
+    };
+    QVector<LineCache> m_lineCache;
+    // Paint-time measure cache: per-line group heights (horizontal) and
+    // widths/heights (vertical), recomputed only for dirty/transitioning lines
+    // (same key as the raster cache) so a 16 ms transition tick does not
+    // re-wrap every line. Mirrors m_lineCache size.
+    QVector<qreal> m_cachedGroupHeights;
+    QVector<qreal> m_cachedGroupWidths;
+    // Last device-pixel ratio the caches were rasterized at; a change without
+    // a resizeEvent (e.g. moving between per-screen-DPR displays) invalidates
+    // on the next paint, so blits never upscale a stale 1x raster.
+    qreal m_cacheDpr = 1.0;
 
     void startLineTransition(QVector<LineTransition>& transitions, QVector<double>& progress,
                              int line, double to);

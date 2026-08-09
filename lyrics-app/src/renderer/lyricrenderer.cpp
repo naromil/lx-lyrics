@@ -1,8 +1,8 @@
 /*
  * SPDX-License-Identifier: Apache-2.0
- * Portions derived from lx-music-desktop (https://github.com/lyswhut/lx-music-desktop),
- * Copyright (c) lyswhut, licensed under Apache-2.0.
- * Copyright (c) 2026 LX Lyrics contributors.
+ * Portions derived from lx-music-desktop
+ * (https://github.com/lyswhut/lx-music-desktop), Copyright (c) lyswhut,
+ * licensed under Apache-2.0. Copyright (c) 2026 LX Lyrics contributors.
  */
 #include "renderer/lyricrenderer.h"
 
@@ -11,15 +11,15 @@
 #include <QFontMetrics>
 #include <QMouseEvent>
 #include <QPainter>
-#include <QRegularExpression>
 #include <QRectF>
+#include <QRegularExpression>
 #include <QResizeEvent>
 #include <QTimer>
 #include <QWheelEvent>
 
+#include <array>
 #include <cmath>
 #include <cstddef>
-#include <iterator>
 
 namespace {
 
@@ -31,13 +31,14 @@ constexpr int kVerticalLetterSpacing = 5;
 // (handleScrollLrc()'s default). The animation steps at 10 ms intervals like
 // the reference handleScrollY (increment = 10).
 constexpr int kResumeDelayMs = 3000;
-constexpr int kDelayScrollMs = 600;         // pre-delay before a delayed scroll
+constexpr int kDelayScrollMs = 600; // pre-delay before a delayed scroll
 constexpr int kDelayScrollAnimationMs = 600; // duration of a delayed scroll
-constexpr int kScrollAnimationMs = 300;     // duration of a normal auto-scroll
-constexpr int kScrollStepMs = 10;           // handleScrollY increment
+constexpr int kScrollAnimationMs = 300;      // duration of a normal auto-scroll
+constexpr int kScrollStepMs = 10;            // handleScrollY increment
 // A new scroll target arriving mid-flight is queued; the running animation
 // only restarts toward it once past 75% of its duration (reference
-// animateScroll: if (element.lx_scrollNextParams && currentTime > duration*0.75)).
+// animateScroll: if (element.lx_scrollNextParams && currentTime >
+// duration*0.75)).
 constexpr qreal kScrollRetargetThreshold = 0.75;
 // Active-line zoom factors (reference .lrcActiveZoom).
 constexpr qreal kActiveMainZoom = 1.2;
@@ -74,22 +75,30 @@ constexpr int kMinimumHeight = 80;
 // Default sizeHint: a real value so layouts that consult the hint first (or
 // place the widget outside a stretch) still give it room to paint.
 const QSize kSizeHint(400, 120);
+// Transparent halo kept around every cached line pixmap: the em-offset stroke
+// passes draw up to 0.04em + 1 px (worst case 0.04 * 80 px max font * 1.2x
+// zoom + 1 px ≈ 5 px) beyond the group rect, and the old direct paint clipped
+// only at the WIDGET edge — the halo must not be cut at group boundaries.
+// The blit compensates by drawing the pixmap kCacheHaloPadPx up-left of the
+// group rect.
+constexpr qreal kCacheHaloPadPx = 8.0;
 
 // Word-level karaoke tags are stripped; display is line-by-line per the
 // original lx-music design. Removes every <digits,digits> sequence (JS
-// timeRxpAll: /<(\d+),(\d+)>/g); extended lines arrive pre-tagged too.
-const QRegularExpression kKaraokeTagRxp(QStringLiteral("<\\d+,\\d+>"));
-
-QString stripWordTags(QString text)
-{
+// timeRxpAll: /<(\d+),(\d+)>/g); extended lines arrive pre-tagged too. The
+// pattern lives in a function-local static: a namespace-scope
+// QRegularExpression could throw during static init
+// (bugprone-throwing-static-initialization).
+QString stripWordTags(QString text) {
+    static const QRegularExpression kKaraokeTagRxp(
+        QStringLiteral("<\\d+,\\d+>"));
     text.remove(kKaraokeTagRxp);
     return text;
 }
 
 // Reference easeInOutQuad (renderer.ts): t = elapsed, b = start, c = change,
 // d = duration.
-qreal easeInOutQuad(qreal t, qreal b, qreal c, qreal d)
-{
+qreal easeInOutQuad(qreal t, qreal b, qreal c, qreal d) {
     t /= d / 2.0;
     if (t < 1)
         return c / 2.0 * t * t + b;
@@ -100,16 +109,14 @@ qreal easeInOutQuad(qreal t, qreal b, qreal c, qreal d)
 // CSS 'ease' approximation shared by the color/zoom transitions
 // (reference @transition-slow: .6s ease), identical to the easing the old
 // shared QVariantAnimation cross-fade used.
-qreal easeOutCubic(qreal t)
-{
+qreal easeOutCubic(qreal t) {
     const qreal u = 1.0 - t;
     return 1.0 - u * u * u;
 }
 
 // Reference useTheme.ts RGB_Alpha_Shade(0.49, color): same RGB, alpha scaled
 // by (1 - 0.49) = 0.51 (see kHorizontalStrokeAlphaFactor).
-QColor shadedShadowColor(const QColor& color)
-{
+QColor shadedShadowColor(const QColor &color) {
     QColor shaded = color;
     shaded.setAlphaF(color.alphaF() * kHorizontalStrokeAlphaFactor);
     return shaded;
@@ -130,54 +137,55 @@ struct StrokeOffset {
 // line-mode halo, 32 em offsets drawn in the 51%-alpha font-mode shadow shade
 // (--color-lyric-shadow-font-mode). Duplicates are kept verbatim because each
 // entry is a separate alpha-composited text-shadow pass.
-constexpr StrokeOffset kStroke3Offsets[] = {
-    { 0.04, true,  0.04, true }, { 0.04, true, -0.03, true }, { -0.04, true, -0.03, true }, { -0.04, true,  0.04, true },
-    { 0.04, true,  0.01, true }, { 0.04, true, -0.01, true }, { -0.04, true, -0.01, true }, { -0.04, true,  0.01, true },
-    { 0.04, true,  0.00, true }, { 0.04, true,  0.00, true }, { -0.04, true,  0.00, true }, { -0.04, true,  0.00, true },
-    { 0.01, true,  0.04, true }, { 0.01, true, -0.03, true }, { -0.01, true, -0.03, true }, { -0.01, true,  0.04, true },
-    { 0.01, true,  0.01, true }, { 0.01, true, -0.01, true }, { -0.01, true, -0.01, true }, { -0.01, true,  0.01, true },
-    { 0.01, true,  0.00, true }, { 0.01, true,  0.00, true }, { -0.01, true,  0.00, true }, { -0.01, true,  0.00, true },
-    { 0.00, true,  0.04, true }, { 0.00, true, -0.03, true }, { 0.00, true, -0.03, true }, { 0.00, true,  0.04, true },
-    { 0.00, true,  0.01, true }, { 0.00, true, -0.01, true }, { 0.00, true, -0.01, true }, { 0.00, true,  0.01, true },
-};
+constexpr std::array<StrokeOffset, 32> kStroke3Offsets = {{
+    {0.04, true, 0.04, true},   {0.04, true, -0.03, true},
+    {-0.04, true, -0.03, true}, {-0.04, true, 0.04, true},
+    {0.04, true, 0.01, true},   {0.04, true, -0.01, true},
+    {-0.04, true, -0.01, true}, {-0.04, true, 0.01, true},
+    {0.04, true, 0.00, true},   {0.04, true, 0.00, true},
+    {-0.04, true, 0.00, true},  {-0.04, true, 0.00, true},
+    {0.01, true, 0.04, true},   {0.01, true, -0.03, true},
+    {-0.01, true, -0.03, true}, {-0.01, true, 0.04, true},
+    {0.01, true, 0.01, true},   {0.01, true, -0.01, true},
+    {-0.01, true, -0.01, true}, {-0.01, true, 0.01, true},
+    {0.01, true, 0.00, true},   {0.01, true, 0.00, true},
+    {-0.01, true, 0.00, true},  {-0.01, true, 0.00, true},
+    {0.00, true, 0.04, true},   {0.00, true, -0.03, true},
+    {0.00, true, -0.03, true},  {0.00, true, 0.04, true},
+    {0.00, true, 0.01, true},   {0.00, true, -0.01, true},
+    {0.00, true, -0.01, true},  {0.00, true, 0.01, true},
+}};
 
 // Reference .stroke4(@color) (layout.less lines 52-76): the vertical line-mode
 // halo, 17 em + px offsets drawn in the full shadow color
 // (--color-lyric-shadow). Duplicates are kept verbatim because each entry is a
 // separate alpha-composited text-shadow pass.
-constexpr StrokeOffset kStroke4Offsets[] = {
-    { 0.02, true, -0.02, true }, // 0.02em -0.02em
-    { -0.02, true, -1, false },  // -0.02em -1px
-    { -0.02, true,  1, false },  // -0.02em 1px
-    { 0.02, true,  1, false },   // 0.02em 1px
-    { 0.02, true, -1, false },   // 0.02em -1px
-    { -0.02, true,  0, false },  // -0.02em 0px
-    { -0.02, true,  0, false },  // -0.02em 0px
-    { 0.02, true,  0, false },   // 0.02em 0px
-    { 0.02, true,  0, false },   // 0.02em 0px
-    { -1, false, -1, false },    // -1px -1px
-    { -1, false,  1, false },    // -1px 1px
-    { 1, false,  1, false },     // 1px 1px
-    { 1, false, -1, false },     // 1px -1px
-    { -1, false,  0, false },    // -1px 0px
-    { -1, false,  0, false },    // -1px 0px
-    { 1, false,  0, false },     // 1px 0px
-    { 1, false,  0, false },     // 1px 0px
-};
+constexpr std::array<StrokeOffset, 17> kStroke4Offsets = {{
+    {0.02, true, -0.02, true}, // 0.02em -0.02em
+    {-0.02, true, -1, false},  // -0.02em -1px
+    {-0.02, true, 1, false},   // -0.02em 1px
+    {0.02, true, 1, false},    // 0.02em 1px
+    {0.02, true, -1, false},   // 0.02em -1px
+    {-0.02, true, 0, false},   // -0.02em 0px
+    {-0.02, true, 0, false},   // -0.02em 0px
+    {0.02, true, 0, false},    // 0.02em 0px
+    {0.02, true, 0, false},    // 0.02em 0px
+    {-1, false, -1, false},    // -1px -1px
+    {-1, false, 1, false},     // -1px 1px
+    {1, false, 1, false},      // 1px 1px
+    {1, false, -1, false},     // 1px -1px
+    {-1, false, 0, false},     // -1px 0px
+    {-1, false, 0, false},     // -1px 0px
+    {1, false, 0, false},      // 1px 0px
+    {1, false, 0, false},      // 1px 0px
+}};
 
 // Horizontal gap formulas from the reference --line-extended-gap / --line-gap.
-qreal horizontalExtendedGap(int lineGap)
-{
-    return lineGap / 3.0;
-}
+qreal horizontalExtendedGap(int lineGap) { return lineGap / 3.0; }
 
-qreal verticalGroupGap(int lineGap)
-{
-    return std::ceil(lineGap * 1.06);
-}
+qreal verticalGroupGap(int lineGap) { return std::ceil(lineGap * 1.06); }
 
-qreal verticalExtendedGap(int lineGap)
-{
+qreal verticalExtendedGap(int lineGap) {
     return std::ceil(lineGap * 1.06 / 8.0);
 }
 
@@ -185,8 +193,7 @@ qreal verticalExtendedGap(int lineGap)
 // played colors over the line's 0..1 color progress (per-channel qRound lerp,
 // mirroring the CSS color transition between --color-lyric-unplay and
 // --color-lyric-played).
-QColor interpolateColor(const QColor& unplay, const QColor& played, double p)
-{
+QColor interpolateColor(const QColor &unplay, const QColor &played, double p) {
     if (p <= 0.0)
         return unplay;
     if (p >= 1.0)
@@ -204,8 +211,8 @@ QColor interpolateColor(const QColor& unplay, const QColor& played, double p)
 // point): CJK characters split individually, long latin words break at any
 // character. `scale` multiplies the advances (active-line zoom) so the chunked
 // text still fits the unscaled width after it grows.
-QStringList breakLongWord(const QString& word, const QFontMetrics& fm, int width, qreal scale = 1.0)
-{
+QStringList breakLongWord(const QString &word, const QFontMetrics &fm,
+                          int width, qreal scale = 1.0) {
     QStringList chunks;
     QString chunk;
     qreal chunkWidth = 0;
@@ -230,10 +237,10 @@ QStringList breakLongWord(const QString& word, const QFontMetrics& fm, int width
 // character-by-character; empty / whitespace-only input stays a single entry.
 // `scale` multiplies the advances (active-line zoom) so a zoomed row still
 // wraps at the unscaled width.
-QStringList wrapForWidth(const QString& text, const QFontMetrics& fm, int width, qreal scale = 1.0)
-{
+QStringList wrapForWidth(const QString &text, const QFontMetrics &fm, int width,
+                         qreal scale = 1.0) {
     if (width <= 0 || text.isEmpty() || text.trimmed().isEmpty())
-        return { text };
+        return {text};
 
     const QStringList words = text.split(QLatin1Char(' '), Qt::SkipEmptyParts);
     const qreal spaceWidth = fm.horizontalAdvance(QLatin1Char(' ')) * scale;
@@ -241,7 +248,7 @@ QStringList wrapForWidth(const QString& text, const QFontMetrics& fm, int width,
     QString row;
     qreal rowWidth = 0;
 
-    auto startRow = [&](const QString& first) {
+    auto startRow = [&](const QString &first) {
         row = first;
         rowWidth = fm.horizontalAdvance(first) * scale;
     };
@@ -252,7 +259,7 @@ QStringList wrapForWidth(const QString& text, const QFontMetrics& fm, int width,
             rowWidth = 0;
         }
     };
-    auto takeWord = [&](const QString& word) {
+    auto takeWord = [&](const QString &word) {
         const QStringList chunks = breakLongWord(word, fm, width, scale);
         startRow(chunks.first());
         for (int i = 1; i < chunks.size(); ++i) {
@@ -261,7 +268,7 @@ QStringList wrapForWidth(const QString& text, const QFontMetrics& fm, int width,
         }
     };
 
-    for (const QString& word : words) {
+    for (const QString &word : words) {
         const qreal wordWidth = fm.horizontalAdvance(word) * scale;
         if (row.isEmpty()) {
             if (wordWidth <= width)
@@ -293,24 +300,25 @@ QStringList wrapForWidth(const QString& text, const QFontMetrics& fm, int width,
 // whitespace-only input stays a single entry, like wrapForWidth. `scale` is
 // the active-line zoom: the line box grows fractionally while the
 // letter-spacing stays fixed (CSS letter-spacing does not zoom).
-QStringList wrapForHeight(const QString& text, const QFontMetrics& fm, int availableHeight, int letterSpacing, qreal scale = 1.0)
-{
+QStringList wrapForHeight(const QString &text, const QFontMetrics &fm,
+                          int availableHeight, int letterSpacing,
+                          qreal scale = 1.0) {
     if (availableHeight <= 0 || text.isEmpty() || text.trimmed().isEmpty())
-        return { text };
+        return {text};
 
     const qreal step = fm.height() * scale + letterSpacing;
     // Max chars per column so that columnHeight(n) = n*step - letterSpacing
     // never exceeds availableHeight.
     const int maxChars = int((availableHeight + letterSpacing) / step);
     if (maxChars <= 0)
-        return { text };
+        return {text};
 
     const QStringList words = text.split(QLatin1Char(' '), Qt::SkipEmptyParts);
     QStringList columns;
     QString column;
     int columnChars = 0;
 
-    auto startColumn = [&](const QString& first) {
+    auto startColumn = [&](const QString &first) {
         column = first;
         columnChars = first.size();
     };
@@ -322,7 +330,7 @@ QStringList wrapForHeight(const QString& text, const QFontMetrics& fm, int avail
         }
     };
     // A word longer than maxChars breaks into maxChars-char chunks.
-    auto takeWord = [&](const QString& word) {
+    auto takeWord = [&](const QString &word) {
         startColumn(word.left(maxChars));
         for (int i = maxChars; i < word.size(); i += maxChars) {
             commitColumn();
@@ -330,7 +338,7 @@ QStringList wrapForHeight(const QString& text, const QFontMetrics& fm, int avail
         }
     };
 
-    for (const QString& word : words) {
+    for (const QString &word : words) {
         if (column.isEmpty()) {
             if (word.size() <= maxChars)
                 startColumn(word);
@@ -355,9 +363,7 @@ QStringList wrapForHeight(const QString& text, const QFontMetrics& fm, int avail
 
 } // namespace
 
-LyricRenderer::LyricRenderer(QWidget* parent)
-    : QWidget(parent)
-{
+LyricRenderer::LyricRenderer(QWidget *parent) : QWidget(parent) {
     // Own the lyric area: expand into whatever space the layout leaves and
     // never collapse below one visible line (default Preferred policy + an
     // invalid default sizeHint lets a QVBoxLayout shrink this widget to ~0).
@@ -374,7 +380,8 @@ LyricRenderer::LyricRenderer(QWidget* parent)
     connect(m_resumeTimer, &QTimer::timeout, this, [this] {
         m_userScrolling = false;
         if (!m_playing)
-            return; // Reference startLyricScrollTimeout: if (!isPlay.value) return.
+            return; // Reference startLyricScrollTimeout: if (!isPlay.value)
+                    // return.
         scrollToActiveAnimated(kScrollAnimationMs);
     });
 
@@ -389,7 +396,8 @@ LyricRenderer::LyricRenderer(QWidget* parent)
     m_delayScrollTimer->setInterval(kDelayScrollMs);
     connect(m_delayScrollTimer, &QTimer::timeout, this, [this] {
         if (m_userScrolling)
-            return; // User grabbed the lyrics meanwhile: leave it to the resume timer.
+            return; // User grabbed the lyrics meanwhile: leave it to the resume
+                    // timer.
         scrollToActiveAnimated(kDelayScrollAnimationMs);
     });
 
@@ -410,17 +418,14 @@ LyricRenderer::LyricRenderer(QWidget* parent)
     // .line-mode .font-lrc { transition: color/font-size @transition-slow }).
     m_transitionTimer = new QTimer(this);
     m_transitionTimer->setInterval(kTransitionTickMs);
-    connect(m_transitionTimer, &QTimer::timeout, this, [this] { stepTransitions(); });
+    connect(m_transitionTimer, &QTimer::timeout, this,
+            [this] { stepTransitions(); });
     m_transitionClock.start();
 }
 
-QSize LyricRenderer::sizeHint() const
-{
-    return kSizeHint;
-}
+QSize LyricRenderer::sizeHint() const { return kSizeHint; }
 
-void LyricRenderer::setLines(const QVector<RenderLine>& lines)
-{
+void LyricRenderer::setLines(const QVector<RenderLine> &lines) {
     m_lines = lines;
     // Rebuild the per-line color/zoom progress with the lines: everything
     // starts unplayed and unzoomed (a lyric change does not animate).
@@ -446,11 +451,11 @@ void LyricRenderer::setLines(const QVector<RenderLine>& lines)
     // early-return in setActiveLine would otherwise swallow the centering
     // scroll when the old active line was also 0).
     m_activeLine = -1;
+    invalidateLineCaches(); // Fresh content: every cached raster is stale.
     update();
 }
 
-void LyricRenderer::setCenteredBlock(bool on)
-{
+void LyricRenderer::setCenteredBlock(bool on) {
     if (m_centeredBlock == on)
         return;
     m_centeredBlock = on;
@@ -462,13 +467,15 @@ void LyricRenderer::setCenteredBlock(bool on)
     update();
 }
 
-void LyricRenderer::setActiveLine(int index)
-{
+void LyricRenderer::setActiveLine(int index) {
     // Parse at the boundary: out-of-range indexes mean "no active line", and a
     // STATIC line can never become active/colored — structural guarantee at
     // the renderer boundary, regardless of caller. The player already never
     // emits static indices; this clamps any stray push anyway.
-    const int clamped = (index >= 0 && index < m_lines.size() && !m_lines[index].isStatic) ? index : -1;
+    const int clamped =
+        (index >= 0 && index < m_lines.size() && !m_lines[index].isStatic)
+            ? index
+            : -1;
     if (m_activeLine == clamped)
         return;
     const int oldLine = m_activeLine;
@@ -506,8 +513,7 @@ void LyricRenderer::setActiveLine(int index)
         scrollToActiveAnimated(kScrollAnimationMs);
 }
 
-void LyricRenderer::setZoomProgressForLine(int line, double progress)
-{
+void LyricRenderer::setZoomProgressForLine(int line, double progress) {
     if (line < 0 || line >= m_lineZoomProgress.size())
         return;
     // Test accessor: freeze the transition engine and pin one line's zoom
@@ -516,56 +522,58 @@ void LyricRenderer::setZoomProgressForLine(int line, double progress)
     m_transitionTimer->stop();
     m_lineZoomTransition.fill(LineTransition{}, m_lines.size());
     m_lineZoomProgress[line] = qBound(0.0, progress, 1.0);
+    if (line < m_lineCache.size())
+        m_lineCache[line].dirty =
+            true; // The pinned progress may jump mid-flight.
     update();
 }
 
-void LyricRenderer::setVertical(bool on)
-{
+void LyricRenderer::setVertical(bool on) {
     m_vertical = on;
+    invalidateLineCaches();
     update();
 }
 
-void LyricRenderer::setAlign(Qt::Alignment align)
-{
+void LyricRenderer::setAlign(Qt::Alignment align) {
     m_align = align;
+    invalidateLineCaches();
     update();
 }
 
-void LyricRenderer::setFontFamily(const QString& family)
-{
+void LyricRenderer::setFontFamily(const QString &family) {
     m_fontFamily = family;
+    invalidateLineCaches();
     update();
 }
 
-void LyricRenderer::setFontSize(int px)
-{
+void LyricRenderer::setFontSize(int px) {
     m_fontSize = qBound(10, px, 80);
+    invalidateLineCaches();
     update();
 }
 
-void LyricRenderer::setLineGap(int px)
-{
+void LyricRenderer::setLineGap(int px) {
     m_lineGap = qBound(0, px, 25);
+    invalidateLineCaches();
     update();
 }
 
-void LyricRenderer::setOpacityPercent(int percent)
-{
+void LyricRenderer::setOpacityPercent(int percent) {
     m_opacityPercent = qBound(6, percent, 100);
     update();
 }
 
-void LyricRenderer::setEllipsis(bool on)
-{
+void LyricRenderer::setEllipsis(bool on) {
     m_ellipsis = on;
+    invalidateLineCaches();
     update();
 }
 
-void LyricRenderer::setZoomActiveLrc(bool on)
-{
+void LyricRenderer::setZoomActiveLrc(bool on) {
     if (m_zoomActiveLrc == on)
         return;
     m_zoomActiveLrc = on;
+    invalidateLineCaches();
     if (on) {
         // Toggled on with a line active: grow it in over the transition
         // (reference class add -> CSS font-size transition).
@@ -581,51 +589,48 @@ void LyricRenderer::setZoomActiveLrc(bool on)
     update();
 }
 
-void LyricRenderer::setFontWeightFont(bool /*on*/)
-{
+void LyricRenderer::setFontWeightFont(bool /*on*/) {
     // No-op: write-only, the value no longer affects rendering (line-by-line
     // mode); retained for API compatibility with the host config sync.
 }
 
-void LyricRenderer::setFontWeightLine(bool on)
-{
+void LyricRenderer::setFontWeightLine(bool on) {
     m_fontWeightLine = on;
+    invalidateLineCaches();
     update();
 }
 
-void LyricRenderer::setFontWeightExtended(bool on)
-{
+void LyricRenderer::setFontWeightExtended(bool on) {
     m_fontWeightExtended = on;
+    invalidateLineCaches();
     update();
 }
 
-void LyricRenderer::setUnplayColor(const QColor& c)
-{
+void LyricRenderer::setUnplayColor(const QColor &c) {
     m_unplayColor = c;
+    invalidateLineCaches();
     update();
 }
 
-void LyricRenderer::setPlayedColor(const QColor& c)
-{
+void LyricRenderer::setPlayedColor(const QColor &c) {
     m_playedColor = c;
+    invalidateLineCaches();
     update();
 }
 
-void LyricRenderer::setShadowColor(const QColor& c)
-{
+void LyricRenderer::setShadowColor(const QColor &c) {
     m_shadowColor = c;
+    invalidateLineCaches();
     update();
 }
 
-void LyricRenderer::setShadowFontModeColor(const QColor& /*color*/)
-{
+void LyricRenderer::setShadowFontModeColor(const QColor & /*color*/) {
     // No-op: write-only, the value no longer affects rendering (line-by-line
     // mode; the stroke always uses m_shadowColor); retained for API
     // compatibility with the host config sync.
 }
 
-void LyricRenderer::setScrollAlign(bool top)
-{
+void LyricRenderer::setScrollAlign(bool top) {
     if (m_scrollAlignTop == top)
         return;
     m_scrollAlignTop = top;
@@ -633,27 +638,25 @@ void LyricRenderer::setScrollAlign(bool top)
         scrollToActiveAnimated(kScrollAnimationMs);
 }
 
-void LyricRenderer::setDelayScroll(bool on)
-{
+void LyricRenderer::setDelayScroll(bool on) {
     m_delayScroll = on;
     if (!on)
         m_delayScrollTimer->stop();
 }
 
-void LyricRenderer::setUserScrolling(bool on)
-{
+void LyricRenderer::setUserScrolling(bool on) {
     if (m_userScrolling == on)
         return;
     m_userScrolling = on;
     if (on) {
         suspendAutoScroll();
     } else {
-        rearmResumeTimer(); // 3 s later the auto-scroll re-centers the active line.
+        rearmResumeTimer(); // 3 s later the auto-scroll re-centers the active
+                            // line.
     }
 }
 
-void LyricRenderer::setInteractive(bool on)
-{
+void LyricRenderer::setInteractive(bool on) {
     if (m_interactive == on)
         return;
     m_interactive = on;
@@ -668,21 +671,16 @@ void LyricRenderer::setInteractive(bool on)
     }
 }
 
-void LyricRenderer::setPlaying(bool on)
-{
-    m_playing = on;
-}
+void LyricRenderer::setPlaying(bool on) { m_playing = on; }
 
-void LyricRenderer::resetScroll()
-{
+void LyricRenderer::resetScroll() {
     m_delayScrollTimer->stop();
     stopScrollAnimation();
     m_scrollOffset = 0;
     update();
 }
 
-void LyricRenderer::animateLineColors(int newActiveLine)
-{
+void LyricRenderer::animateLineColors(int newActiveLine) {
     if (newActiveLine == m_activeLine)
         return; // Nothing changed (defensive: setActiveLine already guards).
     const int oldLine = m_activeLine;
@@ -694,22 +692,22 @@ void LyricRenderer::animateLineColors(int newActiveLine)
     // shared cross-fade snapped the outgoing line back to full played on every
     // change, which left a green trail behind during fast lyrics.
     if (oldLine >= 0)
-        startLineTransition(m_lineColorTransition, m_lineColorProgress, oldLine, 0.0);
+        startLineTransition(m_lineColorTransition, m_lineColorProgress, oldLine,
+                            0.0);
     if (newActiveLine >= 0)
-        startLineTransition(m_lineColorTransition, m_lineColorProgress, newActiveLine, 1.0);
+        startLineTransition(m_lineColorTransition, m_lineColorProgress,
+                            newActiveLine, 1.0);
     update();
 }
 
-QColor LyricRenderer::colorForLine(int lineIndex) const
-{
+QColor LyricRenderer::colorForLine(int lineIndex) const {
     const double p = (lineIndex >= 0 && lineIndex < m_lineColorProgress.size())
-        ? m_lineColorProgress.at(lineIndex)
-        : 0.0;
+                         ? m_lineColorProgress.at(lineIndex)
+                         : 0.0;
     return interpolateColor(m_unplayColor, m_playedColor, p);
 }
 
-void LyricRenderer::startZoomTransition(int newActiveLine)
-{
+void LyricRenderer::startZoomTransition(int newActiveLine) {
     if (!m_zoomActiveLrc) {
         // Zoom disabled: every line renders at base scale — jump there
         // instantly, no animation (reference .lrcActiveZoom class off).
@@ -731,18 +729,20 @@ void LyricRenderer::startZoomTransition(int newActiveLine)
     const int oldLine = sameLine ? -1 : m_activeLine;
     const int newLine = sameLine ? m_activeLine : newActiveLine;
     if (oldLine >= 0)
-        startLineTransition(m_lineZoomTransition, m_lineZoomProgress, oldLine, 0.0);
+        startLineTransition(m_lineZoomTransition, m_lineZoomProgress, oldLine,
+                            0.0);
     if (newLine >= 0)
-        startLineTransition(m_lineZoomTransition, m_lineZoomProgress, newLine, 1.0);
+        startLineTransition(m_lineZoomTransition, m_lineZoomProgress, newLine,
+                            1.0);
     update();
 }
 
-void LyricRenderer::startLineTransition(QVector<LineTransition>& transitions,
-                                        QVector<double>& progress, int line, double to)
-{
+void LyricRenderer::startLineTransition(QVector<LineTransition> &transitions,
+                                        QVector<double> &progress, int line,
+                                        double to) {
     if (line < 0 || line >= progress.size())
         return;
-    LineTransition& t = transitions[line];
+    LineTransition &t = transitions[line];
     const double from = progress.at(line);
     t.from = from;
     t.to = to;
@@ -756,19 +756,23 @@ void LyricRenderer::startLineTransition(QVector<LineTransition>& transitions,
     m_transitionTimer->start();
 }
 
-void LyricRenderer::stepTransitions()
-{
+void LyricRenderer::stepTransitions() {
     bool anyActive = false;
     const qint64 now = m_transitionClock.elapsed();
-    const auto step = [&](QVector<LineTransition>& transitions, QVector<double>& progress) {
+    const auto step = [&](QVector<LineTransition> &transitions,
+                          QVector<double> &progress) {
         for (int i = 0; i < transitions.size(); ++i) {
-            LineTransition& t = transitions[i];
+            LineTransition &t = transitions[i];
             if (!t.active)
                 continue;
             const qreal u = qreal(now - t.startMs) / kTransitionAnimationMs;
             if (u >= 1.0) {
                 progress[i] = t.to; // Settle exactly on the target.
                 t.active = false;
+                // The last mid-flight frame differs from the settled state:
+                // the next paint re-rasterizes this line.
+                if (i < m_lineCache.size())
+                    m_lineCache[i].dirty = true;
             } else {
                 progress[i] = t.from + (t.to - t.from) * easeOutCubic(u);
                 anyActive = true;
@@ -782,15 +786,13 @@ void LyricRenderer::stepTransitions()
     update();
 }
 
-void LyricRenderer::stopScrollAnimation()
-{
+void LyricRenderer::stopScrollAnimation() {
     if (m_scrollTimer)
         m_scrollTimer->stop();
     m_scrollHasQueuedTarget = false;
 }
 
-void LyricRenderer::rebaseScroll(qreal target, int durationMs)
-{
+void LyricRenderer::rebaseScroll(qreal target, int durationMs) {
     target = qBound<qreal>(0, target, maxScrollOffset());
     m_scrollStartOffset = m_scrollOffset;
     m_scrollTarget = target;
@@ -800,11 +802,11 @@ void LyricRenderer::rebaseScroll(qreal target, int durationMs)
     m_scrollTimer->start();
 }
 
-void LyricRenderer::scrollTick()
-{
+void LyricRenderer::scrollTick() {
     m_scrollElapsedMs += kScrollStepMs;
-    m_scrollOffset = easeInOutQuad(m_scrollElapsedMs, m_scrollStartOffset,
-                                   m_scrollTarget - m_scrollStartOffset, m_scrollDurationMs);
+    m_scrollOffset =
+        easeInOutQuad(m_scrollElapsedMs, m_scrollStartOffset,
+                      m_scrollTarget - m_scrollStartOffset, m_scrollDurationMs);
     update();
     if (m_scrollElapsedMs < m_scrollDurationMs)
         return;
@@ -819,14 +821,29 @@ void LyricRenderer::scrollTick()
     }
 }
 
-void LyricRenderer::paintEvent(QPaintEvent*)
-{
+void LyricRenderer::paintEvent(QPaintEvent *) {
     if (m_lines.isEmpty())
         return;
 
+    // A device-pixel-ratio change (e.g. moving between per-screen-DPR
+    // displays) can arrive without a resizeEvent; the stale caches would
+    // otherwise blit a 1x raster upscaled on a 2x window.
+    if (!qFuzzyCompare(devicePixelRatioF(), m_cacheDpr)) {
+        m_cacheDpr = devicePixelRatioF();
+        invalidateLineCaches();
+    }
+
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
-    painter.setOpacity(m_opacityPercent / 100.0); // Fresh painter: reset per paint.
+    // Cached-line blits land at fractional positions during zoom transitions
+    // (the reflow shifts rows sub-pixel); the smooth hint keeps them
+    // continuous, like Chromium's filtered layer compositing. Where positions
+    // are whole pixels the blit stays an exact 1:1 copy; rows below a settled
+    // 1.2x active line rest at fractional offsets and get the same slight
+    // filtering the reference applies when it composites its layers.
+    painter.setRenderHint(QPainter::SmoothPixmapTransform);
+    painter.setOpacity(m_opacityPercent /
+                       100.0); // Fresh painter: reset per paint.
 
     if (m_vertical)
         paintVertical(painter);
@@ -834,8 +851,7 @@ void LyricRenderer::paintEvent(QPaintEvent*)
         paintHorizontal(painter);
 }
 
-qreal LyricRenderer::mainZoomFactor(int lineIndex, double zoomOverride) const
-{
+qreal LyricRenderer::mainZoomFactor(int lineIndex, double zoomOverride) const {
     if (!m_zoomActiveLrc)
         return 1.0;
     // Each line carries its own 0..1 progress (1.0 = fully zoomed), so the
@@ -844,16 +860,16 @@ qreal LyricRenderer::mainZoomFactor(int lineIndex, double zoomOverride) const
     // (reference .lrcActiveZoom .line { font-size: 1.2em }). An explicit
     // zoomOverride (>= 0) measures the line at a fixed progress for the
     // scroll-target compensation.
-    const qreal progress = (zoomOverride >= 0.0)
-        ? zoomOverride
+    const qreal progress =
+        (zoomOverride >= 0.0) ? zoomOverride
         : (lineIndex >= 0 && lineIndex < m_lineZoomProgress.size())
             ? m_lineZoomProgress.at(lineIndex)
             : 0.0;
     return 1.0 + (kActiveMainZoom - 1.0) * progress;
 }
 
-qreal LyricRenderer::extendedZoomFactor(int lineIndex, double zoomOverride) const
-{
+qreal LyricRenderer::extendedZoomFactor(int lineIndex,
+                                        double zoomOverride) const {
     if (!m_zoomActiveLrc)
         return 1.0;
     // Extended lines sit at kExtendedScale; the active zoomed group grows them
@@ -862,16 +878,18 @@ qreal LyricRenderer::extendedZoomFactor(int lineIndex, double zoomOverride) cons
     // factor is relative to the base extended size (0.94em / 0.8em = 1.175
     // max). When the zoom is disabled the extended lines render at their base
     // 0.8x size, so the factor is 1.0.
-    const qreal progress = (zoomOverride >= 0.0)
-        ? zoomOverride
+    const qreal progress =
+        (zoomOverride >= 0.0) ? zoomOverride
         : (lineIndex >= 0 && lineIndex < m_lineZoomProgress.size())
             ? m_lineZoomProgress.at(lineIndex)
             : 0.0;
-    return (kExtendedScale + (kActiveExtendedZoom - kExtendedScale) * progress) / kExtendedScale;
+    return (kExtendedScale +
+            (kActiveExtendedZoom - kExtendedScale) * progress) /
+           kExtendedScale;
 }
 
-QFont LyricRenderer::makeMainFont(int /*lineIndex*/, double /*zoomOverride*/) const
-{
+QFont LyricRenderer::makeMainFont(int /*lineIndex*/,
+                                  double /*zoomOverride*/) const {
     QFont font;
     if (!m_fontFamily.isEmpty())
         font.setFamily(m_fontFamily);
@@ -885,8 +903,8 @@ QFont LyricRenderer::makeMainFont(int /*lineIndex*/, double /*zoomOverride*/) co
     return font;
 }
 
-QFont LyricRenderer::makeExtendedFont(int /*lineIndex*/, double /*zoomOverride*/) const
-{
+QFont LyricRenderer::makeExtendedFont(int /*lineIndex*/,
+                                      double /*zoomOverride*/) const {
     QFont font;
     if (!m_fontFamily.isEmpty())
         font.setFamily(m_fontFamily);
@@ -898,8 +916,7 @@ QFont LyricRenderer::makeExtendedFont(int /*lineIndex*/, double /*zoomOverride*/
     return font;
 }
 
-int LyricRenderer::textFlags() const
-{
+int LyricRenderer::textFlags() const {
     if (m_vertical)
         return Qt::AlignCenter; // Each vertical character fills its own cell.
     int flags = Qt::AlignVCenter;
@@ -918,8 +935,9 @@ int LyricRenderer::textFlags() const
     return flags;
 }
 
-QString LyricRenderer::elideForWidth(const QString& text, const QFontMetrics& fm, int availableWidth, qreal scale) const
-{
+QString LyricRenderer::elideForWidth(const QString &text,
+                                     const QFontMetrics &fm, int availableWidth,
+                                     qreal scale) const {
     if (!m_ellipsis || text.isEmpty() || availableWidth <= 0)
         return text;
     // The SCALED text must fit the available width, so the elide happens in
@@ -930,8 +948,10 @@ QString LyricRenderer::elideForWidth(const QString& text, const QFontMetrics& fm
     return fm.elidedText(text, Qt::ElideRight, int(availableWidth / scale));
 }
 
-QString LyricRenderer::elideForHeight(const QString& text, const QFontMetrics& fm, int availableHeight, int letterSpacing, qreal scale) const
-{
+QString LyricRenderer::elideForHeight(const QString &text,
+                                      const QFontMetrics &fm,
+                                      int availableHeight, int letterSpacing,
+                                      qreal scale) const {
     if (!m_ellipsis || text.isEmpty() || availableHeight <= 0)
         return text;
     if (columnHeight(text, fm, letterSpacing, scale) <= availableHeight)
@@ -946,27 +966,29 @@ QString LyricRenderer::elideForHeight(const QString& text, const QFontMetrics& f
     return text.left(maxChars - 1) + QStringLiteral("…");
 }
 
-qreal LyricRenderer::columnWidth(const QString& text, const QFontMetrics& fm, qreal scale) const
-{
+qreal LyricRenderer::columnWidth(const QString &text, const QFontMetrics &fm,
+                                 qreal scale) const {
     qreal widest = 0;
     for (const QChar ch : text)
         widest = qMax(widest, fm.horizontalAdvance(ch) * scale);
     return widest;
 }
 
-qreal LyricRenderer::columnHeight(const QString& text, const QFontMetrics& fm, int letterSpacing, qreal scale) const
-{
+qreal LyricRenderer::columnHeight(const QString &text, const QFontMetrics &fm,
+                                  int letterSpacing, qreal scale) const {
     if (text.isEmpty())
         return 0;
     const qreal step = fm.height() * scale + letterSpacing;
     return text.size() * step - letterSpacing; // N boxes, N-1 inter-char gaps.
 }
 
-LyricRenderer::VerticalGroupMetrics LyricRenderer::measureVerticalGroup(const RenderLine& line, int lineIndex,
-                                                                        int zoomOverrideLine, double zoomOverride) const
-{
+LyricRenderer::VerticalGroupMetrics
+LyricRenderer::measureVerticalGroup(const RenderLine &line, int lineIndex,
+                                    int zoomOverrideLine,
+                                    double zoomOverride) const {
     VerticalGroupMetrics m;
-    const double mainZoom = (zoomOverrideLine == lineIndex) ? zoomOverride : -1.0;
+    const double mainZoom =
+        (zoomOverrideLine == lineIndex) ? zoomOverride : -1.0;
     // Fractional zoom factors scale the base-font metrics continuously (the
     // fonts themselves stay at their base size; see makeMainFont), so a zoomed
     // group reflows at fractional sizes like the reference font-size
@@ -988,13 +1010,17 @@ LyricRenderer::VerticalGroupMetrics LyricRenderer::measureVerticalGroup(const Re
     // columns stacked right-to-left. Ellipsis mode clamps to one column with a
     // trailing "…" (reference .ellipsis -webkit-line-clamp:1).
     const QString mainText = stripWordTags(line.text);
-    m.mainColumns = m_ellipsis
-        ? QStringList{ elideForHeight(mainText, mainFm, availableHeight, letterSpacing, mainScale) }
-        : wrapForHeight(mainText, mainFm, availableHeight, letterSpacing, mainScale);
+    m.mainColumns =
+        m_ellipsis
+            ? QStringList{elideForHeight(mainText, mainFm, availableHeight,
+                                         letterSpacing, mainScale)}
+            : wrapForHeight(mainText, mainFm, availableHeight, letterSpacing,
+                            mainScale);
 
-    for (const QString& col : m.mainColumns) {
+    for (const QString &col : m.mainColumns) {
         m.groupWidth += columnWidth(col, mainFm, mainScale);
-        m.groupHeight = qMax(m.groupHeight, columnHeight(col, mainFm, letterSpacing, mainScale));
+        m.groupHeight = qMax(
+            m.groupHeight, columnHeight(col, mainFm, letterSpacing, mainScale));
     }
     // Wrapped columns advance by their glyph width plus the letter-spacing
     // (the reference separates columns with line-height leading; the port
@@ -1002,77 +1028,173 @@ LyricRenderer::VerticalGroupMetrics LyricRenderer::measureVerticalGroup(const Re
     if (m.mainColumns.size() > 1)
         m.groupWidth += letterSpacing * (m.mainColumns.size() - 1);
 
-    for (const QString& rawExtended : line.extended) {
+    for (const QString &rawExtended : line.extended) {
         const QString extText = stripWordTags(rawExtended);
-        const QStringList extCols = m_ellipsis
-            ? QStringList{ elideForHeight(extText, extendedFm, availableHeight, letterSpacing, extScale) }
-            : wrapForHeight(extText, extendedFm, availableHeight, letterSpacing, extScale);
+        const QStringList extCols =
+            m_ellipsis ? QStringList{elideForHeight(extText, extendedFm,
+                                                    availableHeight,
+                                                    letterSpacing, extScale)}
+                       : wrapForHeight(extText, extendedFm, availableHeight,
+                                       letterSpacing, extScale);
         m.extendedColumns << extCols;
-        for (const QString& col : extCols) {
+        for (const QString &col : extCols) {
             m.groupWidth += columnWidth(col, extendedFm, extScale);
-            m.groupHeight = qMax(m.groupHeight, columnHeight(col, extendedFm, letterSpacing, extScale));
+            m.groupHeight =
+                qMax(m.groupHeight,
+                     columnHeight(col, extendedFm, letterSpacing, extScale));
         }
         if (extCols.size() > 1)
             m.groupWidth += letterSpacing * (extCols.size() - 1);
     }
     if (!line.extended.isEmpty())
-        m.groupWidth += qRound(verticalExtendedGap(m_lineGap)) * line.extended.size();
+        m.groupWidth +=
+            qRound(verticalExtendedGap(m_lineGap)) * line.extended.size();
 
     return m;
 }
 
-void LyricRenderer::paintHorizontal(QPainter& p)
-{
+void LyricRenderer::paintHorizontal(QPainter &p) {
     const qreal gap = m_lineGap;
     const qreal lineWidth = width();
 
     // Measure each group (main + extended rows) so the block can be centered,
     // then shift the whole block by the scroll offset (content moves up as the
-    // offset grows).
-    const HorizontalLayout layout = measureHorizontal();
+    // offset grows). Settled lines reuse the cached measure (keyed on the same
+    // dirty/transitioning flags as the raster cache), so only the ≤2
+    // transitioning lines re-wrap per 16 ms tick — with the raster cached, the
+    // word-wrap pass is the dominant per-frame cost.
+    qreal blockHeight = 0;
+    if (m_lines.size() > 1)
+        blockHeight += m_lineGap * (m_lines.size() - 1);
+    for (int i = 0; i < m_lines.size(); ++i) {
+        if (m_lineCache.at(i).dirty || isLineTransitioning(i))
+            m_cachedGroupHeights[i] = measureLineGroupHeight(i);
+        blockHeight += m_cachedGroupHeights.at(i);
+    }
     // The block starts below the 80% leading spacer (reference .lyricSpace), so
     // the active line can always center — even the first/last lines. The
     // static no-lyrics placeholder centers the whole block in the viewport
     // instead (no active line to track).
     const qreal yOffset = m_centeredBlock
-        ? qMax<qreal>(0, (height() - layout.blockHeight) / 2.0)
-        : qRound(kLyricSpaceRatio * height());
+                              ? qMax<qreal>(0, (height() - blockHeight) / 2.0)
+                              : qRound(kLyricSpaceRatio * height());
 
     qreal y = yOffset - m_scrollOffset;
     for (int i = 0; i < m_lines.size(); ++i) {
-        drawHorizontalGroup(p, m_lines.at(i), i, QRectF(0, y, lineWidth, layout.groupHeights.at(i)));
-        y += layout.groupHeights.at(i) + gap;
+        const qreal h = m_cachedGroupHeights.at(i);
+        const QRectF rect(0, y, lineWidth, h);
+        // Settled lines blit their cached raster (1:1 copy — same pixels as
+        // the direct raster it replaced); only lines with a mid-flight
+        // zoom/color transition re-rasterize, so a transition frame costs one
+        // blit per settled line plus ≤2 fresh rasters instead of a full-window
+        // text + 32-pass-shadow raster every 16 ms tick.
+        if (m_lineCache.at(i).dirty || isLineTransitioning(i))
+            renderLineToCache(i, rect);
+        p.drawPixmap(rect.topLeft() - QPointF(kCacheHaloPadPx, kCacheHaloPadPx),
+                     m_lineCache.at(i).pixmap);
+        y += h + gap;
     }
 }
 
-void LyricRenderer::paintVertical(QPainter& p)
-{
+void LyricRenderer::paintVertical(QPainter &p) {
     const qreal gap = verticalGroupGap(m_lineGap);
 
     // Measure every column group so the whole block can be centered; scrolling
-    // shifts the block left (content moves left as the offset grows).
-    const QVector<VerticalGroupMetrics> metrics = measureAllVerticalGroups();
-    const qreal blockWidth = verticalBlockWidth(metrics);
+    // shifts the block left (content moves left as the offset grows). Settled
+    // lines reuse the cached measure (same dirty key as the raster cache), so
+    // only transitioning lines re-measure per 16 ms tick.
+    QVector<VerticalGroupMetrics> liveMetrics(m_lines.size());
+    qreal blockWidth = 0;
+    if (m_lines.size() > 1)
+        blockWidth += gap * (m_lines.size() - 1);
+    for (int i = 0; i < m_lines.size(); ++i) {
+        if (m_lineCache.at(i).dirty || isLineTransitioning(i)) {
+            liveMetrics[i] = measureVerticalGroup(m_lines.at(i), i);
+            m_cachedGroupWidths[i] = liveMetrics[i].groupWidth;
+            m_cachedGroupHeights[i] = liveMetrics[i].groupHeight;
+        }
+        blockWidth += m_cachedGroupWidths.at(i);
+    }
 
     // The block starts after the 80% leading spacer (reference .lyricSpace
     // width:80%), so the active column can always center — even the first/last.
     // The static no-lyrics placeholder centers the whole block instead.
     const qreal xOffset = m_centeredBlock
-        ? qMax<qreal>(0, (width() - blockWidth) / 2.0)
-        : qRound(kLyricSpaceRatio * width());
+                              ? qMax<qreal>(0, (width() - blockWidth) / 2.0)
+                              : qRound(kLyricSpaceRatio * width());
 
     // writing-mode: vertical-rl — blocks stack right-to-left, line 0 rightmost.
     qreal right = xOffset + blockWidth - m_scrollOffset;
     for (int i = 0; i < m_lines.size(); ++i) {
-        const qreal groupWidth = metrics.at(i).groupWidth;
-        drawVerticalGroup(p, metrics.at(i), i,
-                          QRectF(right - groupWidth, 0, groupWidth, metrics.at(i).groupHeight));
+        const qreal groupWidth = m_cachedGroupWidths.at(i);
+        const QRectF rect(right - groupWidth, 0, groupWidth,
+                          m_cachedGroupHeights.at(i));
+        if (m_lineCache.at(i).dirty || isLineTransitioning(i))
+            renderLineToCache(i, rect, &liveMetrics.at(i));
+        p.drawPixmap(rect.topLeft() - QPointF(kCacheHaloPadPx, kCacheHaloPadPx),
+                     m_lineCache.at(i).pixmap);
         right -= groupWidth + gap;
     }
 }
 
-void LyricRenderer::drawHorizontalGroup(QPainter& p, const RenderLine& line, int lineIndex, const QRectF& rect)
-{
+void LyricRenderer::invalidateLineCaches() {
+    // Every line re-rasterizes and re-measures on the next paint (resize keeps
+    // the pixmaps).
+    m_lineCache.resize(m_lines.size());
+    m_cachedGroupHeights.resize(m_lines.size());
+    m_cachedGroupWidths.resize(m_lines.size());
+    for (LineCache &cache : m_lineCache)
+        cache.dirty = true;
+}
+
+bool LyricRenderer::isLineTransitioning(int lineIndex) const {
+    if (lineIndex < 0 || lineIndex >= m_lineZoomProgress.size())
+        return false;
+    // A mid-flight zoom or color transition must re-rasterize every frame;
+    // settled progress (exactly 0.0 or 1.0) lives in the cache as-is.
+    const double zoom = m_lineZoomProgress.at(lineIndex);
+    const double color = m_lineColorProgress.at(lineIndex);
+    return (zoom > 0.0 && zoom < 1.0) || (color > 0.0 && color < 1.0);
+}
+
+void LyricRenderer::renderLineToCache(
+    int lineIndex, const QRectF &rect,
+    const VerticalGroupMetrics *verticalMetrics) {
+    LineCache &cache = m_lineCache[lineIndex];
+    // The pixmap lives in device pixels: a logical rect sized at the window's
+    // device-pixel ratio, and drawn in logical coordinates (Qt scales the
+    // painter) — so a 2x display gets a full-resolution cache. A transparent
+    // kCacheHaloPadPx halo surrounds the group rect so the stroke passes that
+    // draw beyond it (see kCacheHaloPadPx) survive the pixmap clip: the group
+    // is drawn INSIDE the pixmap at (+pad, +pad) and the blit offsets the
+    // pixmap by -pad, so the content lands exactly on the group rect.
+    const qreal dpr = devicePixelRatioF();
+    const int padDev = qCeil(kCacheHaloPadPx * dpr);
+    const QSize deviceSize(qCeil(rect.width() * dpr) + 2 * padDev,
+                           qCeil(rect.height() * dpr) + 2 * padDev);
+    if (cache.pixmap.isNull() || cache.pixmap.size() != deviceSize ||
+        !qFuzzyCompare(cache.pixmap.devicePixelRatio(), dpr)) {
+        cache.pixmap = QPixmap(deviceSize);
+        cache.pixmap.setDevicePixelRatio(dpr);
+    }
+    cache.pixmap.fill(Qt::transparent);
+    QPainter cachePainter(&cache.pixmap);
+    // Same hints as paintEvent minus the opacity: the widget-level opacity is
+    // applied when the cache is blitted, so the pixmap always holds the
+    // full-strength content.
+    cachePainter.setRenderHint(QPainter::Antialiasing);
+    const QRectF local(kCacheHaloPadPx, kCacheHaloPadPx, rect.width(),
+                       rect.height());
+    if (verticalMetrics)
+        drawVerticalGroup(cachePainter, *verticalMetrics, lineIndex, local);
+    else
+        drawHorizontalGroup(cachePainter, m_lines.at(lineIndex), lineIndex,
+                            local);
+    cache.dirty = false;
+}
+
+void LyricRenderer::drawHorizontalGroup(QPainter &p, const RenderLine &line,
+                                        int lineIndex, const QRectF &rect) {
     const QFont mainFont = makeMainFont(lineIndex);
     const QFont extendedFont = makeExtendedFont(lineIndex);
     const QFontMetrics mainFm(mainFont);
@@ -1096,16 +1218,24 @@ void LyricRenderer::drawHorizontalGroup(QPainter& p, const RenderLine& line, int
     if (m_ellipsis) {
         // Ellipsis mode: one single line with a trailing "…" (reference
         // .ellipsis .font-lrc { .mixin-ellipsis(1) }).
-        const QString mainText = elideForWidth(stripWordTags(line.text), mainFm, int(rect.width()), mainScale);
-        const QRectF mainRect(rect.x(), rect.y(), rect.width(), mainFm.height() * mainScale);
-        drawTextWithStroke(p, mainText, mainRect, mainFont, fill, stroke, StrokeStyle::Stroke3, mainScale);
+        const QString mainText = elideForWidth(stripWordTags(line.text), mainFm,
+                                               int(rect.width()), mainScale);
+        const QRectF mainRect(rect.x(), rect.y(), rect.width(),
+                              mainFm.height() * mainScale);
+        drawTextWithStroke(p, mainText, mainRect, mainFont, fill, stroke,
+                           StrokeStyle::Stroke3, mainScale);
 
         qreal y = rect.y() + mainFm.height() * mainScale;
-        for (const QString& rawExtended : line.extended) {
+        for (const QString &rawExtended : line.extended) {
             y += extGap;
-            const QString extText = elideForWidth(stripWordTags(rawExtended), extendedFm, int(rect.width()), extScale);
-            drawTextWithStroke(p, extText, QRectF(rect.x(), y, rect.width(), extendedFm.height() * extScale),
-                               extendedFont, fill, stroke, StrokeStyle::Stroke3, extScale);
+            const QString extText =
+                elideForWidth(stripWordTags(rawExtended), extendedFm,
+                              int(rect.width()), extScale);
+            drawTextWithStroke(p, extText,
+                               QRectF(rect.x(), y, rect.width(),
+                                      extendedFm.height() * extScale),
+                               extendedFont, fill, stroke, StrokeStyle::Stroke3,
+                               extScale);
             y += extendedFm.height() * extScale;
         }
         return;
@@ -1116,28 +1246,38 @@ void LyricRenderer::drawHorizontalGroup(QPainter& p, const RenderLine& line, int
     // block taller than the rect is still fully drawn; the painter clips,
     // matching the reference where the layout height simply grows.
     qreal y = rect.y();
-    const QStringList mainRows = wrapForWidth(stripWordTags(line.text), mainFm, int(rect.width()), mainScale);
-    for (const QString& row : mainRows) {
-        drawTextWithStroke(p, row, QRectF(rect.x(), y, rect.width(), mainFm.height() * mainScale),
-                           mainFont, fill, stroke, StrokeStyle::Stroke3, mainScale);
+    const QStringList mainRows = wrapForWidth(stripWordTags(line.text), mainFm,
+                                              int(rect.width()), mainScale);
+    for (const QString &row : mainRows) {
+        drawTextWithStroke(
+            p, row,
+            QRectF(rect.x(), y, rect.width(), mainFm.height() * mainScale),
+            mainFont, fill, stroke, StrokeStyle::Stroke3, mainScale);
         y += mainFm.height() * mainScale;
     }
-    for (const QString& rawExtended : line.extended) {
+    for (const QString &rawExtended : line.extended) {
         y += extGap;
-        const QStringList extRows = wrapForWidth(stripWordTags(rawExtended), extendedFm, int(rect.width()), extScale);
-        for (const QString& row : extRows) {
-            drawTextWithStroke(p, row, QRectF(rect.x(), y, rect.width(), extendedFm.height() * extScale),
-                               extendedFont, fill, stroke, StrokeStyle::Stroke3, extScale);
+        const QStringList extRows =
+            wrapForWidth(stripWordTags(rawExtended), extendedFm,
+                         int(rect.width()), extScale);
+        for (const QString &row : extRows) {
+            drawTextWithStroke(p, row,
+                               QRectF(rect.x(), y, rect.width(),
+                                      extendedFm.height() * extScale),
+                               extendedFont, fill, stroke, StrokeStyle::Stroke3,
+                               extScale);
             y += extendedFm.height() * extScale;
         }
     }
 }
 
-void LyricRenderer::drawVerticalGroup(QPainter& p, const VerticalGroupMetrics& m, int lineIndex, const QRectF& rect)
-{
+void LyricRenderer::drawVerticalGroup(QPainter &p,
+                                      const VerticalGroupMetrics &m,
+                                      int lineIndex, const QRectF &rect) {
     const QFontMetrics mainFm(m.mainFont);
     const QFontMetrics extendedFm(m.extendedFont);
-    const int letterSpacing = kVerticalLetterSpacing; // Every line renders line-mode style.
+    const int letterSpacing =
+        kVerticalLetterSpacing; // Every line renders line-mode style.
     const qreal extGap = verticalExtendedGap(m_lineGap);
     // Fractional active-line zoom factors (see drawHorizontalGroup).
     const qreal mainScale = mainZoomFactor(lineIndex);
@@ -1155,25 +1295,31 @@ void LyricRenderer::drawVerticalGroup(QPainter& p, const VerticalGroupMetrics& m
     // Extended groups sit left of the main group, separated by the extended
     // gap (reference .extended { margin-right: ... }).
     qreal right = rect.right();
-    auto drawColumns = [&](const QStringList& cols, const QFont& font, const QFontMetrics& fm, qreal scale) {
+    auto drawColumns = [&](const QStringList &cols, const QFont &font,
+                           const QFontMetrics &fm, qreal scale) {
         for (int i = 0; i < cols.size(); ++i) {
             const qreal colWidth = columnWidth(cols.at(i), fm, scale);
-            const QRectF colRect(right - colWidth, rect.top(), colWidth, m.groupHeight);
-            drawVerticalText(p, cols.at(i), colRect, font, fill, m_shadowColor, StrokeStyle::Stroke4, letterSpacing, scale);
+            const QRectF colRect(right - colWidth, rect.top(), colWidth,
+                                 m.groupHeight);
+            drawVerticalText(p, cols.at(i), colRect, font, fill, m_shadowColor,
+                             StrokeStyle::Stroke4, letterSpacing, scale);
             right = colRect.left();
             if (i < cols.size() - 1)
                 right -= letterSpacing;
         }
     };
     drawColumns(m.mainColumns, m.mainFont, mainFm, mainScale);
-    for (const QStringList& extCols : m.extendedColumns) {
+    for (const QStringList &extCols : m.extendedColumns) {
         right -= extGap;
         drawColumns(extCols, m.extendedFont, extendedFm, extScale);
     }
 }
 
-void LyricRenderer::drawVerticalText(QPainter& p, const QString& text, const QRectF& columnRect, const QFont& font, const QColor& fill, const QColor& stroke, StrokeStyle style, int letterSpacing, qreal scale)
-{
+void LyricRenderer::drawVerticalText(QPainter &p, const QString &text,
+                                     const QRectF &columnRect,
+                                     const QFont &font, const QColor &fill,
+                                     const QColor &stroke, StrokeStyle style,
+                                     int letterSpacing, qreal scale) {
     if (text.isEmpty())
         return;
     const QFontMetrics fm(font);
@@ -1185,14 +1331,18 @@ void LyricRenderer::drawVerticalText(QPainter& p, const QString& text, const QRe
     const qreal step = cellHeight + letterSpacing;
     qreal y = columnRect.y();
     for (const QChar ch : text) {
-        drawTextWithStroke(p, QString(ch), QRectF(columnRect.x(), y, columnRect.width(), cellHeight),
-                           font, fill, stroke, style, scale);
+        drawTextWithStroke(
+            p, QString(ch),
+            QRectF(columnRect.x(), y, columnRect.width(), cellHeight), font,
+            fill, stroke, style, scale);
         y += step;
     }
 }
 
-void LyricRenderer::drawTextWithStroke(QPainter& p, const QString& text, const QRectF& rect, const QFont& font, const QColor& fill, const QColor& stroke, StrokeStyle style, qreal scale)
-{
+void LyricRenderer::drawTextWithStroke(QPainter &p, const QString &text,
+                                       const QRectF &rect, const QFont &font,
+                                       const QColor &fill, const QColor &stroke,
+                                       StrokeStyle style, qreal scale) {
     if (text.isEmpty())
         return;
 
@@ -1240,13 +1390,17 @@ void LyricRenderer::drawTextWithStroke(QPainter& p, const QString& text, const Q
     // active-line zoom and the 0.8x extended scale included); px offsets are
     // fixed device pixels.
     const qreal em = font.pixelSize();
-    const StrokeOffset* offsets = (style == StrokeStyle::Stroke3) ? kStroke3Offsets : kStroke4Offsets;
-    const std::size_t passCount = (style == StrokeStyle::Stroke3) ? std::size(kStroke3Offsets) : std::size(kStroke4Offsets);
+    const StrokeOffset *offsets = (style == StrokeStyle::Stroke3)
+                                      ? kStroke3Offsets.data()
+                                      : kStroke4Offsets.data();
+    const std::size_t passCount = (style == StrokeStyle::Stroke3)
+                                      ? kStroke3Offsets.size()
+                                      : kStroke4Offsets.size();
 
     p.setPen(stroke);
     p.setBrush(stroke);
     for (std::size_t i = 0; i < passCount; ++i) {
-        const StrokeOffset& offset = offsets[i];
+        const StrokeOffset &offset = offsets[i];
         const qreal dx = offset.xIsEm ? offset.x * em : offset.x;
         const qreal dy = offset.yIsEm ? offset.y * em : offset.y;
         p.drawText(rect.translated(dx, dy), flags, text);
@@ -1260,97 +1414,115 @@ void LyricRenderer::drawTextWithStroke(QPainter& p, const QString& text, const Q
         p.restore();
 }
 
-QVector<QPointF> LyricRenderer::strokeOffsetsPx(StrokeStyle style, qreal emPx)
-{
-    const StrokeOffset* offsets = (style == StrokeStyle::Stroke3) ? kStroke3Offsets : kStroke4Offsets;
-    const std::size_t count = (style == StrokeStyle::Stroke3) ? std::size(kStroke3Offsets) : std::size(kStroke4Offsets);
+QVector<QPointF> LyricRenderer::strokeOffsetsPx(StrokeStyle style, qreal emPx) {
+    const StrokeOffset *offsets = (style == StrokeStyle::Stroke3)
+                                      ? kStroke3Offsets.data()
+                                      : kStroke4Offsets.data();
+    const std::size_t count = (style == StrokeStyle::Stroke3)
+                                  ? kStroke3Offsets.size()
+                                  : kStroke4Offsets.size();
     QVector<QPointF> result;
     result.reserve(int(count));
     for (std::size_t i = 0; i < count; ++i) {
-        const StrokeOffset& offset = offsets[i];
+        const StrokeOffset &offset = offsets[i];
         result.append(QPointF(offset.xIsEm ? offset.x * emPx : offset.x,
                               offset.yIsEm ? offset.y * emPx : offset.y));
     }
     return result;
 }
 
-LyricRenderer::HorizontalLayout LyricRenderer::measureHorizontal(int zoomOverrideLine, double zoomOverride) const
-{
+LyricRenderer::HorizontalLayout
+LyricRenderer::measureHorizontal(int zoomOverrideLine,
+                                 double zoomOverride) const {
     HorizontalLayout layout;
     layout.groupHeights.resize(m_lines.size());
-    // The same width the paint pass draws into (the widget's own width), so a
-    // wrapped line measures exactly as tall as it paints.
-    const int wrapWidth = width();
     for (int i = 0; i < m_lines.size(); ++i) {
-        const RenderLine& line = m_lines.at(i);
         const double zoom = (i == zoomOverrideLine) ? zoomOverride : -1.0;
-        // Fractional zoom factors: heights are base metrics × factor, so the
-        // block reflows continuously during the zoom transition (the old
-        // rounded-font heights stepped in discrete jumps).
-        const qreal mainScale = mainZoomFactor(i, zoom);
-        const qreal extScale = extendedZoomFactor(i, zoom);
-        const QFontMetrics mainFm(makeMainFont(i));
-        const QFontMetrics extendedFm(makeExtendedFont(i));
-        qreal groupHeight = 0;
-        if (m_ellipsis) {
-            groupHeight += mainFm.height() * mainScale;
-            if (!line.extended.isEmpty())
-                groupHeight += line.extended.size() * (horizontalExtendedGap(m_lineGap) + extendedFm.height() * extScale);
-        } else {
-            groupHeight += wrapForWidth(stripWordTags(line.text), mainFm, wrapWidth, mainScale).size() * mainFm.height() * mainScale;
-            for (const QString& rawExtended : line.extended)
-                groupHeight += horizontalExtendedGap(m_lineGap)
-                    + wrapForWidth(stripWordTags(rawExtended), extendedFm, wrapWidth, extScale).size() * extendedFm.height() * extScale;
-        }
-        layout.groupHeights[i] = groupHeight;
-        layout.blockHeight += groupHeight;
+        layout.groupHeights[i] = measureLineGroupHeight(i, zoom);
+        layout.blockHeight += layout.groupHeights[i];
     }
     if (m_lines.size() > 1)
         layout.blockHeight += m_lineGap * (m_lines.size() - 1);
     return layout;
 }
 
-QVector<LyricRenderer::VerticalGroupMetrics> LyricRenderer::measureAllVerticalGroups(int zoomOverrideLine,
-                                                                                     double zoomOverride) const
-{
+qreal LyricRenderer::measureLineGroupHeight(int lineIndex,
+                                            double zoomOverride) const {
+    const RenderLine &line = m_lines.at(lineIndex);
+    // Fractional zoom factors: heights are base metrics × factor, so the
+    // block reflows continuously during the zoom transition (the old
+    // rounded-font heights stepped in discrete jumps).
+    const qreal mainScale = mainZoomFactor(lineIndex, zoomOverride);
+    const qreal extScale = extendedZoomFactor(lineIndex, zoomOverride);
+    const QFontMetrics mainFm(makeMainFont(lineIndex));
+    const QFontMetrics extendedFm(makeExtendedFont(lineIndex));
+    // The same width the paint pass draws into (the widget's own width), so a
+    // wrapped line measures exactly as tall as it paints.
+    const int wrapWidth = width();
+    qreal groupHeight = 0;
+    if (m_ellipsis) {
+        groupHeight += mainFm.height() * mainScale;
+        if (!line.extended.isEmpty())
+            groupHeight +=
+                line.extended.size() * (horizontalExtendedGap(m_lineGap) +
+                                        extendedFm.height() * extScale);
+    } else {
+        groupHeight +=
+            wrapForWidth(stripWordTags(line.text), mainFm, wrapWidth, mainScale)
+                .size() *
+            mainFm.height() * mainScale;
+        for (const QString &rawExtended : line.extended)
+            groupHeight += horizontalExtendedGap(m_lineGap) +
+                           wrapForWidth(stripWordTags(rawExtended), extendedFm,
+                                        wrapWidth, extScale)
+                                   .size() *
+                               extendedFm.height() * extScale;
+    }
+    return groupHeight;
+}
+
+QVector<LyricRenderer::VerticalGroupMetrics>
+LyricRenderer::measureAllVerticalGroups(int zoomOverrideLine,
+                                        double zoomOverride) const {
     QVector<VerticalGroupMetrics> metrics(m_lines.size());
     for (int i = 0; i < m_lines.size(); ++i)
-        metrics[i] = measureVerticalGroup(m_lines.at(i), i, zoomOverrideLine, zoomOverride);
+        metrics[i] = measureVerticalGroup(m_lines.at(i), i, zoomOverrideLine,
+                                          zoomOverride);
     return metrics;
 }
 
-qreal LyricRenderer::verticalBlockWidth(const QVector<VerticalGroupMetrics>& metrics) const
-{
+qreal LyricRenderer::verticalBlockWidth(
+    const QVector<VerticalGroupMetrics> &metrics) const {
     qreal blockWidth = 0;
-    for (const VerticalGroupMetrics& m : metrics)
+    for (const VerticalGroupMetrics &m : metrics)
         blockWidth += m.groupWidth;
     if (metrics.size() > 1)
         blockWidth += verticalGroupGap(m_lineGap) * (metrics.size() - 1);
     return blockWidth;
 }
 
-qreal LyricRenderer::maxScrollOffset() const
-{
+qreal LyricRenderer::maxScrollOffset() const {
     if (m_lines.isEmpty() || m_centeredBlock)
         return 0; // Static placeholder: the block is centered, nothing scrolls.
-    const qreal blockExtent = m_vertical
-        ? verticalBlockWidth(measureAllVerticalGroups())
-        : measureHorizontal().blockHeight;
+    const qreal blockExtent =
+        m_vertical ? verticalBlockWidth(measureAllVerticalGroups())
+                   : measureHorizontal().blockHeight;
     const int viewportExtent = m_vertical ? width() : height();
     // The block sits below an 80% leading spacer with an 80% trailing spacer
     // (reference .lyricSpace), so the scrollable extent is 1.6 * viewport +
     // block; the usable range holds kLyricSpaceInnerFactor of viewport
     // headroom beyond the block — always > 0 while lines exist.
-    return qMax<qreal>(0, kLyricSpaceInnerFactor * viewportExtent + blockExtent);
+    return qMax<qreal>(0,
+                       kLyricSpaceInnerFactor * viewportExtent + blockExtent);
 }
 
-qreal LyricRenderer::autoScrollTarget() const
-{
+qreal LyricRenderer::autoScrollTarget() const {
     if (m_lines.isEmpty() || m_activeLine < 0 || m_activeLine >= m_lines.size())
         return 0;
 
     if (m_vertical) {
-        const QVector<VerticalGroupMetrics> metrics = measureAllVerticalGroups();
+        const QVector<VerticalGroupMetrics> metrics =
+            measureAllVerticalGroups();
         const qreal blockWidth = verticalBlockWidth(metrics);
         // Leading 80% spacer: the block's left edge starts here, so even the
         // last (leftmost) column can center (reference .lyricSpace width:80%).
@@ -1370,7 +1542,8 @@ qreal LyricRenderer::autoScrollTarget() const
         // content edge (reference getOffsetTop: contentWidth - lineWidth - 2
         // on the negative-scroll axis); center keeps it horizontally centered.
         const qreal groupExtent = metrics.at(m_activeLine).groupWidth;
-        const qreal target = m_scrollAlignTop ? (width() - groupExtent - 2) : (width() - groupExtent) / 2.0;
+        const qreal target = m_scrollAlignTop ? (width() - groupExtent - 2)
+                                              : (width() - groupExtent) / 2.0;
         return qBound<qreal>(0, baseLeft - target, maxScrollOffset());
     }
 
@@ -1384,11 +1557,12 @@ qreal LyricRenderer::autoScrollTarget() const
     // (Vertical mode needs none: its right-anchored layout keeps the active
     // column's base position fixed while the outgoing column's zoom decays.)
     qreal zoomCompensation = 0;
-    if (m_zoomActiveLrc && !m_delayScroll && m_prevActiveLine >= 0
-        && m_prevActiveLine < m_activeLine) {
+    if (m_zoomActiveLrc && !m_delayScroll && m_prevActiveLine >= 0 &&
+        m_prevActiveLine < m_activeLine) {
         const qreal baseHeight = measureHorizontal(m_prevActiveLine, 0.0)
-            .groupHeights.at(m_prevActiveLine);
-        zoomCompensation = layout.groupHeights.at(m_prevActiveLine) - baseHeight;
+                                     .groupHeights.at(m_prevActiveLine);
+        zoomCompensation =
+            layout.groupHeights.at(m_prevActiveLine) - baseHeight;
     }
 
     // Leading 80% spacer: the block's top edge starts here, so even the last
@@ -1400,11 +1574,11 @@ qreal LyricRenderer::autoScrollTarget() const
 
     const qreal groupExtent = layout.groupHeights.at(m_activeLine);
     const qreal target = m_scrollAlignTop ? 0 : (height() - groupExtent) / 2.0;
-    return qBound<qreal>(0, baseTop - zoomCompensation - target, maxScrollOffset());
+    return qBound<qreal>(0, baseTop - zoomCompensation - target,
+                         maxScrollOffset());
 }
 
-void LyricRenderer::scrollToActiveAnimated(int durationMs)
-{
+void LyricRenderer::scrollToActiveAnimated(int durationMs) {
     m_delayScrollTimer->stop();
 
     const qreal target = autoScrollTarget();
@@ -1433,20 +1607,15 @@ void LyricRenderer::scrollToActiveAnimated(int durationMs)
     rebaseScroll(target, durationMs);
 }
 
-void LyricRenderer::suspendAutoScroll()
-{
+void LyricRenderer::suspendAutoScroll() {
     m_userScrolling = true;
     stopScrollAnimation();
     m_delayScrollTimer->stop();
 }
 
-void LyricRenderer::rearmResumeTimer()
-{
-    m_resumeTimer->start();
-}
+void LyricRenderer::rearmResumeTimer() { m_resumeTimer->start(); }
 
-void LyricRenderer::startDelayScrollTimer()
-{
+void LyricRenderer::startDelayScrollTimer() {
     // One pending roll per burst, not one per line change: the timer is only
     // armed if no roll is already waiting, and its handler retargets to the
     // CURRENT active line when it fires (scrollToActiveAnimated recomputes the
@@ -1457,11 +1626,13 @@ void LyricRenderer::startDelayScrollTimer()
         m_delayScrollTimer->start();
 }
 
-void LyricRenderer::resizeEvent(QResizeEvent* event)
-{
+void LyricRenderer::resizeEvent(QResizeEvent *event) {
     QWidget::resizeEvent(event);
     if (m_lines.isEmpty())
         return;
+    // Width changes re-wrap/elide every line and the device-pixel ratio may
+    // change on a display move — cached rasters are stale.
+    invalidateLineCaches();
     // The block re-centers on resize; clamp any manual offset to the new range
     // and, when not mid-interaction, keep the active line at its target —
     // animated, so a resize stream retargets smoothly instead of jumping.
@@ -1471,8 +1642,7 @@ void LyricRenderer::resizeEvent(QResizeEvent* event)
     update();
 }
 
-void LyricRenderer::wheelEvent(QWheelEvent* event)
-{
+void LyricRenderer::wheelEvent(QWheelEvent *event) {
     if (!m_interactive) {
         QWidget::wheelEvent(event);
         return;
@@ -1484,15 +1654,15 @@ void LyricRenderer::wheelEvent(QWheelEvent* event)
         // reference scrollTop += deltaY). Vertical-rl scrolls left instead, so
         // the sign is flipped (reference scrollLeft -= deltaY).
         const qreal delta = m_vertical ? -qreal(deltaY) : qreal(deltaY);
-        m_scrollOffset = qBound<qreal>(0, m_scrollOffset + delta, maxScrollOffset());
+        m_scrollOffset =
+            qBound<qreal>(0, m_scrollOffset + delta, maxScrollOffset());
         update();
         rearmResumeTimer();
     }
     event->accept();
 }
 
-void LyricRenderer::mousePressEvent(QMouseEvent* event)
-{
+void LyricRenderer::mousePressEvent(QMouseEvent *event) {
     if (!m_interactive || event->button() != Qt::LeftButton) {
         QWidget::mousePressEvent(event);
         return;
@@ -1506,8 +1676,7 @@ void LyricRenderer::mousePressEvent(QMouseEvent* event)
     event->accept();
 }
 
-void LyricRenderer::mouseMoveEvent(QMouseEvent* event)
-{
+void LyricRenderer::mouseMoveEvent(QMouseEvent *event) {
     if (!m_interactive || !m_dragging) {
         QWidget::mouseMoveEvent(event);
         return;
@@ -1521,8 +1690,7 @@ void LyricRenderer::mouseMoveEvent(QMouseEvent* event)
     event->accept();
 }
 
-void LyricRenderer::mouseReleaseEvent(QMouseEvent* event)
-{
+void LyricRenderer::mouseReleaseEvent(QMouseEvent *event) {
     if (!m_interactive || !m_dragging || event->button() != Qt::LeftButton) {
         QWidget::mouseReleaseEvent(event);
         return;
