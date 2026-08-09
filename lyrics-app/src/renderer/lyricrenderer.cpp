@@ -202,14 +202,15 @@ QColor interpolateColor(const QColor& unplay, const QColor& played, double p)
 // each at most `width` wide. Mirrors CSS word-break:break-all (the ellipsis
 // clamp variant) / overflow-wrap:break-word (wraps the word at the overflow
 // point): CJK characters split individually, long latin words break at any
-// character.
-QStringList breakLongWord(const QString& word, const QFontMetrics& fm, int width)
+// character. `scale` multiplies the advances (active-line zoom) so the chunked
+// text still fits the unscaled width after it grows.
+QStringList breakLongWord(const QString& word, const QFontMetrics& fm, int width, qreal scale = 1.0)
 {
     QStringList chunks;
     QString chunk;
     qreal chunkWidth = 0;
     for (const QChar ch : word) {
-        const qreal chWidth = fm.horizontalAdvance(ch);
+        const qreal chWidth = fm.horizontalAdvance(ch) * scale;
         if (!chunk.isEmpty() && chunkWidth + chWidth > width) {
             chunks << chunk;
             chunk.clear();
@@ -227,20 +228,22 @@ QStringList breakLongWord(const QString& word, const QFontMetrics& fm, int width
 // — no separate wrap toggle; ellipsis only switches the render to single-line
 // ElideRight). A word that alone overflows the line width is broken
 // character-by-character; empty / whitespace-only input stays a single entry.
-QStringList wrapForWidth(const QString& text, const QFontMetrics& fm, int width)
+// `scale` multiplies the advances (active-line zoom) so a zoomed row still
+// wraps at the unscaled width.
+QStringList wrapForWidth(const QString& text, const QFontMetrics& fm, int width, qreal scale = 1.0)
 {
     if (width <= 0 || text.isEmpty() || text.trimmed().isEmpty())
         return { text };
 
     const QStringList words = text.split(QLatin1Char(' '), Qt::SkipEmptyParts);
-    const qreal spaceWidth = fm.horizontalAdvance(QLatin1Char(' '));
+    const qreal spaceWidth = fm.horizontalAdvance(QLatin1Char(' ')) * scale;
     QStringList rows;
     QString row;
     qreal rowWidth = 0;
 
     auto startRow = [&](const QString& first) {
         row = first;
-        rowWidth = fm.horizontalAdvance(first);
+        rowWidth = fm.horizontalAdvance(first) * scale;
     };
     auto commitRow = [&]() {
         if (!row.isEmpty()) {
@@ -250,7 +253,7 @@ QStringList wrapForWidth(const QString& text, const QFontMetrics& fm, int width)
         }
     };
     auto takeWord = [&](const QString& word) {
-        const QStringList chunks = breakLongWord(word, fm, width);
+        const QStringList chunks = breakLongWord(word, fm, width, scale);
         startRow(chunks.first());
         for (int i = 1; i < chunks.size(); ++i) {
             commitRow();
@@ -259,7 +262,7 @@ QStringList wrapForWidth(const QString& text, const QFontMetrics& fm, int width)
     };
 
     for (const QString& word : words) {
-        const qreal wordWidth = fm.horizontalAdvance(word);
+        const qreal wordWidth = fm.horizontalAdvance(word) * scale;
         if (row.isEmpty()) {
             if (wordWidth <= width)
                 startRow(word);
@@ -284,19 +287,21 @@ QStringList wrapForWidth(const QString& text, const QFontMetrics& fm, int width)
 
 // Greedy word wrap on spaces along the vertical axis (reference .line-content
 // overflow-wrap:break-word in writing-mode: vertical-rl): each character owns
-// one line box (fm.height() + letterSpacing) and a wrapped "line" (column)
-// breaks when the next word would exceed availableHeight. A word that alone
-// does not fit a column is chunked character-by-character. Empty /
-// whitespace-only input stays a single entry, like wrapForWidth.
-QStringList wrapForHeight(const QString& text, const QFontMetrics& fm, int availableHeight, int letterSpacing)
+// one line box (fm.height() * scale + letterSpacing) and a wrapped "line"
+// (column) breaks when the next word would exceed availableHeight. A word that
+// alone does not fit a column is chunked character-by-character. Empty /
+// whitespace-only input stays a single entry, like wrapForWidth. `scale` is
+// the active-line zoom: the line box grows fractionally while the
+// letter-spacing stays fixed (CSS letter-spacing does not zoom).
+QStringList wrapForHeight(const QString& text, const QFontMetrics& fm, int availableHeight, int letterSpacing, qreal scale = 1.0)
 {
     if (availableHeight <= 0 || text.isEmpty() || text.trimmed().isEmpty())
         return { text };
 
-    const int step = fm.height() + letterSpacing;
+    const qreal step = fm.height() * scale + letterSpacing;
     // Max chars per column so that columnHeight(n) = n*step - letterSpacing
     // never exceeds availableHeight.
-    const int maxChars = (availableHeight + letterSpacing) / step;
+    const int maxChars = int((availableHeight + letterSpacing) / step);
     if (maxChars <= 0)
         return { text };
 
@@ -499,6 +504,19 @@ void LyricRenderer::setActiveLine(int index)
         startDelayScrollTimer();
     else
         scrollToActiveAnimated(kScrollAnimationMs);
+}
+
+void LyricRenderer::setZoomProgressForLine(int line, double progress)
+{
+    if (line < 0 || line >= m_lineZoomProgress.size())
+        return;
+    // Test accessor: freeze the transition engine and pin one line's zoom
+    // progress so a test can render deterministic mid-transition frames (the
+    // painted glyphs must grow continuously, not in pixel steps).
+    m_transitionTimer->stop();
+    m_lineZoomTransition.fill(LineTransition{}, m_lines.size());
+    m_lineZoomProgress[line] = qBound(0.0, progress, 1.0);
+    update();
 }
 
 void LyricRenderer::setVertical(bool on)
@@ -816,14 +834,13 @@ void LyricRenderer::paintEvent(QPaintEvent*)
         paintHorizontal(painter);
 }
 
-QFont LyricRenderer::makeMainFont(int lineIndex, double zoomOverride) const
+qreal LyricRenderer::mainZoomFactor(int lineIndex, double zoomOverride) const
 {
-    QFont font;
-    if (!m_fontFamily.isEmpty())
-        font.setFamily(m_fontFamily);
-    // Active-line zoom: each line carries its own 0..1 progress (1.0 = fully
-    // zoomed), so the incoming line grows while the outgoing line shrinks over
-    // the same transition. 1.0x at progress 0, kActiveMainZoom at progress 1
+    if (!m_zoomActiveLrc)
+        return 1.0;
+    // Each line carries its own 0..1 progress (1.0 = fully zoomed), so the
+    // incoming line grows while the outgoing line shrinks over the same
+    // transition: 1.0x at progress 0, kActiveMainZoom at progress 1
     // (reference .lrcActiveZoom .line { font-size: 1.2em }). An explicit
     // zoomOverride (>= 0) measures the line at a fixed progress for the
     // scroll-target compensation.
@@ -832,31 +849,51 @@ QFont LyricRenderer::makeMainFont(int lineIndex, double zoomOverride) const
         : (lineIndex >= 0 && lineIndex < m_lineZoomProgress.size())
             ? m_lineZoomProgress.at(lineIndex)
             : 0.0;
-    const qreal zoom = m_zoomActiveLrc
-        ? 1.0 + (kActiveMainZoom - 1.0) * progress
-        : 1.0;
-    font.setPixelSize(qRound(m_fontSize * zoom));
-    font.setBold(m_fontWeightLine); // Every line renders line-mode style.
-    return font;
+    return 1.0 + (kActiveMainZoom - 1.0) * progress;
 }
 
-QFont LyricRenderer::makeExtendedFont(int lineIndex, double zoomOverride) const
+qreal LyricRenderer::extendedZoomFactor(int lineIndex, double zoomOverride) const
 {
-    QFont font;
-    if (!m_fontFamily.isEmpty())
-        font.setFamily(m_fontFamily);
+    if (!m_zoomActiveLrc)
+        return 1.0;
     // Extended lines sit at kExtendedScale; the active zoomed group grows them
     // to kActiveExtendedZoom (reference .extended 0.8em -> .lrcActiveZoom
-    // .active .extended .94em). Same per-line progress as the main line.
+    // .active .extended .94em). Same per-line progress as the main line; the
+    // factor is relative to the base extended size (0.94em / 0.8em = 1.175
+    // max). When the zoom is disabled the extended lines render at their base
+    // 0.8x size, so the factor is 1.0.
     const qreal progress = (zoomOverride >= 0.0)
         ? zoomOverride
         : (lineIndex >= 0 && lineIndex < m_lineZoomProgress.size())
             ? m_lineZoomProgress.at(lineIndex)
             : 0.0;
-    const qreal zoom = m_zoomActiveLrc
-        ? kExtendedScale + (kActiveExtendedZoom - kExtendedScale) * progress
-        : kExtendedScale;
-    font.setPixelSize(qRound(m_fontSize * zoom));
+    return (kExtendedScale + (kActiveExtendedZoom - kExtendedScale) * progress) / kExtendedScale;
+}
+
+QFont LyricRenderer::makeMainFont(int /*lineIndex*/, double /*zoomOverride*/) const
+{
+    QFont font;
+    if (!m_fontFamily.isEmpty())
+        font.setFamily(m_fontFamily);
+    // The font NEVER changes size: the active-line zoom is applied as a
+    // painter transform (mainZoomFactor) so the transition rasterizes
+    // fractional sizes. Qt rounds setPixelSize/setPointSizeF to whole pixels,
+    // so the old qRound(m_fontSize * zoom) font stepped in ~4 discrete jumps
+    // over the 600 ms transition — the stiffness this transform replaces.
+    font.setPixelSize(m_fontSize);
+    font.setBold(m_fontWeightLine); // Every line renders line-mode style.
+    return font;
+}
+
+QFont LyricRenderer::makeExtendedFont(int /*lineIndex*/, double /*zoomOverride*/) const
+{
+    QFont font;
+    if (!m_fontFamily.isEmpty())
+        font.setFamily(m_fontFamily);
+    // Base extended size (reference .extended 0.8em); the active zoom applies
+    // via the painter transform (extendedZoomFactor) — same rationale as
+    // makeMainFont.
+    font.setPixelSize(qRound(m_fontSize * kExtendedScale));
     font.setBold(m_fontWeightExtended);
     return font;
 }
@@ -881,44 +918,47 @@ int LyricRenderer::textFlags() const
     return flags;
 }
 
-QString LyricRenderer::elideForWidth(const QString& text, const QFontMetrics& fm, int availableWidth) const
+QString LyricRenderer::elideForWidth(const QString& text, const QFontMetrics& fm, int availableWidth, qreal scale) const
 {
     if (!m_ellipsis || text.isEmpty() || availableWidth <= 0)
         return text;
-    if (fm.horizontalAdvance(text) <= availableWidth)
+    // The SCALED text must fit the available width, so the elide happens in
+    // base-font space (availableWidth / scale) — the same base font draws
+    // scaled by the painter, so the ellipsis lands at the right place.
+    if (fm.horizontalAdvance(text) * scale <= availableWidth)
         return text;
-    return fm.elidedText(text, Qt::ElideRight, availableWidth);
+    return fm.elidedText(text, Qt::ElideRight, int(availableWidth / scale));
 }
 
-QString LyricRenderer::elideForHeight(const QString& text, const QFontMetrics& fm, int availableHeight, int letterSpacing) const
+QString LyricRenderer::elideForHeight(const QString& text, const QFontMetrics& fm, int availableHeight, int letterSpacing, qreal scale) const
 {
     if (!m_ellipsis || text.isEmpty() || availableHeight <= 0)
         return text;
-    if (columnHeight(text, fm, letterSpacing) <= availableHeight)
+    if (columnHeight(text, fm, letterSpacing, scale) <= availableHeight)
         return text;
     // Qt 6.11 removed Qt::ElideBottom, so the vertical column is elided by
     // hand with the same semantics: drop trailing characters until the column
     // (ellipsis included) fits the available height, then append "…".
-    const int step = fm.height() + letterSpacing;
-    const int maxChars = availableHeight / step;
+    const qreal step = fm.height() * scale + letterSpacing;
+    const int maxChars = int(availableHeight / step);
     if (maxChars <= 1)
         return QStringLiteral("…");
     return text.left(maxChars - 1) + QStringLiteral("…");
 }
 
-int LyricRenderer::columnWidth(const QString& text, const QFontMetrics& fm) const
+qreal LyricRenderer::columnWidth(const QString& text, const QFontMetrics& fm, qreal scale) const
 {
-    int widest = 0;
+    qreal widest = 0;
     for (const QChar ch : text)
-        widest = qMax(widest, fm.horizontalAdvance(ch));
+        widest = qMax(widest, fm.horizontalAdvance(ch) * scale);
     return widest;
 }
 
-int LyricRenderer::columnHeight(const QString& text, const QFontMetrics& fm, int letterSpacing) const
+qreal LyricRenderer::columnHeight(const QString& text, const QFontMetrics& fm, int letterSpacing, qreal scale) const
 {
     if (text.isEmpty())
         return 0;
-    const int step = fm.height() + letterSpacing;
+    const qreal step = fm.height() * scale + letterSpacing;
     return text.size() * step - letterSpacing; // N boxes, N-1 inter-char gaps.
 }
 
@@ -927,8 +967,14 @@ LyricRenderer::VerticalGroupMetrics LyricRenderer::measureVerticalGroup(const Re
 {
     VerticalGroupMetrics m;
     const double mainZoom = (zoomOverrideLine == lineIndex) ? zoomOverride : -1.0;
-    m.mainFont = makeMainFont(lineIndex, mainZoom);
-    m.extendedFont = makeExtendedFont(lineIndex, mainZoom);
+    // Fractional zoom factors scale the base-font metrics continuously (the
+    // fonts themselves stay at their base size; see makeMainFont), so a zoomed
+    // group reflows at fractional sizes like the reference font-size
+    // transition.
+    const qreal mainScale = mainZoomFactor(lineIndex, mainZoom);
+    const qreal extScale = extendedZoomFactor(lineIndex, mainZoom);
+    m.mainFont = makeMainFont(lineIndex);
+    m.extendedFont = makeExtendedFont(lineIndex);
     const QFontMetrics mainFm(m.mainFont);
     const QFontMetrics extendedFm(m.extendedFont);
 
@@ -943,12 +989,12 @@ LyricRenderer::VerticalGroupMetrics LyricRenderer::measureVerticalGroup(const Re
     // trailing "…" (reference .ellipsis -webkit-line-clamp:1).
     const QString mainText = stripWordTags(line.text);
     m.mainColumns = m_ellipsis
-        ? QStringList{ elideForHeight(mainText, mainFm, availableHeight, letterSpacing) }
-        : wrapForHeight(mainText, mainFm, availableHeight, letterSpacing);
+        ? QStringList{ elideForHeight(mainText, mainFm, availableHeight, letterSpacing, mainScale) }
+        : wrapForHeight(mainText, mainFm, availableHeight, letterSpacing, mainScale);
 
     for (const QString& col : m.mainColumns) {
-        m.groupWidth += columnWidth(col, mainFm);
-        m.groupHeight = qMax(m.groupHeight, columnHeight(col, mainFm, letterSpacing));
+        m.groupWidth += columnWidth(col, mainFm, mainScale);
+        m.groupHeight = qMax(m.groupHeight, columnHeight(col, mainFm, letterSpacing, mainScale));
     }
     // Wrapped columns advance by their glyph width plus the letter-spacing
     // (the reference separates columns with line-height leading; the port
@@ -959,12 +1005,12 @@ LyricRenderer::VerticalGroupMetrics LyricRenderer::measureVerticalGroup(const Re
     for (const QString& rawExtended : line.extended) {
         const QString extText = stripWordTags(rawExtended);
         const QStringList extCols = m_ellipsis
-            ? QStringList{ elideForHeight(extText, extendedFm, availableHeight, letterSpacing) }
-            : wrapForHeight(extText, extendedFm, availableHeight, letterSpacing);
+            ? QStringList{ elideForHeight(extText, extendedFm, availableHeight, letterSpacing, extScale) }
+            : wrapForHeight(extText, extendedFm, availableHeight, letterSpacing, extScale);
         m.extendedColumns << extCols;
         for (const QString& col : extCols) {
-            m.groupWidth += columnWidth(col, extendedFm);
-            m.groupHeight = qMax(m.groupHeight, columnHeight(col, extendedFm, letterSpacing));
+            m.groupWidth += columnWidth(col, extendedFm, extScale);
+            m.groupHeight = qMax(m.groupHeight, columnHeight(col, extendedFm, letterSpacing, extScale));
         }
         if (extCols.size() > 1)
             m.groupWidth += letterSpacing * (extCols.size() - 1);
@@ -1031,6 +1077,11 @@ void LyricRenderer::drawHorizontalGroup(QPainter& p, const RenderLine& line, int
     const QFont extendedFont = makeExtendedFont(lineIndex);
     const QFontMetrics mainFm(mainFont);
     const QFontMetrics extendedFm(extendedFont);
+    // Fractional active-line zoom factors: the base fonts render scaled by the
+    // painter (see drawTextWithStroke) and the row boxes advance by scaled
+    // line heights, so the whole group grows continuously.
+    const qreal mainScale = mainZoomFactor(lineIndex);
+    const qreal extScale = extendedZoomFactor(lineIndex);
     const qreal extGap = horizontalExtendedGap(m_lineGap);
 
     // Line-by-line highlight: the whole active line switches to the played
@@ -1045,17 +1096,17 @@ void LyricRenderer::drawHorizontalGroup(QPainter& p, const RenderLine& line, int
     if (m_ellipsis) {
         // Ellipsis mode: one single line with a trailing "…" (reference
         // .ellipsis .font-lrc { .mixin-ellipsis(1) }).
-        const QString mainText = elideForWidth(stripWordTags(line.text), mainFm, int(rect.width()));
-        const QRectF mainRect(rect.x(), rect.y(), rect.width(), mainFm.height());
-        drawTextWithStroke(p, mainText, mainRect, mainFont, fill, stroke, StrokeStyle::Stroke3);
+        const QString mainText = elideForWidth(stripWordTags(line.text), mainFm, int(rect.width()), mainScale);
+        const QRectF mainRect(rect.x(), rect.y(), rect.width(), mainFm.height() * mainScale);
+        drawTextWithStroke(p, mainText, mainRect, mainFont, fill, stroke, StrokeStyle::Stroke3, mainScale);
 
-        qreal y = rect.y() + mainFm.height();
+        qreal y = rect.y() + mainFm.height() * mainScale;
         for (const QString& rawExtended : line.extended) {
             y += extGap;
-            const QString extText = elideForWidth(stripWordTags(rawExtended), extendedFm, int(rect.width()));
-            drawTextWithStroke(p, extText, QRectF(rect.x(), y, rect.width(), extendedFm.height()),
-                               extendedFont, fill, stroke, StrokeStyle::Stroke3);
-            y += extendedFm.height();
+            const QString extText = elideForWidth(stripWordTags(rawExtended), extendedFm, int(rect.width()), extScale);
+            drawTextWithStroke(p, extText, QRectF(rect.x(), y, rect.width(), extendedFm.height() * extScale),
+                               extendedFont, fill, stroke, StrokeStyle::Stroke3, extScale);
+            y += extendedFm.height() * extScale;
         }
         return;
     }
@@ -1065,19 +1116,19 @@ void LyricRenderer::drawHorizontalGroup(QPainter& p, const RenderLine& line, int
     // block taller than the rect is still fully drawn; the painter clips,
     // matching the reference where the layout height simply grows.
     qreal y = rect.y();
-    const QStringList mainRows = wrapForWidth(stripWordTags(line.text), mainFm, int(rect.width()));
+    const QStringList mainRows = wrapForWidth(stripWordTags(line.text), mainFm, int(rect.width()), mainScale);
     for (const QString& row : mainRows) {
-        drawTextWithStroke(p, row, QRectF(rect.x(), y, rect.width(), mainFm.height()),
-                           mainFont, fill, stroke, StrokeStyle::Stroke3);
-        y += mainFm.height();
+        drawTextWithStroke(p, row, QRectF(rect.x(), y, rect.width(), mainFm.height() * mainScale),
+                           mainFont, fill, stroke, StrokeStyle::Stroke3, mainScale);
+        y += mainFm.height() * mainScale;
     }
     for (const QString& rawExtended : line.extended) {
         y += extGap;
-        const QStringList extRows = wrapForWidth(stripWordTags(rawExtended), extendedFm, int(rect.width()));
+        const QStringList extRows = wrapForWidth(stripWordTags(rawExtended), extendedFm, int(rect.width()), extScale);
         for (const QString& row : extRows) {
-            drawTextWithStroke(p, row, QRectF(rect.x(), y, rect.width(), extendedFm.height()),
-                               extendedFont, fill, stroke, StrokeStyle::Stroke3);
-            y += extendedFm.height();
+            drawTextWithStroke(p, row, QRectF(rect.x(), y, rect.width(), extendedFm.height() * extScale),
+                               extendedFont, fill, stroke, StrokeStyle::Stroke3, extScale);
+            y += extendedFm.height() * extScale;
         }
     }
 }
@@ -1088,6 +1139,9 @@ void LyricRenderer::drawVerticalGroup(QPainter& p, const VerticalGroupMetrics& m
     const QFontMetrics extendedFm(m.extendedFont);
     const int letterSpacing = kVerticalLetterSpacing; // Every line renders line-mode style.
     const qreal extGap = verticalExtendedGap(m_lineGap);
+    // Fractional active-line zoom factors (see drawHorizontalGroup).
+    const qreal mainScale = mainZoomFactor(lineIndex);
+    const qreal extScale = extendedZoomFactor(lineIndex);
 
     // Line-by-line highlight: the whole active column group switches to the
     // played color, inactive groups stay unplay (color transition included).
@@ -1101,44 +1155,83 @@ void LyricRenderer::drawVerticalGroup(QPainter& p, const VerticalGroupMetrics& m
     // Extended groups sit left of the main group, separated by the extended
     // gap (reference .extended { margin-right: ... }).
     qreal right = rect.right();
-    auto drawColumns = [&](const QStringList& cols, const QFont& font, const QFontMetrics& fm) {
+    auto drawColumns = [&](const QStringList& cols, const QFont& font, const QFontMetrics& fm, qreal scale) {
         for (int i = 0; i < cols.size(); ++i) {
-            const qreal colWidth = columnWidth(cols.at(i), fm);
+            const qreal colWidth = columnWidth(cols.at(i), fm, scale);
             const QRectF colRect(right - colWidth, rect.top(), colWidth, m.groupHeight);
-            drawVerticalText(p, cols.at(i), colRect, font, fill, m_shadowColor, StrokeStyle::Stroke4, letterSpacing);
+            drawVerticalText(p, cols.at(i), colRect, font, fill, m_shadowColor, StrokeStyle::Stroke4, letterSpacing, scale);
             right = colRect.left();
             if (i < cols.size() - 1)
                 right -= letterSpacing;
         }
     };
-    drawColumns(m.mainColumns, m.mainFont, mainFm);
+    drawColumns(m.mainColumns, m.mainFont, mainFm, mainScale);
     for (const QStringList& extCols : m.extendedColumns) {
         right -= extGap;
-        drawColumns(extCols, m.extendedFont, extendedFm);
+        drawColumns(extCols, m.extendedFont, extendedFm, extScale);
     }
 }
 
-void LyricRenderer::drawVerticalText(QPainter& p, const QString& text, const QRectF& columnRect, const QFont& font, const QColor& fill, const QColor& stroke, StrokeStyle style, int letterSpacing)
+void LyricRenderer::drawVerticalText(QPainter& p, const QString& text, const QRectF& columnRect, const QFont& font, const QColor& fill, const QColor& stroke, StrokeStyle style, int letterSpacing, qreal scale)
 {
     if (text.isEmpty())
         return;
     const QFontMetrics fm(font);
-    const qreal step = fm.height() + letterSpacing;
+    // Each character owns one cell: the glyph renders base-size, scaled by the
+    // painter about its cell center, and the cells advance by the scaled line
+    // box (the letter-spacing itself stays fixed — CSS letter-spacing does not
+    // zoom with the font).
+    const qreal cellHeight = fm.height() * scale;
+    const qreal step = cellHeight + letterSpacing;
     qreal y = columnRect.y();
     for (const QChar ch : text) {
-        drawTextWithStroke(p, QString(ch), QRectF(columnRect.x(), y, columnRect.width(), fm.height()),
-                           font, fill, stroke, style);
+        drawTextWithStroke(p, QString(ch), QRectF(columnRect.x(), y, columnRect.width(), cellHeight),
+                           font, fill, stroke, style, scale);
         y += step;
     }
 }
 
-void LyricRenderer::drawTextWithStroke(QPainter& p, const QString& text, const QRectF& rect, const QFont& font, const QColor& fill, const QColor& stroke, StrokeStyle style)
+void LyricRenderer::drawTextWithStroke(QPainter& p, const QString& text, const QRectF& rect, const QFont& font, const QColor& fill, const QColor& stroke, StrokeStyle style, qreal scale)
 {
     if (text.isEmpty())
         return;
 
     p.setFont(font);
     const int flags = textFlags();
+
+    // Active-line zoom as a painter transform: the glyphs rasterize at
+    // FRACTIONAL sizes (Qt rounds font sizes to whole pixels, so resizing the
+    // font made the transition step in ~4 discrete jumps). The transform also
+    // scales the em-based stroke offsets correctly (CSS em = the element's own
+    // font-size); the stroke4 px offsets (±1 px) scale along — a ≤0.2 px
+    // deviation at the 1.2x max, visually identical.
+    //
+    // The horizontal anchor follows the text alignment, mirroring CSS where
+    // the growing text box reflows around the aligned edge: left-aligned text
+    // grows rightward from the left edge, right-aligned grows leftward from
+    // the right edge (so it never overflows the widget), centered grows from
+    // the middle. Vertical cells stay anchored at their own center (each
+    // character fills its cell and the group itself is centered).
+    const bool scaled = qAbs(scale - 1.0) > 1e-9;
+    if (scaled) {
+        QPointF anchor = rect.center();
+        if (!m_vertical) {
+            switch (m_align & Qt::AlignHorizontal_Mask) {
+            case Qt::AlignLeft:
+                anchor.setX(rect.left());
+                break;
+            case Qt::AlignRight:
+                anchor.setX(rect.right());
+                break;
+            default:
+                break; // Qt::AlignHCenter — anchored at the center.
+            }
+        }
+        p.save();
+        p.translate(anchor);
+        p.scale(scale, scale);
+        p.translate(-anchor);
+    }
 
     // Replicate the reference CSS text-shadow stack (stroke3/stroke4): every
     // table entry is one zero-blur glyph copy drawn under the text fill, and
@@ -1162,6 +1255,9 @@ void LyricRenderer::drawTextWithStroke(QPainter& p, const QString& text, const Q
     p.setPen(fill);
     p.setBrush(fill);
     p.drawText(rect, flags, text);
+
+    if (scaled)
+        p.restore();
 }
 
 QVector<QPointF> LyricRenderer::strokeOffsetsPx(StrokeStyle style, qreal emPx)
@@ -1188,18 +1284,23 @@ LyricRenderer::HorizontalLayout LyricRenderer::measureHorizontal(int zoomOverrid
     for (int i = 0; i < m_lines.size(); ++i) {
         const RenderLine& line = m_lines.at(i);
         const double zoom = (i == zoomOverrideLine) ? zoomOverride : -1.0;
-        const QFontMetrics mainFm(makeMainFont(i, zoom));
-        const QFontMetrics extendedFm(makeExtendedFont(i, zoom));
+        // Fractional zoom factors: heights are base metrics × factor, so the
+        // block reflows continuously during the zoom transition (the old
+        // rounded-font heights stepped in discrete jumps).
+        const qreal mainScale = mainZoomFactor(i, zoom);
+        const qreal extScale = extendedZoomFactor(i, zoom);
+        const QFontMetrics mainFm(makeMainFont(i));
+        const QFontMetrics extendedFm(makeExtendedFont(i));
         qreal groupHeight = 0;
         if (m_ellipsis) {
-            groupHeight += mainFm.height();
+            groupHeight += mainFm.height() * mainScale;
             if (!line.extended.isEmpty())
-                groupHeight += line.extended.size() * (horizontalExtendedGap(m_lineGap) + extendedFm.height());
+                groupHeight += line.extended.size() * (horizontalExtendedGap(m_lineGap) + extendedFm.height() * extScale);
         } else {
-            groupHeight += wrapForWidth(stripWordTags(line.text), mainFm, wrapWidth).size() * mainFm.height();
+            groupHeight += wrapForWidth(stripWordTags(line.text), mainFm, wrapWidth, mainScale).size() * mainFm.height() * mainScale;
             for (const QString& rawExtended : line.extended)
                 groupHeight += horizontalExtendedGap(m_lineGap)
-                    + wrapForWidth(stripWordTags(rawExtended), extendedFm, wrapWidth).size() * extendedFm.height();
+                    + wrapForWidth(stripWordTags(rawExtended), extendedFm, wrapWidth, extScale).size() * extendedFm.height() * extScale;
         }
         layout.groupHeights[i] = groupHeight;
         layout.blockHeight += groupHeight;

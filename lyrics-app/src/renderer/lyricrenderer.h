@@ -122,6 +122,11 @@ public:
     }
     double scrollOffset() const { return m_scrollOffset; }
 
+    // Test accessor: snap one line's zoom progress to a fixed value (stops the
+    // transition engine) so a test can render deterministic mid-transition
+    // frames — the painted glyphs must grow continuously, not in pixel steps.
+    void setZoomProgressForLine(int line, double progress);
+
     // Test accessor for the line list size (placeholder vs real lines).
     int lineCount() const { return m_lines.size(); }
 
@@ -156,7 +161,7 @@ protected:
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
 private:
-    void drawTextWithStroke(QPainter& p, const QString& text, const QRectF& rect, const QFont& font, const QColor& fill, const QColor& stroke, StrokeStyle style);
+    void drawTextWithStroke(QPainter& p, const QString& text, const QRectF& rect, const QFont& font, const QColor& fill, const QColor& stroke, StrokeStyle style, qreal scale = 1.0);
 
     // Per-group geometry for vertical (column) mode, shared by the layout pass
     // and the drawing pass so column widths stay consistent. Each text is held
@@ -167,15 +172,15 @@ private:
         QFont extendedFont;
         QStringList mainColumns;             // word tags stripped; wrapped or single elided column
         QVector<QStringList> extendedColumns; // ditto, one entry per extended line
-        int groupWidth = 0;
-        int groupHeight = 0;
+        qreal groupWidth = 0;
+        qreal groupHeight = 0;
     };
 
     void paintHorizontal(QPainter& p);
     void paintVertical(QPainter& p);
     void drawHorizontalGroup(QPainter& p, const RenderLine& line, int lineIndex, const QRectF& rect);
     void drawVerticalGroup(QPainter& p, const VerticalGroupMetrics& metrics, int lineIndex, const QRectF& rect);
-    void drawVerticalText(QPainter& p, const QString& text, const QRectF& columnRect, const QFont& font, const QColor& fill, const QColor& stroke, StrokeStyle style, int letterSpacing);
+    void drawVerticalText(QPainter& p, const QString& text, const QRectF& columnRect, const QFont& font, const QColor& fill, const QColor& stroke, StrokeStyle style, int letterSpacing, qreal scale = 1.0);
     // zoomOverrideLine/zoomOverride measure ONE line at a fixed zoom progress
     // (default -1.0 = live progress), used by the isComputeHeight scroll-target
     // compensation to compare the outgoing line's zoomed and base extents.
@@ -183,11 +188,22 @@ private:
                                               int zoomOverrideLine = -1, double zoomOverride = 0.0) const;
     QFont makeMainFont(int lineIndex, double zoomOverride = -1.0) const;
     QFont makeExtendedFont(int lineIndex, double zoomOverride = -1.0) const;
+    // Fractional active-line zoom factor (main line 1.0..1.2, extended line
+    // 1.0..1.175 = 0.94em / 0.8em; 1.0 when the zoom is disabled). The fonts
+    // stay at their base size and the painter scales by this factor, so the
+    // transition rasterizes FRACTIONAL sizes — Qt rounds setPixelSize and
+    // setPointSizeF to whole pixels, so the old rounded-font zoom stepped in
+    // ~4 discrete jumps over the 600 ms transition (the stiffness this
+    // transform replaces).
+    qreal mainZoomFactor(int lineIndex, double zoomOverride = -1.0) const;
+    qreal extendedZoomFactor(int lineIndex, double zoomOverride = -1.0) const;
     int textFlags() const;
-    QString elideForWidth(const QString& text, const QFontMetrics& fm, int availableWidth) const;
-    QString elideForHeight(const QString& text, const QFontMetrics& fm, int availableHeight, int letterSpacing) const;
-    int columnWidth(const QString& text, const QFontMetrics& fm) const;
-    int columnHeight(const QString& text, const QFontMetrics& fm, int letterSpacing) const;
+    // scale multiplies advances/heights: the active-line zoom factor, so a
+    // zoomed line reflows at fractional sizes (see mainZoomFactor).
+    QString elideForWidth(const QString& text, const QFontMetrics& fm, int availableWidth, qreal scale = 1.0) const;
+    QString elideForHeight(const QString& text, const QFontMetrics& fm, int availableHeight, int letterSpacing, qreal scale = 1.0) const;
+    qreal columnWidth(const QString& text, const QFontMetrics& fm, qreal scale = 1.0) const;
+    qreal columnHeight(const QString& text, const QFontMetrics& fm, int letterSpacing, qreal scale = 1.0) const;
 
     // --- scrolling helpers (shared by paint and the scroll target math) ---
     struct HorizontalLayout {

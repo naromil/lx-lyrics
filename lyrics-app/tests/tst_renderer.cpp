@@ -49,6 +49,8 @@ private slots:
     void setChangeCentersFirstLine();
     void strokeOffsetsMatchReference();
     void outlineVisibleOnWhiteBackground();
+    void zoomGrowsSmoothlyBetweenProgressSteps();
+    void zoomStaysAnchoredToAlignment();
 };
 
 void TestLyricRenderer::fastChangesDoNotSnapColorBack()
@@ -380,6 +382,133 @@ void TestLyricRenderer::outlineVisibleOnWhiteBackground()
     const QString dumpPath = qEnvironmentVariable("LX_LYRICS_DUMP_PAINT");
     if (!dumpPath.isEmpty())
         image.save(dumpPath);
+}
+
+void TestLyricRenderer::zoomGrowsSmoothlyBetweenProgressSteps()
+{
+    // Acceptance proof for the smooth active-line zoom: the painted glyph must
+    // grow CONTINUOUSLY with the zoom progress — the old qRound(m_fontSize *
+    // zoom) font held the size flat across 2-3 transition steps (Qt rounds
+    // font sizes to whole pixels) and then jumped ~2 px. The glyph extent is
+    // measured at sub-pixel precision via its coverage profile, so the ~0.4
+    // px growth per 0.02 progress step is detectable.
+    LyricRenderer renderer;
+    renderer.resize(600, 300);
+    renderer.setFontSize(48);
+    renderer.setLines(QVector<RenderLine>{ RenderLine{ QStringLiteral("Test"), {} } });
+    renderer.setActiveLine(0);
+    QTest::qWait(700); // Settle: line 0 fully played AND fully zoomed.
+
+    const QString dumpPath = qEnvironmentVariable("LX_LYRICS_DUMP_PAINT");
+    const auto paintedExtent = [&](double progress) {
+        renderer.setZoomProgressForLine(0, progress);
+        QImage image(renderer.size(), QImage::Format_ARGB32);
+        image.fill(Qt::white);
+        {
+            QPainter painter(&image);
+            renderer.render(&painter);
+        }
+        if (!dumpPath.isEmpty())
+            image.save(dumpPath + QStringLiteral("_p%1.png").arg(int(progress * 100)));
+        // Greenish coverage per column: t = (G-R)/190 is the linear
+        // fill-coverage factor toward the played green (190 = G-R of the pure
+        // played color), so antialiased edge pixels count fractionally; the
+        // gray shadow strokes have G-R ~ 0 and drop out. Summing the per-column
+        // max over the line is the glyph's silhouette extent — a continuous,
+        // monotonic-in-scale quantity (each column's coverage only grows as
+        // the painter-scale zoom magnifies the glyph).
+        double extent = 0;
+        for (int x = 0; x < image.width(); ++x) {
+            double columnCoverage = 0;
+            for (int y = 0; y < image.height(); ++y) {
+                const QColor px = image.pixelColor(x, y);
+                const double t = qBound(0.0, (px.green() - px.red()) / 190.0, 1.0);
+                columnCoverage = qMax(columnCoverage, t);
+            }
+            extent += columnCoverage;
+        }
+        return extent;
+    };
+
+    double prev = paintedExtent(0.40);
+    for (int step = 1; step <= 10; ++step) {
+        const double p = 0.40 + 0.02 * step; // 0.42 .. 0.60 (scale 1.08..1.12)
+        const double cur = paintedExtent(p);
+        const double delta = cur - prev;
+        // Every 0.02 progress step must grow the glyph by ~0.4 px. The old
+        // rounded-font zoom produced delta 0 (plateau) or >= 1.6 px (jump) —
+        // either failure mode trips this bound.
+        QVERIFY2(delta > 0.05 && delta < 1.2,
+                 qPrintable(QStringLiteral("p=%1 delta=%2").arg(p).arg(delta)));
+        prev = cur;
+    }
+}
+
+void TestLyricRenderer::zoomStaysAnchoredToAlignment()
+{
+    // The zoom must grow from the ALIGNED edge, not from the text center:
+    // right-aligned lyrics growing from a center pivot push past the widget's
+    // right edge (reported bug: "it grows out of bound"). Mirroring CSS
+    // text-align reflow, the anchored edge stays put while the free edge
+    // extends away from it — right grows leftward, left grows rightward.
+    LyricRenderer renderer;
+    renderer.resize(600, 300);
+    renderer.setFontSize(48);
+    renderer.setLines(QVector<RenderLine>{ RenderLine{ QStringLiteral("Test"), {} } });
+    renderer.setActiveLine(0);
+    QTest::qWait(700); // Settle: line 0 fully played AND fully zoomed.
+
+    const QString dumpPath = qEnvironmentVariable("LX_LYRICS_DUMP_PAINT");
+    // Edge columns of the greenish silhouette (same coverage metric as
+    // zoomGrowsSmoothlyBetweenProgressSteps; >0.5 = solid glyph): returns
+    // {leftmost, rightmost} painted column of the played-green fill.
+    const auto paintedEdges = [&](double progress) {
+        renderer.setZoomProgressForLine(0, progress);
+        QImage image(renderer.size(), QImage::Format_ARGB32);
+        image.fill(Qt::white);
+        {
+            QPainter painter(&image);
+            renderer.render(&painter);
+        }
+        if (!dumpPath.isEmpty())
+            image.save(dumpPath + QStringLiteral("_a%1.png").arg(int(progress * 100)));
+        int left = -1;
+        int right = -1;
+        for (int x = 0; x < image.width(); ++x) {
+            double columnCoverage = 0;
+            for (int y = 0; y < image.height(); ++y) {
+                const QColor px = image.pixelColor(x, y);
+                columnCoverage =
+                    qMax(columnCoverage, qBound(0.0, (px.green() - px.red()) / 190.0, 1.0));
+            }
+            if (columnCoverage > 0.5) {
+                if (left < 0)
+                    left = x;
+                right = x;
+            }
+        }
+        return QPair<int, int>(left, right);
+    };
+
+    // Right-aligned: the right edge stays fixed while the text grows left.
+    renderer.setAlign(Qt::AlignRight);
+    const QPair<int, int> r0 = paintedEdges(0.0);
+    const QPair<int, int> r1 = paintedEdges(1.0);
+    QVERIFY2(r0.first >= 0, "no text painted (right-aligned)");
+    QVERIFY2(qAbs(r1.second - r0.second) <= 1,
+             qPrintable(QStringLiteral("right edge moved: %1 -> %2").arg(r0.second).arg(r1.second)));
+    QVERIFY2(r1.first <= r0.first - 8,
+             qPrintable(QStringLiteral("left edge did not grow left: %1 -> %2").arg(r0.first).arg(r1.first)));
+
+    // Left-aligned: the left edge stays fixed while the text grows right.
+    renderer.setAlign(Qt::AlignLeft);
+    const QPair<int, int> l0 = paintedEdges(0.0);
+    const QPair<int, int> l1 = paintedEdges(1.0);
+    QVERIFY2(l0.first >= 0, "no text painted (left-aligned)");
+    QVERIFY2(qAbs(l1.first - l0.first) <= 1,
+             qPrintable(QStringLiteral("left edge moved: %1 -> %2").arg(l0.first).arg(l1.first)));
+    QVERIFY2(l1.second >= l0.second + 8,
+             qPrintable(QStringLiteral("right edge did not grow right: %1 -> %2").arg(l0.second).arg(l1.second)));
 }
 
 QTEST_MAIN(TestLyricRenderer)
