@@ -1,0 +1,44 @@
+---
+# LX Lyrics C++ style (Qt-like, matches the existing codebase conventions).
+# 2-space indent, Allman function braces, same-line class braces,
+# right-aligned pointers, 100 cols.
+BasedOnStyle: LLVM
+IndentWidth: 2
+ContinuationIndentWidth: 2
+TabWidth: 2
+UseTab: Never
+ColumnLimit: 100
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterClass: false
+  AfterControlStatement: Never
+  AfterEnum: false
+  AfterFunction: true
+  AfterNamespace: false
+  AfterStruct: false
+  AfterUnion: false
+  BeforeCatch: false
+  BeforeElse: false
+  IndentBraces: false
+  SplitEmptyFunction: true
+  SplitEmptyRecord: false
+PointerAlignment: Left
+ReferenceAlignment: Left
+DerivePointerAlignment: false
+SpaceBeforeParens: ControlStatements
+SpaceAfterCStyleCast: false
+ReflowComments: false
+ConstructorInitializerIndentWidth: 2
+BreakConstructorInitializers: BeforeComma
+AccessModifierOffset: -2
+NamespaceIndentation: None
+IndentPPDirectives: None
+IncludeBlocks: Preserve
+SortIncludes: CaseSensitive
+AllowShortFunctionsOnASingleLine: InlineOnly
+AllowShortLambdasOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+FixNamespaceComments: false
+SortUsingDeclarations: true
+...

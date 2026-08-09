@@ -23,28 +23,28 @@ class DesktopLyricConfig;
 // setPlayState(): set_info/set_status carry isPlay; set_play implies true;
 // set_pause/set_stop imply false.
 class PauseHide : public QObject {
-    Q_OBJECT
+  Q_OBJECT
 
 public:
-    explicit PauseHide(DesktopLyricConfig& config, QObject* parent = nullptr);
+  explicit PauseHide(DesktopLyricConfig& config, QObject* parent = nullptr);
 
-    // Feeds the current play boolean. When pauseHide is enabled, a false
-    // schedules faintRequested() after the 200 ms delay; a true cancels any
-    // pending faint and emits unfaintRequested() immediately if the window
-    // was fainted by this module.
-    void setPlayState(bool isPlay);
+  // Feeds the current play boolean. When pauseHide is enabled, a false
+  // schedules faintRequested() after the 200 ms delay; a true cancels any
+  // pending faint and emits unfaintRequested() immediately if the window
+  // was fainted by this module.
+  void setPlayState(bool isPlay);
 
 signals:
-    void faintRequested();
-    void unfaintRequested();
+  void faintRequested();
+  void unfaintRequested();
 
 private:
-    void applySetting(const QString& key, const QVariant& value);
-    void cancelPendingFaint();
-    void unfaintIfFainted();
+  void applySetting(const QString& key, const QVariant& value);
+  void cancelPendingFaint();
+  void unfaintIfFainted();
 
-    DesktopLyricConfig& m_config;
-    QTimer m_faintTimer;
-    bool m_pauseHideEnabled = false;
-    bool m_isFainted = false;
+  DesktopLyricConfig& m_config;
+  QTimer m_faintTimer;
+  bool m_pauseHideEnabled = false;
+  bool m_isFainted = false;
 };

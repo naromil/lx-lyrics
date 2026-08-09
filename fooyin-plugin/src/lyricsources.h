@@ -15,21 +15,19 @@ namespace LxLyrics {
 
 /// The four opaque lyric strings the protocol §5 carries per track. Only lrc is
 /// populated in v1 (embedded tags / local .lrc files); the app parses it.
-struct LyricsResult
-{
-    QString lrc;   // synced LRC or unsynced lyrics text (raw UTF-8 semantics)
-    QString tlrc;  // translation — always empty in v1 (no source)
-    QString rlrc;  // romaji — always empty in v1 (no source)
-    QString lxlrc; // empty in v1 (no word-timed source; raw tags pass as lrc)
+struct LyricsResult {
+  QString lrc;   // synced LRC or unsynced lyrics text (raw UTF-8 semantics)
+  QString tlrc;  // translation — always empty in v1 (no source)
+  QString rlrc;  // romaji — always empty in v1 (no source)
+  QString lxlrc; // empty in v1 (no word-timed source; raw tags pass as lrc)
 };
 
-class LyricSource
-{
+class LyricSource {
 public:
-    /// Raw lyrics for a track. The sidecar and embedded-tag lyrics are unioned
-    /// when both exist (sidecar first); an empty lrc means neither source
-    /// produced decodable text.
-    static LyricsResult fetch(const Fooyin::Track& track);
+  /// Raw lyrics for a track. The sidecar and embedded-tag lyrics are unioned
+  /// when both exist (sidecar first); an empty lrc means neither source
+  /// produced decodable text.
+  static LyricsResult fetch(const Fooyin::Track& track);
 };
 
 } // namespace LxLyrics

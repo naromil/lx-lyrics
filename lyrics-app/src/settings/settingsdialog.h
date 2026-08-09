@@ -32,57 +32,59 @@ class TranslationManager;
 // Labels are looked up from the TranslationManager when the widget tree is
 // built; the tree is rebuilt wholesale on a language change.
 class SettingsDialog : public QDialog {
-    Q_OBJECT
+  Q_OBJECT
 
 public:
-    explicit SettingsDialog(DesktopLyricConfig& config, TranslationManager& i18n, QWidget* parent = nullptr);
+  explicit SettingsDialog(DesktopLyricConfig& config, TranslationManager& i18n,
+                          QWidget* parent = nullptr);
 
 protected:
-    void showEvent(QShowEvent* event) override;
+  void showEvent(QShowEvent* event) override;
 
 private:
-    struct CheckboxBinding {
-        QCheckBox* box;
-        QString key;
-    };
-    struct RadioBinding {
-        QRadioButton* radio;
-        QString key;
-        QString value;
-    };
+  struct CheckboxBinding {
+    QCheckBox* box = nullptr;
+    QString key;
+  };
+  struct RadioBinding {
+    QRadioButton* radio = nullptr;
+    QString key;
+    QString value;
+  };
 
-    QCheckBox* addCheckbox(QWidget* parent, const QString& label, const QString& key);
-    QRadioButton* addRadio(QWidget* parent, const QString& label, const QString& key, const QString& value);
+  QCheckBox* addCheckbox(QWidget* parent, const QString& label, const QString& key);
+  QRadioButton* addRadio(QWidget* parent, const QString& label, const QString& key,
+                         const QString& value);
 
-    void buildUi();
-    void updateLineGapLabel();
+  void buildUi();
+  void updateLineGapLabel();
 
-    QWidget* buildGeneralGroup(QWidget* parent);
-    QWidget* buildFontWeightGroup(QWidget* parent);
-    QWidget* buildDirectionGroup(QWidget* parent);
-    QWidget* buildScrollAlignGroup(QWidget* parent);
-    QWidget* buildAlignGroup(QWidget* parent);
-    QWidget* buildStyleGroup(QWidget* parent);
-    QWidget* buildColorGroup(QWidget* parent);
-    QWidget* buildResetGroup(QWidget* parent);
+  QWidget* buildGeneralGroup(QWidget* parent);
+  QWidget* buildFontWeightGroup(QWidget* parent);
+  QWidget* buildDirectionGroup(QWidget* parent);
+  QWidget* buildScrollAlignGroup(QWidget* parent);
+  QWidget* buildAlignGroup(QWidget* parent);
+  QWidget* buildStyleGroup(QWidget* parent);
+  QWidget* buildColorGroup(QWidget* parent);
+  QWidget* buildResetGroup(QWidget* parent);
 
-    void populateFromConfig();
+  void populateFromConfig();
 
-    DesktopLyricConfig& m_config;
-    TranslationManager& m_i18n;
+  DesktopLyricConfig& m_config;
+  TranslationManager& m_i18n;
 
-    QVBoxLayout* m_mainLayout = nullptr;
-    QScrollArea* m_scrollArea = nullptr;
-    QVector<CheckboxBinding> m_checkboxBindings;
-    QVector<RadioBinding> m_radioBindings;
+  QVBoxLayout* m_mainLayout = nullptr;
+  QScrollArea* m_scrollArea = nullptr;
+  QVector<CheckboxBinding> m_checkboxBindings;
+  QVector<RadioBinding> m_radioBindings;
 
-    QLabel* m_lineGapLabel = nullptr;
-    QSpinBox* m_lineGapSpin = nullptr;
-    QSpinBox* m_fontSizeSpin = nullptr;
-    QSpinBox* m_opacitySpin = nullptr;
-    QComboBox* m_fontCombo = nullptr;
-    ColorPickerButton* m_unplayButton = nullptr;
-    ColorPickerButton* m_playedButton = nullptr;
-    ColorPickerButton* m_shadowButton = nullptr;
-    QPushButton* m_resetWindowButton = nullptr;
+  QLabel* m_lineGapLabel = nullptr;
+  QSpinBox* m_lineGapSpin = nullptr;
+  QSpinBox* m_fontSizeSpin = nullptr;
+  QSpinBox* m_opacitySpin = nullptr;
+  QComboBox* m_fontCombo = nullptr;
+  ColorPickerButton* m_unplayButton = nullptr;
+  ColorPickerButton* m_playedButton = nullptr;
+  ColorPickerButton* m_shadowButton = nullptr;
+  QPushButton* m_resetWindowButton = nullptr;
 };

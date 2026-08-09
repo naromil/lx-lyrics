@@ -23,23 +23,23 @@ class WsClient;
 //     playing (isPlay via set_info/set_status, implied true by set_play, false
 //     by set_pause/set_stop) AND `desktopLyric.audioVisualization` is on.
 class SpectrumBridge : public QObject {
-    Q_OBJECT
+  Q_OBJECT
 
 public:
-    explicit SpectrumBridge(SpectrumWidget* spectrum, WsClient* ws,
-                            DesktopLyricConfig& config, QObject* parent = nullptr);
+  explicit SpectrumBridge(SpectrumWidget* spectrum, WsClient* ws, DesktopLyricConfig& config,
+                          QObject* parent = nullptr);
 
-    // Feeds the current play boolean, mirroring PauseHide::setPlayState: any
-    // state message that conveys the play boolean calls this.
-    void setPlaying(bool playing);
+  // Feeds the current play boolean, mirroring PauseHide::setPlayState: any
+  // state message that conveys the play boolean calls this.
+  void setPlaying(bool playing);
 
 private:
-    void updateActive();
-    void onSettingChanged(const QString& key, const QVariant& value);
+  void updateActive();
+  void onSettingChanged(const QString& key, const QVariant& value);
 
-    SpectrumWidget* m_spectrum;
-    WsClient* m_ws;
-    DesktopLyricConfig& m_config;
-    bool m_playing = false;
-    bool m_visualizationEnabled = false;
+  SpectrumWidget* m_spectrum;
+  WsClient* m_ws;
+  DesktopLyricConfig& m_config;
+  bool m_playing = false;
+  bool m_visualizationEnabled = false;
 };

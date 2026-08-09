@@ -33,55 +33,55 @@ class DesktopLyricConfig;
 // tick renders the current frame and emits analyserDataRequested() so the glue
 // asks the host for the next snapshot.
 class SpectrumWidget : public QWidget {
-    Q_OBJECT
+  Q_OBJECT
 
 public:
-    // The frame is exactly 128 bytes per protocol §5. Default bar color reads
-    // from config `desktopLyric.style.lyricPlayedColor` and follows it live
-    // unless setBarColor() overrides it explicitly.
-    explicit SpectrumWidget(DesktopLyricConfig& config, QWidget* parent = nullptr);
+  // The frame is exactly 128 bytes per protocol §5. Default bar color reads
+  // from config `desktopLyric.style.lyricPlayedColor` and follows it live
+  // unless setBarColor() overrides it explicitly.
+  explicit SpectrumWidget(DesktopLyricConfig& config, QWidget* parent = nullptr);
 
-    // Stores one 128-byte spectrum snapshot and repaints. Any other size is
-    // dropped loudly (parse at the boundary) — the frame must never enter the
-    // render math half-valid.
-    void setAnalyserData(const QByteArray& bytes);
+  // Stores one 128-byte spectrum snapshot and repaints. Any other size is
+  // dropped loudly (parse at the boundary) — the frame must never enter the
+  // render math half-valid.
+  void setAnalyserData(const QByteArray& bytes);
 
-    // Gates the render/request loop: true renders frames and requests new
-    // snapshots, false idles (loop stopped, nothing painted). The glue feeds
-    // this from (isPlay && desktopLyric.audioVisualization).
-    void setActive(bool active);
+  // Gates the render/request loop: true renders frames and requests new
+  // snapshots, false idles (loop stopped, nothing painted). The glue feeds
+  // this from (isPlay && desktopLyric.audioVisualization).
+  void setActive(bool active);
 
-    // Overrides the default config-driven bar color.
-    void setBarColor(const QColor& color);
+  // Overrides the default config-driven bar color.
+  void setBarColor(const QColor& color);
 
-    QSize sizeHint() const override;
+  QSize sizeHint() const override;
 
 signals:
-    // Emitted once per frame while active: asks the host for the next
-    // analyser snapshot (reference: requestAnimationFrame(getAnalyserDataArray)).
-    void analyserDataRequested();
+  // Emitted once per frame while active: asks the host for the next
+  // analyser snapshot (reference: requestAnimationFrame(getAnalyserDataArray)).
+  void analyserDataRequested();
 
 protected:
-    void paintEvent(QPaintEvent* event) override;
-    void resizeEvent(QResizeEvent* event) override;
+  void paintEvent(QPaintEvent* event) override;
+  void resizeEvent(QResizeEvent* event) override;
 
 private:
-    void onFrameTick();
-    void onSettingChanged(const QString& key, const QVariant& value);
-    // Reference getBarWidth(): the bar slot width for a given widget width.
-    static double barWidthFor(int widgetWidth);
+  void onFrameTick();
+  void onSettingChanged(const QString& key, const QVariant& value);
+  // Reference getBarWidth(): the bar slot width for a given widget width.
+  static double barWidthFor(int widgetWidth);
 
-    DesktopLyricConfig& m_config;
-    QTimer m_frameTimer;
-    QColor m_barColor;
-    bool m_barColorCustomized = false; // setBarColor() won the default override
-    QByteArray m_spectrum;             // trusted 128-byte frame, or empty (none yet)
-    bool m_hasFrame = false;
-    bool m_active = false;
+  DesktopLyricConfig& m_config;
+  QTimer m_frameTimer;
+  QColor m_barColor;
+  bool m_barColorCustomized = false; // setBarColor() won the default override
+  QByteArray m_spectrum;             // trusted 128-byte frame, or empty (none yet)
+  bool m_hasFrame = false;
+  bool m_active = false;
 
-    // Geometry constants recomputed on resize (reference handleResize()).
-    int m_width = 0;
-    int m_height = 0;
-    double m_maxHeightPerUnit = 0.0; // MAX_HEIGHT: bar height per unit byte value
-    double m_barWidth = 0.0;         // getBarWidth(): bar slot width in pixels
+  // Geometry constants recomputed on resize (reference handleResize()).
+  int m_width = 0;
+  int m_height = 0;
+  double m_maxHeightPerUnit = 0.0; // MAX_HEIGHT: bar height per unit byte value
+  double m_barWidth = 0.0;         // getBarWidth(): bar slot width in pixels
 };

@@ -8,26 +8,26 @@
 
 void LyricClock::resync(qint64 positionMs)
 {
-    m_basePositionMs = positionMs;
-    if (!m_elapsed.isValid())
-        m_elapsed.start();
-    else
-        m_elapsed.restart();
+  m_basePositionMs = positionMs;
+  if (!m_elapsed.isValid())
+    m_elapsed.start();
+  else
+    m_elapsed.restart();
 }
 
 qint64 LyricClock::currentPositionMs() const
 {
-    if (!m_elapsed.isValid())
-        return m_basePositionMs;
-    return m_basePositionMs + qRound64(m_elapsed.elapsed() * m_rate);
+  if (!m_elapsed.isValid())
+    return m_basePositionMs;
+  return m_basePositionMs + qRound64(m_elapsed.elapsed() * m_rate);
 }
 
 void LyricClock::setRate(double rate)
 {
-    m_rate = rate;
+  m_rate = rate;
 }
 
 qint64 LyricClock::basePositionMs() const
 {
-    return m_basePositionMs;
+  return m_basePositionMs;
 }

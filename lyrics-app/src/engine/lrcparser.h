@@ -12,11 +12,11 @@
 
 // Parsed LRC metadata tags ([ti:...], [ar:...], [al:...], [by:...], [offset:...]).
 struct LrcTag {
-    QString title;
-    QString artist;
-    QString album;
-    QString by;
-    qint64 offsetMs = 0;
+  QString title;
+  QString artist;
+  QString album;
+  QString by;
+  qint64 offsetMs = 0;
 };
 
 // One timed lyric line. When two timestamps strip to the same label the later
@@ -29,10 +29,10 @@ struct LrcTag {
 // preserving their relative file order). This is a DELIBERATE DEVIATION from
 // line-player.js, which drops such lines.
 struct LrcLine {
-    qint64 timeMs = 0;
-    QString text;
-    QStringList extendedLyrics;
-    bool isStatic = false;
+  qint64 timeMs = 0;
+  QString text;
+  QStringList extendedLyrics;
+  bool isStatic = false;
 };
 
 // Pure, static parser for LRC lyrics.
@@ -42,10 +42,10 @@ struct LrcLine {
 // timers: given the same lyric it always returns the same typed Result.
 class LrcParser {
 public:
-    struct Result {
-        LrcTag tag;
-        QVector<LrcLine> lines;
-    };
+  struct Result {
+    LrcTag tag;
+    QVector<LrcLine> lines;
+  };
 
-    static Result parse(const QString& lrc, const QStringList& extendedLyrics = {});
+  static Result parse(const QString& lrc, const QStringList& extendedLyrics = {});
 };

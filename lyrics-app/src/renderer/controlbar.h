@@ -10,6 +10,8 @@
 #include <QVector>
 #include <QWidget>
 
+#include <cstdint>
+
 class QGraphicsOpacityEffect;
 class QPaintEvent;
 class QPainter;
@@ -44,76 +46,78 @@ class TranslationManager;
 // out per reference animate.less). The lock visibility gate is unaffected —
 // a locked bar is simply hidden, hover or not.
 class ControlBar : public QWidget {
-    Q_OBJECT
+  Q_OBJECT
 
 public:
-    explicit ControlBar(DesktopLyricConfig& config, TranslationManager& i18n, QWidget* parent = nullptr);
+  explicit ControlBar(DesktopLyricConfig& config, TranslationManager& i18n,
+                      QWidget* parent = nullptr);
 
-    // Hover reveal: animates the bar's opacity factor to 1 (hovered) or 0
-    // (not). Safe to call while hidden/locked — the visibility gate still
-    // governs presence, and the next show re-seeds the factor from the
-    // pointer position.
-    void setHovered(bool hovered);
+  // Hover reveal: animates the bar's opacity factor to 1 (hovered) or 0
+  // (not). Safe to call while hidden/locked — the visibility gate still
+  // governs presence, and the next show re-seeds the factor from the
+  // pointer position.
+  void setHovered(bool hovered);
 
 signals:
-    // Emitted when the settings gear is clicked; LyricWindow opens the
-    // modeless settings dialog in response.
-    void settingsRequested();
+  // Emitted when the settings gear is clicked; LyricWindow opens the
+  // modeless settings dialog in response.
+  void settingsRequested();
 
 protected:
-    void paintEvent(QPaintEvent* event) override;
-    void showEvent(QShowEvent* event) override;
+  void paintEvent(QPaintEvent* event) override;
+  void showEvent(QShowEvent* event) override;
 
 private:
-    class IconButton; // Defined in controlbar.cpp; paints its icon with QPainter.
+  class IconButton; // Defined in controlbar.cpp; paints its icon with QPainter.
 
-    // Tooltip for one bar button: both flip-state translation keys are stored
-    // so the tooltip stays translated after a language change. Non-flipping
-    // buttons use the same key for both states.
-    struct TooltipBinding {
-        IconButton* button;
-        QString keyUnchecked;
-        QString keyChecked;
-    };
+  // Tooltip for one bar button: both flip-state translation keys are stored
+  // so the tooltip stays translated after a language change. Non-flipping
+  // buttons use the same key for both states.
+  struct TooltipBinding {
+    IconButton* button = nullptr;
+    QString keyUnchecked;
+    QString keyChecked;
+  };
 
-    // The glyphs are flat 16 px vector strokes drawn with QPainter (no icon
-    // assets exist in the C++ app).
-    enum class Icon {
-        Close,
-        Lock,
-        FontIncrease,    // "A+"
-        FontDecrease,    // "A-"
-        OpacityIncrease, // half-filled circle with a plus
-        OpacityDecrease, // half-filled circle with a minus
-        Zoom,            // vibration glyph (zoom off)
-        ZoomOff,         // vibration glyph with a slash (zoom on)
-        PinOn,           // thumbtack (always-on-top on)
-        PinOff,          // thumbtack with a slash (always-on-top off)
-        Settings,        // gear (opens the settings dialog)
-    };
+  // The glyphs are flat 16 px vector strokes drawn with QPainter (no icon
+  // assets exist in the C++ app).
+  enum class Icon : std::uint8_t {
+    Close,
+    Lock,
+    FontIncrease,    // "A+"
+    FontDecrease,    // "A-"
+    OpacityIncrease, // half-filled circle with a plus
+    OpacityDecrease, // half-filled circle with a minus
+    Zoom,            // vibration glyph (zoom off)
+    ZoomOff,         // vibration glyph with a slash (zoom on)
+    PinOn,           // thumbtack (always-on-top on)
+    PinOff,          // thumbtack with a slash (always-on-top off)
+    Settings,        // gear (opens the settings dialog)
+  };
 
-    IconButton* addIconButton(Icon icon, const QString& tooltipKey);
-    IconButton* addIconButton(Icon iconOn, Icon iconOff, const QString& tooltipKeyUnchecked, const QString& tooltipKeyChecked);
-    void paintIcon(QPainter& painter, Icon icon, const QRectF& rect) const;
-    void syncCheckableStates();
-    void retranslate();
-    void updateVisibility();
-    void onSettingChanged(const QString& key, const QVariant& value);
-    void changeFontSize(int delta);
-    void changeOpacity(int delta);
-    bool isPointerInsideWindow() const;
+  IconButton* addIconButton(Icon icon, const QString& tooltipKey);
+  IconButton* addIconButton(Icon iconOn, Icon iconOff, const QString& tooltipKeyUnchecked,
+                            const QString& tooltipKeyChecked);
+  void paintIcon(QPainter& painter, Icon icon, const QRectF& rect) const;
+  void syncCheckableStates();
+  void retranslate();
+  void updateVisibility();
+  void onSettingChanged(const QString& key, const QVariant& value);
+  void changeFontSize(int delta);
+  void changeOpacity(int delta);
+  bool isPointerInsideWindow() const;
 
-    DesktopLyricConfig& m_config;
-    TranslationManager& m_i18n;
-    QHBoxLayout* m_layout = nullptr;
-    QVector<TooltipBinding> m_tooltipBindings;
-    IconButton* m_zoomButton = nullptr;
-    IconButton* m_alwaysOnTopButton = nullptr;
-    IconButton* m_settingsButton = nullptr;
+  DesktopLyricConfig& m_config;
+  TranslationManager& m_i18n;
+  QHBoxLayout* m_layout = nullptr;
+  QVector<TooltipBinding> m_tooltipBindings;
+  IconButton* m_zoomButton = nullptr;
+  IconButton* m_alwaysOnTopButton = nullptr;
+  IconButton* m_settingsButton = nullptr;
 
-    // Hover reveal: the animation drives the effect's opacity factor
-    // (reference .control-bar { opacity: 0 } / #main:hover { opacity: 1 }).
-    QVariantAnimation* m_hoverAnim = nullptr;
-    QGraphicsOpacityEffect* m_hoverEffect = nullptr;
-    double m_hoverFactor = 0.0; // current bar opacity factor, 0 = hidden
+  // Hover reveal: the animation drives the effect's opacity factor
+  // (reference .control-bar { opacity: 0 } / #main:hover { opacity: 1 }).
+  QVariantAnimation* m_hoverAnim = nullptr;
+  QGraphicsOpacityEffect* m_hoverEffect = nullptr;
+  double m_hoverFactor = 0.0; // current bar opacity factor, 0 = hidden
 };

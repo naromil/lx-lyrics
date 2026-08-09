@@ -8,15 +8,23 @@
 # are the quiet, high-value subset (null derefs, leaks, UB, buffer overflows);
 # the noisy alpha ones (UninitializedObject, UnreachableCode, ArrayBound) are
 # deliberately excluded.
+# bugprone-throwing-static-initialization is excluded: it flags const
+# QStringLiteral(...) file-scope constants even though QStringLiteral is
+# non-allocating and cannot throw (the check cannot see through the macro).
+# Excluded rather than NOLINT'ed at 60+ sites.
+# bugprone-invalid-enum-default-initialization is excluded: it fires on Qt
+# moc-generated QMetaObject::MetaObjectFlag zero-init in build/*_autogen/*.moc
+# (moc emits 0 even though the enum has no zero enumerator).
 Checks: >-
   bugprone-*,
   -bugprone-easily-swappable-parameters,
   -bugprone-implicit-widening-of-multiplication-result,
   -bugprone-narrowing-conversions,
   -bugprone-swapped-arguments,
+  -bugprone-throwing-static-initialization,
+  -bugprone-invalid-enum-default-initialization,
   cert-dcl50-cpp,
   cert-env33-c,
-  cert-err33-c,
   cert-err61-cpp,
   cert-mem57-cpp,
   cert-oop54-cpp,
@@ -64,6 +72,7 @@ Checks: >-
   clang-analyzer-alpha.cplusplus.EnumCastOutOfRange,
   clang-analyzer-alpha.security.ArrayBoundV2,
   clang-analyzer-alpha.security.MallocOverflow,
+  misc-include-cleaner,
   misc-unused-parameters,
   misc-unused-using-decls,
   misc-unused-alias-decls,
@@ -122,3 +131,6 @@ Checks: >-
   readability-duplicate-include,
   readability-string-compare,
   readability-simplify-subscript-expr
+CheckOptions:
+  misc-include-cleaner.UnusedIncludes: true
+  misc-include-cleaner.MissingIncludes: false

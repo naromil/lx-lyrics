@@ -17,21 +17,21 @@
 // until resync() anchors it to the QElapsedTimer.
 class LyricClock {
 public:
-    // Re-anchor the clock: the given position is the position "now".
-    // The first call starts the timer; later calls restart it.
-    void resync(qint64 positionMs);
+  // Re-anchor the clock: the given position is the position "now".
+  // The first call starts the timer; later calls restart it.
+  void resync(qint64 positionMs);
 
-    // Current position: base + elapsed time scaled by the playback rate.
-    qint64 currentPositionMs() const;
+  // Current position: base + elapsed time scaled by the playback rate.
+  qint64 currentPositionMs() const;
 
-    // Change the playback rate. Does NOT re-anchor here: the caller calls
-    // resync() when a rate change must realign the position.
-    void setRate(double rate);
+  // Change the playback rate. Does NOT re-anchor here: the caller calls
+  // resync() when a rate change must realign the position.
+  void setRate(double rate);
 
-    qint64 basePositionMs() const;
+  qint64 basePositionMs() const;
 
 private:
-    qint64 m_basePositionMs = 0;
-    QElapsedTimer m_elapsed;
-    double m_rate = 1.0;
+  qint64 m_basePositionMs = 0;
+  QElapsedTimer m_elapsed;
+  double m_rate = 1.0;
 };

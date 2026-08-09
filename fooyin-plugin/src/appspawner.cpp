@@ -14,91 +14,94 @@
 #include <QUrl>
 
 AppSpawner::AppSpawner(QObject* parent)
-    : QObject(parent)
-{ }
+  : QObject(parent)
+{
+}
 
 void AppSpawner::setAppPath(const QString& appPath)
 {
-    m_appPath = appPath;
+  m_appPath = appPath;
 }
 
-QString AppSpawner::appPath() const
+const QString& AppSpawner::appPath() const
 {
-    return m_appPath;
+  return m_appPath;
 }
 
 void AppSpawner::setAutoSpawn(bool autoSpawn)
 {
-    m_autoSpawn = autoSpawn;
+  m_autoSpawn = autoSpawn;
 }
 
 bool AppSpawner::autoSpawn() const
 {
-    return m_autoSpawn;
+  return m_autoSpawn;
 }
 
 bool AppSpawner::spawn(const QUrl& wsUrl, bool force)
 {
-    // AutoSpawn gates only the init-time auto-spawn; manual (menu toggle)
-    // spawn always allowed.
-    if (!m_autoSpawn && !force) {
-        return false;
-    }
-    if (m_running) {
-        qWarning() << "[LX Lyrics] lyrics-app already spawned; skipping duplicate launch";
-        return false;
-    }
-    if (!wsUrl.isValid()) {
-        qWarning() << "[LX Lyrics] refusing to spawn lyrics-app with invalid ws url:" << wsUrl;
-        return false;
-    }
+  // AutoSpawn gates only the init-time auto-spawn; manual (menu toggle)
+  // spawn always allowed.
+  if (!m_autoSpawn && !force) {
+    return false;
+  }
+  if (m_running) {
+    qWarning() << "[LX Lyrics] lyrics-app already spawned; skipping duplicate launch";
+    return false;
+  }
+  if (!wsUrl.isValid()) {
+    qWarning() << "[LX Lyrics] refusing to spawn lyrics-app with invalid ws url:" << wsUrl;
+    return false;
+  }
 
-    const QString program = resolveAppPath();
-    if (program.isEmpty()) {
-        qWarning() << "[LX Lyrics] lx-lyrics-app binary not found (PATH / fooyin bin dir)";
-        return false;
-    }
+  const QString program = resolveAppPath();
+  if (program.isEmpty()) {
+    qWarning() << "[LX Lyrics] lx-lyrics-app binary not found (PATH / fooyin bin dir)";
+    return false;
+  }
 
-    // protocol.md §8: argv array, no shell interpolation.
-    const QStringList arguments{
-        QStringLiteral("--ws=%1").arg(wsUrl.toString()),
-        QStringLiteral("--exit-on-disconnect"),
-    };
+  // protocol.md §8: argv array, no shell interpolation.
+  const QStringList arguments{
+    QStringLiteral("--ws=%1").arg(wsUrl.toString()),
+    QStringLiteral("--exit-on-disconnect"),
+  };
 
-    qint64 pid = 0;
-    if (!QProcess::startDetached(program, arguments, QString(), &pid)) {
-        qWarning() << "[LX Lyrics] failed to start lyrics-app:" << program;
-        return false;
-    }
+  qint64 pid = 0;
+  if (!QProcess::startDetached(program, arguments, QString(), &pid)) {
+    qWarning() << "[LX Lyrics] failed to start lyrics-app:" << program;
+    return false;
+  }
 
-    qInfo() << "[LX Lyrics] spawned lyrics-app (pid" << pid << "):" << program << arguments.join(QLatin1Char(' '));
-    m_running = true;
-    return true;
+  qInfo() << "[LX Lyrics] spawned lyrics-app (pid" << pid << "):" << program
+          << arguments.join(QLatin1Char(' '));
+  m_running = true;
+  return true;
 }
 
 bool AppSpawner::isRunning() const
 {
-    return m_running;
+  return m_running;
 }
 
 void AppSpawner::stop()
 {
-    // The app is detached; it exits on its own when the host socket closes
-    // (--exit-on-disconnect). We only reset our bookkeeping so a later spawn()
-    // (e.g. the plugin's respawn after a disconnect) is allowed again.
-    m_running = false;
+  // The app is detached; it exits on its own when the host socket closes
+  // (--exit-on-disconnect). We only reset our bookkeeping so a later spawn()
+  // (e.g. the plugin's respawn after a disconnect) is allowed again.
+  m_running = false;
 }
 
 QString AppSpawner::resolveAppPath() const
 {
-    if (!m_appPath.isEmpty()) {
-        return m_appPath;
-    }
+  if (!m_appPath.isEmpty()) {
+    return m_appPath;
+  }
 
-    const QString onPath = QStandardPaths::findExecutable(QStringLiteral("lx-lyrics-app"));
-    if (!onPath.isEmpty()) {
-        return onPath;
-    }
+  QString onPath = QStandardPaths::findExecutable(QStringLiteral("lx-lyrics-app"));
+  if (!onPath.isEmpty()) {
+    return onPath;
+  }
 
-    return QCoreApplication::applicationDirPath() + QLatin1Char('/') + QStringLiteral("lx-lyrics-app");
+  return QCoreApplication::applicationDirPath() + QLatin1Char('/') +
+         QStringLiteral("lx-lyrics-app");
 }

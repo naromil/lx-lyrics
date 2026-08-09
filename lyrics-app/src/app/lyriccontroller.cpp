@@ -62,318 +62,323 @@ const QString kKeyPlaybackRate = QStringLiteral("player.playbackRate");
 // Keys whose change must re-apply the renderer styling.
 bool isRendererKey(const QString& key)
 {
-    static const QStringList keys = {
-        kKeyFont, kKeyFontSize, kKeyLineGap, kKeyOpacity, kKeyEllipsis, kKeyZoomActiveLrc,
-        kKeyFontWeightFont, kKeyFontWeightLine, kKeyFontWeightExtended,
-        kKeyUnplayColor, kKeyPlayedColor, kKeyShadowColor,
-        kKeyDirection, kKeyScrollAlign, kKeyDelayScroll, kKeyAlign, kKeyIsLock,
-    };
-    return keys.contains(key);
+  static const QStringList keys = {
+    kKeyFont,           kKeyFontSize,       kKeyLineGap,
+    kKeyOpacity,        kKeyEllipsis,       kKeyZoomActiveLrc,
+    kKeyFontWeightFont, kKeyFontWeightLine, kKeyFontWeightExtended,
+    kKeyUnplayColor,    kKeyPlayedColor,    kKeyShadowColor,
+    kKeyDirection,      kKeyScrollAlign,    kKeyDelayScroll,
+    kKeyAlign,          kKeyIsLock,
+  };
+  return keys.contains(key);
 }
 
 // Keys whose change must re-select the lyric (reference useLyric.ts watches).
 bool isSelectorKey(const QString& key)
 {
-    static const QStringList keys = {
-        kKeyPlayLxlrc, kKeyShowTranslation, kKeyShowRoma, kKeySwapTranslationAndRoma,
-    };
-    return keys.contains(key);
+  static const QStringList keys = {
+    kKeyPlayLxlrc,
+    kKeyShowTranslation,
+    kKeyShowRoma,
+    kKeySwapTranslationAndRoma,
+  };
+  return keys.contains(key);
 }
 
 Qt::Alignment alignFromString(const QString& align)
 {
-    if (align == QLatin1String("left"))
-        return Qt::AlignLeft;
-    if (align == QLatin1String("right"))
-        return Qt::AlignRight;
-    return Qt::AlignHCenter;
+  if (align == QLatin1String("left"))
+    return Qt::AlignLeft;
+  if (align == QLatin1String("right"))
+    return Qt::AlignRight;
+  return Qt::AlignHCenter;
 }
 
 } // namespace
 
 LyricController::LyricController(AppContext& ctx, LyricWindow& window, QObject* parent)
-    : QObject(parent)
-    , m_ctx(ctx)
-    , m_window(window)
+  : QObject(parent)
+  , m_ctx(ctx)
+  , m_window(window)
 {
-    m_player = new LyricPlayer(this);
-    m_selector = std::make_unique<LyricSelector>();
-    m_renderer = new LyricRenderer(window.contentContainer());
+  m_player = new LyricPlayer(this);
+  m_selector = std::make_unique<LyricSelector>();
+  m_renderer = new LyricRenderer(window.contentContainer());
 
-    // contentContainer's QVBoxLayout is [control bar, spectrum, trailing
-    // stretch]. Insert the renderer between the spectrum and the stretch so it
-    // expands into the lyric area; the trailing stretch then collapses to zero.
-    auto* layout = qobject_cast<QVBoxLayout*>(window.contentContainer()->layout());
-    layout->insertWidget(layout->count() - 1, m_renderer, 1);
-    layout->setStretch(layout->count() - 1, 0);
+  // contentContainer's QVBoxLayout is [control bar, spectrum, trailing
+  // stretch]. Insert the renderer between the spectrum and the stretch so it
+  // expands into the lyric area; the trailing stretch then collapses to zero.
+  auto* layout = qobject_cast<QVBoxLayout*>(window.contentContainer()->layout());
+  layout->insertWidget(layout->count() - 1, m_renderer, 1);
+  layout->setStretch(layout->count() - 1, 0);
 
-    // Player -> renderer: lyricsChanged rebuilds the render lines; lineChanged
-    // moves the active line.
-    connect(m_player, &LyricPlayer::lyricsChanged,
-            this, &LyricController::pushLyricsToRenderer);
-    connect(m_player, &LyricPlayer::lineChanged,
-            this, &LyricController::onLineChanged);
+  // Player -> renderer: lyricsChanged rebuilds the render lines; lineChanged
+  // moves the active line.
+  connect(m_player, &LyricPlayer::lyricsChanged, this, &LyricController::pushLyricsToRenderer);
+  connect(m_player, &LyricPlayer::lineChanged, this, &LyricController::onLineChanged);
 
-    connect(&m_ctx.config, &DesktopLyricConfig::settingChanged,
-            this, &LyricController::onSettingChanged);
+  connect(&m_ctx.config, &DesktopLyricConfig::settingChanged, this,
+          &LyricController::onSettingChanged);
 
-    applyRendererConfig();
-    applySelectorConfig();
-    m_player->setPlaybackRate(m_ctx.config.get(kKeyPlaybackRate).toDouble());
+  applyRendererConfig();
+  applySelectorConfig();
+  m_player->setPlaybackRate(m_ctx.config.get(kKeyPlaybackRate).toDouble());
 }
 
 LyricController::~LyricController() = default;
 
 void LyricController::setTrack(const TrackSnapshot& track)
 {
-    // Remember the metadata: the no-lyrics placeholder shows the track
-    // title/artist/album when the player has no lyric lines to paint.
-    m_trackName = track.name;
-    m_trackSinger = track.singer;
-    m_trackAlbum = track.album;
+  // Remember the metadata: the no-lyrics placeholder shows the track
+  // title/artist/album when the player has no lyric lines to paint.
+  m_trackName = track.name;
+  m_trackSinger = track.singer;
+  m_trackAlbum = track.album;
 
-    applyLyricText(track.lrc, track.tlrc, track.rlrc, track.lxlrc);
+  applyLyricText(track.lrc, track.tlrc, track.rlrc, track.lxlrc);
 
-    // Window title from the track metadata (name - singer).
-    const QString title = track.singer.isEmpty()
-        ? track.name
-        : QStringLiteral("%1 - %2").arg(track.name, track.singer);
-    m_window.setWindowTitle(title);
+  // Window title from the track metadata (name - singer).
+  const QString title =
+    track.singer.isEmpty() ? track.name : QStringLiteral("%1 - %2").arg(track.name, track.singer);
+  m_window.setWindowTitle(title);
 }
 
 void LyricController::setLyric(const LyricSnapshot& lyric)
 {
-    applyLyricText(lyric.lrc, lyric.tlrc, lyric.rlrc, lyric.lxlrc);
+  applyLyricText(lyric.lrc, lyric.tlrc, lyric.rlrc, lyric.lxlrc);
 }
 
 void LyricController::setStatus(const PlaybackSnapshot& status)
 {
-    if (status.isPlay)
-        play(status.playedTimeMs);
-    else
-        pause();
+  if (status.isPlay)
+    play(status.playedTimeMs);
+  else
+    pause();
 }
 
 void LyricController::play(qint64 timeMs)
 {
-    m_player->play(timeMs);
-    // The renderer's 3 s resume re-center only runs while playing (reference
-    // isPlay gate in startLyricScrollTimeout).
-    m_renderer->setPlaying(true);
+  m_player->play(timeMs);
+  // The renderer's 3 s resume re-center only runs while playing (reference
+  // isPlay gate in startLyricScrollTimeout).
+  m_renderer->setPlaying(true);
 }
 
 void LyricController::pause()
 {
-    m_player->pause();
-    m_renderer->setPlaying(false);
+  m_player->pause();
+  m_renderer->setPlaying(false);
 }
 
 void LyricController::stop()
 {
-    // player.stop() clears the lyric and emits lyricsChanged + lineChanged(-1);
-    // the zero-line push is intercepted in pushLyricsToRenderer and becomes the
-    // no-lyrics placeholder instead of a blank pane.
-    m_player->stop();
-    m_renderer->setPlaying(false);
+  // player.stop() clears the lyric and emits lyricsChanged + lineChanged(-1);
+  // the zero-line push is intercepted in pushLyricsToRenderer and becomes the
+  // no-lyrics placeholder instead of a blank pane.
+  m_player->stop();
+  m_renderer->setPlaying(false);
 }
 
 void LyricController::setOffset(qint64 tempOffset)
 {
-    // Protocol §5: set_offset carries a DELTA from the lyric's own [offset:]
-    // tag. Accumulate into the user offset, then let the player re-anchor.
-    m_userOffsetMs += tempOffset;
-    m_player->setOffset(m_userOffsetMs);
+  // Protocol §5: set_offset carries a DELTA from the lyric's own [offset:]
+  // tag. Accumulate into the user offset, then let the player re-anchor.
+  m_userOffsetMs += tempOffset;
+  m_player->setOffset(m_userOffsetMs);
 }
 
 void LyricController::setPlaybackRate(double rate)
 {
-    m_player->setPlaybackRate(rate);
+  m_player->setPlaybackRate(rate);
 }
 
 void LyricController::applyRendererConfig()
 {
-    DesktopLyricConfig& config = m_ctx.config;
-    m_renderer->setFontFamily(config.get(kKeyFont).toString());
-    m_renderer->setFontSize(config.fontSize());
-    m_renderer->setLineGap(config.get(kKeyLineGap).toInt());
-    m_renderer->setOpacityPercent(config.opacity());
-    m_renderer->setEllipsis(config.get(kKeyEllipsis).toBool());
-    m_renderer->setZoomActiveLrc(config.get(kKeyZoomActiveLrc).toBool());
-    m_renderer->setFontWeightFont(config.get(kKeyFontWeightFont).toBool());
-    m_renderer->setFontWeightLine(config.get(kKeyFontWeightLine).toBool());
-    m_renderer->setFontWeightExtended(config.get(kKeyFontWeightExtended).toBool());
-    m_renderer->setUnplayColor(config.unplayColor());
-    m_renderer->setPlayedColor(config.playedColor());
-    m_renderer->setShadowColor(config.shadowColor());
-    m_renderer->setVertical(config.direction() == QStringLiteral("vertical"));
-    m_renderer->setScrollAlign(config.get(kKeyScrollAlign).toString() == QStringLiteral("top"));
-    m_renderer->setDelayScroll(config.get(kKeyDelayScroll).toBool());
-    m_renderer->setAlign(alignFromString(config.get(kKeyAlign).toString()));
-    m_renderer->setInteractive(!config.isLock()); // wheel/drag gated off when locked.
+  const DesktopLyricConfig& config = m_ctx.config;
+  m_renderer->setFontFamily(config.get(kKeyFont).toString());
+  m_renderer->setFontSize(config.fontSize());
+  m_renderer->setLineGap(config.get(kKeyLineGap).toInt());
+  m_renderer->setOpacityPercent(config.opacity());
+  m_renderer->setEllipsis(config.get(kKeyEllipsis).toBool());
+  m_renderer->setZoomActiveLrc(config.get(kKeyZoomActiveLrc).toBool());
+  m_renderer->setFontWeightFont(config.get(kKeyFontWeightFont).toBool());
+  m_renderer->setFontWeightLine(config.get(kKeyFontWeightLine).toBool());
+  m_renderer->setFontWeightExtended(config.get(kKeyFontWeightExtended).toBool());
+  m_renderer->setUnplayColor(config.unplayColor());
+  m_renderer->setPlayedColor(config.playedColor());
+  m_renderer->setShadowColor(config.shadowColor());
+  m_renderer->setVertical(config.direction() == QStringLiteral("vertical"));
+  m_renderer->setScrollAlign(config.get(kKeyScrollAlign).toString() == QStringLiteral("top"));
+  m_renderer->setDelayScroll(config.get(kKeyDelayScroll).toBool());
+  m_renderer->setAlign(alignFromString(config.get(kKeyAlign).toString()));
+  m_renderer->setInteractive(!config.isLock()); // wheel/drag gated off when locked.
 }
 
 void LyricController::applySelectorConfig()
 {
-    DesktopLyricConfig& config = m_ctx.config;
-    m_selector->setPlayLxlrc(config.get(kKeyPlayLxlrc).toBool());
-    m_selector->setIsShowLyricTranslation(config.get(kKeyShowTranslation).toBool());
-    m_selector->setIsShowLyricRoma(config.get(kKeyShowRoma).toBool());
-    m_selector->setIsSwapLyricTranslationAndRoma(config.get(kKeySwapTranslationAndRoma).toBool());
+  const DesktopLyricConfig& config = m_ctx.config;
+  m_selector->setPlayLxlrc(config.get(kKeyPlayLxlrc).toBool());
+  m_selector->setIsShowLyricTranslation(config.get(kKeyShowTranslation).toBool());
+  m_selector->setIsShowLyricRoma(config.get(kKeyShowRoma).toBool());
+  m_selector->setIsSwapLyricTranslationAndRoma(config.get(kKeySwapTranslationAndRoma).toBool());
 }
 
 void LyricController::applyLyricText(const QString& lrc, const QString& tlyric,
                                      const QString& rlyric, const QString& lxlyric)
 {
-    m_lastLrc = lrc;
-    m_lastTlrc = tlyric;
-    m_lastRlrc = rlyric;
-    m_lastLxlrc = lxlyric;
-    m_hasLyric = true;
-    reapplyLyricSelection();
+  m_lastLrc = lrc;
+  m_lastTlrc = tlyric;
+  m_lastRlrc = rlyric;
+  m_lastLxlrc = lxlyric;
+  m_hasLyric = true;
+  reapplyLyricSelection();
 }
 
 bool LyricController::reapplyLyricSelection()
 {
-    // Re-run the selector over the last raw fields: [awlrc:] extraction is
-    // idempotent, so re-feeding is safe for config-driven re-selection too.
-    m_selector->setLyrics(m_lastLrc, m_lastTlrc, m_lastRlrc, m_lastLxlrc);
-    if (m_selector->hasLyrics()) {
-        const bool changed = m_player->setLyric(m_selector->selectedLyric(), m_selector->extendedLyrics());
-        // Only a genuinely empty parse lands here: invalid timestamps now
-        // parse to STATIC lines (non-empty), which reach the renderer through
-        // pushLyricsToRenderer — it may already have shown the custom static
-        // placeholder on the fresh-push path, so re-showing it here is
-        // idempotent. The guard also covers the dedup path (an identical
-        // re-push emits no lyricsChanged, so the placeholder must be re-shown).
-        if (m_player->lines().isEmpty())
-            showNoLyricsPlaceholder();
-        return changed;
-    }
-    // No playable lyric (no embedded tags, no sidecar .lrc): clear any stale
-    // player lines (a later play() must not resurrect the previous track), then
-    // show the track placeholder so the window isn't a blank pane. The changed
-    // flag feeds the caller's resume decision (setLyric("") returns true when
-    // it cleared a previous lyric, false when the player was already empty).
-    const bool changed = m_player->setLyric(QString());
-    showNoLyricsPlaceholder();
+  // Re-run the selector over the last raw fields: [awlrc:] extraction is
+  // idempotent, so re-feeding is safe for config-driven re-selection too.
+  m_selector->setLyrics(m_lastLrc, m_lastTlrc, m_lastRlrc, m_lastLxlrc);
+  if (m_selector->hasLyrics()) {
+    const bool changed =
+      m_player->setLyric(m_selector->selectedLyric(), m_selector->extendedLyrics());
+    // Only a genuinely empty parse lands here: invalid timestamps now
+    // parse to STATIC lines (non-empty), which reach the renderer through
+    // pushLyricsToRenderer — it may already have shown the custom static
+    // placeholder on the fresh-push path, so re-showing it here is
+    // idempotent. The guard also covers the dedup path (an identical
+    // re-push emits no lyricsChanged, so the placeholder must be re-shown).
+    if (m_player->lines().isEmpty())
+      showNoLyricsPlaceholder();
     return changed;
+  }
+  // No playable lyric (no embedded tags, no sidecar .lrc): clear any stale
+  // player lines (a later play() must not resurrect the previous track), then
+  // show the track placeholder so the window isn't a blank pane. The changed
+  // flag feeds the caller's resume decision (setLyric("") returns true when
+  // it cleared a previous lyric, false when the player was already empty).
+  const bool changed = m_player->setLyric(QString());
+  showNoLyricsPlaceholder();
+  return changed;
 }
 
 void LyricController::showNoLyricsPlaceholder()
 {
-    // Track title / artist / album as three inactive lines in the unplay
-    // color — centered and never highlighted (setActiveLine(-1) keeps the
-    // active-line color and zoom off), so the window shows the track instead
-    // of a blank pane. Empty fields are skipped; a track with no metadata at
-    // all falls back to a plain "No lyrics". Replaced by the real lines as
-    // soon as a lyric arrives (pushLyricsToRenderer feeds from the player).
-    QVector<RenderLine> lines;
-    if (m_ctx.config.get(kKeyShowNoLyricMetadata).toBool()) {
-        if (m_trackName.isEmpty())
-            lines.append(RenderLine{ QStringLiteral("No lyrics"), {} });
-        else
-            lines.append(RenderLine{ m_trackName, {} });
-        if (!m_trackSinger.isEmpty())
-            lines.append(RenderLine{ m_trackSinger, {} });
-        if (!m_trackAlbum.isEmpty())
-            lines.append(RenderLine{ m_trackAlbum, {} });
-    }
-    // Toggle off, or a track with no metadata at all: the plain literal.
-    if (lines.isEmpty())
-        lines.append(RenderLine{ QStringLiteral("No lyrics"), {} });
-    m_renderer->setLines(lines);
-    m_renderer->setActiveLine(-1);
-    // Center the block in the viewport; the lines still follow the alignment
-    // (and font/color) settings.
-    m_renderer->setCenteredBlock(true);
+  // Track title / artist / album as three inactive lines in the unplay
+  // color — centered and never highlighted (setActiveLine(-1) keeps the
+  // active-line color and zoom off), so the window shows the track instead
+  // of a blank pane. Empty fields are skipped; a track with no metadata at
+  // all falls back to a plain "No lyrics". Replaced by the real lines as
+  // soon as a lyric arrives (pushLyricsToRenderer feeds from the player).
+  QVector<RenderLine> lines;
+  if (m_ctx.config.get(kKeyShowNoLyricMetadata).toBool()) {
+    if (m_trackName.isEmpty())
+      lines.append(RenderLine{QStringLiteral("No lyrics"), {}});
+    else
+      lines.append(RenderLine{m_trackName, {}});
+    if (!m_trackSinger.isEmpty())
+      lines.append(RenderLine{m_trackSinger, {}});
+    if (!m_trackAlbum.isEmpty())
+      lines.append(RenderLine{m_trackAlbum, {}});
+  }
+  // Toggle off, or a track with no metadata at all: the plain literal.
+  if (lines.isEmpty())
+    lines.append(RenderLine{QStringLiteral("No lyrics"), {}});
+  m_renderer->setLines(lines);
+  m_renderer->setActiveLine(-1);
+  // Center the block in the viewport; the lines still follow the alignment
+  // (and font/color) settings.
+  m_renderer->setCenteredBlock(true);
 }
 
 void LyricController::pushLyricsToRenderer()
 {
-    // Map the player's parsed lines onto the renderer's line groups. The
-    // renderer strips any karaoke word tags and paints line-by-line.
-    QVector<RenderLine> lines;
-    const QVector<LrcLine>& playerLines = m_player->lines();
-    lines.reserve(playerLines.size());
-    for (const LrcLine& line : playerLines)
-        lines.append({ line.text, line.extendedLyrics, line.isStatic });
+  // Map the player's parsed lines onto the renderer's line groups. The
+  // renderer strips any karaoke word tags and paints line-by-line.
+  QVector<RenderLine> lines;
+  const QVector<LrcLine>& playerLines = m_player->lines();
+  lines.reserve(playerLines.size());
+  for (const LrcLine& line : playerLines)
+    lines.append({line.text, line.extendedLyrics, line.isStatic});
 
-    // A zero-line push (a lyric cleared via stop(), or a genuinely empty
-    // parse) must never reach the renderer as a blank pane — the placeholder
-    // wins. Invalid timestamps no longer land here: they parse to static
-    // lines (non-empty) and take the custom placeholder below. This runs on
-    // the synchronous lyricsChanged -> pushLyricsToRenderer chain (same
-    // thread, AutoConnection), so the placeholder is not overwritten by a
-    // later event.
-    if (lines.isEmpty()) {
-        showNoLyricsPlaceholder();
-        return;
-    }
+  // A zero-line push (a lyric cleared via stop(), or a genuinely empty
+  // parse) must never reach the renderer as a blank pane — the placeholder
+  // wins. Invalid timestamps no longer land here: they parse to static
+  // lines (non-empty) and take the custom placeholder below. This runs on
+  // the synchronous lyricsChanged -> pushLyricsToRenderer chain (same
+  // thread, AutoConnection), so the placeholder is not overwritten by a
+  // later event.
+  if (lines.isEmpty()) {
+    showNoLyricsPlaceholder();
+    return;
+  }
 
-    // An all-static lyric (every timestamp broken, e.g. Skyland - Mich.lrc)
-    // becomes a CUSTOM placeholder: the static text itself, centered like the
-    // no-lyrics placeholder (setCenteredBlock(true)), and never active —
-    // setActiveLine(-1) keeps the played color and zoom off. DELIBERATE
-    // DEVIATION from line-player.js, which drops such lines entirely.
-    const bool allStatic = std::all_of(playerLines.cbegin(), playerLines.cend(),
-                                       [](const LrcLine& l) { return l.isStatic; });
-    if (allStatic) {
-        m_renderer->setCenteredBlock(true);
-        m_renderer->setLines(lines);
-        m_renderer->setActiveLine(-1);
-        return;
-    }
-
-    m_renderer->setCenteredBlock(false); // Real lyrics: back to the scroll layout.
+  // An all-static lyric (every timestamp broken, e.g. Skyland - Mich.lrc)
+  // becomes a CUSTOM placeholder: the static text itself, centered like the
+  // no-lyrics placeholder (setCenteredBlock(true)), and never active —
+  // setActiveLine(-1) keeps the played color and zoom off. DELIBERATE
+  // DEVIATION from line-player.js, which drops such lines entirely.
+  const bool allStatic =
+    std::all_of(playerLines.cbegin(), playerLines.cend(), [](const LrcLine& l) {
+      return l.isStatic;
+    });
+  if (allStatic) {
+    m_renderer->setCenteredBlock(true);
     m_renderer->setLines(lines);
-    // currentLine() returns -1 while the player parks on a static lead line,
-    // so mixed lyrics never activate a static line pre-play.
-    m_renderer->setActiveLine(m_player->currentLine());
+    m_renderer->setActiveLine(-1);
+    return;
+  }
+
+  m_renderer->setCenteredBlock(false); // Real lyrics: back to the scroll layout.
+  m_renderer->setLines(lines);
+  // currentLine() returns -1 while the player parks on a static lead line,
+  // so mixed lyrics never activate a static line pre-play.
+  m_renderer->setActiveLine(m_player->currentLine());
 }
 
 void LyricController::onSettingChanged(const QString& key, const QVariant& value)
 {
-    if (key == kKeyShowNoLyricMetadata) {
-        // Live apply: the placeholder is showing exactly when the player has
-        // zero lines (valid lyric -> lines non-empty -> skip, no useless work;
-        // empty lrc -> lines empty -> re-apply). A static lyric (invalid
-        // timestamps) also has non-empty lines, and that is CORRECT: the
-        // metadata toggle must not affect static lines — they are real text,
-        // not the metadata placeholder. Re-running the selection re-reads the
-        // new value inside showNoLyricsPlaceholder; setLyric dedups into a
-        // no-op, and the reapplyLyricSelection guard re-shows the placeholder.
-        // Must return here so the key never falls through to the
-        // renderer/selector dispatch below.
-        if (m_player->lines().isEmpty())
-            reapplyLyricSelection();
-        return;
-    }
-    if (isRendererKey(key)) {
-        applyRendererConfig();
-        return;
-    }
-    if (isSelectorKey(key)) {
-        applySelectorConfig();
-        if (!m_hasLyric)
-            return;
-        const bool wasPlaying = m_player->isPlaying();
-        const qint64 positionMs = m_player->currentPositionMs();
-        const bool applied = reapplyLyricSelection();
-        // Resume only when the lyric actually changed (a dedup'd re-selection
-        // never paused the player, so replaying would re-emit the current line
-        // spuriously) and there are lines to play.
-        if (applied && wasPlaying && m_selector->hasLyrics())
-            m_player->play(positionMs);
-        // Mirror the play state — isPlaying() is the single source of truth for
-        // the renderer's 3 s resume re-center gate.
-        m_renderer->setPlaying(m_player->isPlaying());
-        return;
-    }
-    if (key == kKeyPlaybackRate)
-        m_player->setPlaybackRate(value.toDouble());
+  if (key == kKeyShowNoLyricMetadata) {
+    // Live apply: the placeholder is showing exactly when the player has
+    // zero lines (valid lyric -> lines non-empty -> skip, no useless work;
+    // empty lrc -> lines empty -> re-apply). A static lyric (invalid
+    // timestamps) also has non-empty lines, and that is CORRECT: the
+    // metadata toggle must not affect static lines — they are real text,
+    // not the metadata placeholder. Re-running the selection re-reads the
+    // new value inside showNoLyricsPlaceholder; setLyric dedups into a
+    // no-op, and the reapplyLyricSelection guard re-shows the placeholder.
+    // Must return here so the key never falls through to the
+    // renderer/selector dispatch below.
+    if (m_player->lines().isEmpty())
+      reapplyLyricSelection();
+    return;
+  }
+  if (isRendererKey(key)) {
+    applyRendererConfig();
+    return;
+  }
+  if (isSelectorKey(key)) {
+    applySelectorConfig();
+    if (!m_hasLyric)
+      return;
+    const bool wasPlaying = m_player->isPlaying();
+    const qint64 positionMs = m_player->currentPositionMs();
+    const bool applied = reapplyLyricSelection();
+    // Resume only when the lyric actually changed (a dedup'd re-selection
+    // never paused the player, so replaying would re-emit the current line
+    // spuriously) and there are lines to play.
+    if (applied && wasPlaying && m_selector->hasLyrics())
+      m_player->play(positionMs);
+    // Mirror the play state — isPlaying() is the single source of truth for
+    // the renderer's 3 s resume re-center gate.
+    m_renderer->setPlaying(m_player->isPlaying());
+    return;
+  }
+  if (key == kKeyPlaybackRate)
+    m_player->setPlaybackRate(value.toDouble());
 }
 
 void LyricController::onLineChanged(int line)
 {
-    m_renderer->setActiveLine(line);
+  m_renderer->setActiveLine(line);
 }

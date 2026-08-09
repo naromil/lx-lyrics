@@ -29,49 +29,49 @@ struct PlaybackSnapshot;
 // player, setOffset accumulates the delta sent by the host, setPlaybackRate
 // forwards the rate.
 class LyricController : public QObject {
-    Q_OBJECT
+  Q_OBJECT
 
 public:
-    explicit LyricController(AppContext& ctx, LyricWindow& window, QObject* parent = nullptr);
-    ~LyricController() override;
+  explicit LyricController(AppContext& ctx, LyricWindow& window, QObject* parent = nullptr);
+  ~LyricController() override;
 
-    // --- music-state entry points (WsClient signals and --demo self-feed) ---
-    void setTrack(const TrackSnapshot& track);
-    void setLyric(const LyricSnapshot& lyric);
-    void setStatus(const PlaybackSnapshot& status);
-    void play(qint64 timeMs);
-    void pause();
-    void stop();
-    void setOffset(qint64 tempOffset);
-    void setPlaybackRate(double rate);
+  // --- music-state entry points (WsClient signals and --demo self-feed) ---
+  void setTrack(const TrackSnapshot& track);
+  void setLyric(const LyricSnapshot& lyric);
+  void setStatus(const PlaybackSnapshot& status);
+  void play(qint64 timeMs);
+  void pause();
+  void stop();
+  void setOffset(qint64 tempOffset);
+  void setPlaybackRate(double rate);
 
 private:
-    void applyRendererConfig();
-    void applySelectorConfig();
-    void applyLyricText(const QString& lrc, const QString& tlyric,
-                        const QString& rlyric, const QString& lxlyric);
-    // Re-runs the selector over the last raw lyric fields and pushes the
-    // result into the player. Returns whether the player actually re-parsed
-    // (false = identical re-push deduped into a no-op).
-    bool reapplyLyricSelection();
-    void pushLyricsToRenderer();
-    void showNoLyricsPlaceholder();
-    void onSettingChanged(const QString& key, const QVariant& value);
-    void onLineChanged(int line);
+  void applyRendererConfig();
+  void applySelectorConfig();
+  void applyLyricText(const QString& lrc, const QString& tlyric, const QString& rlyric,
+                      const QString& lxlyric);
+  // Re-runs the selector over the last raw lyric fields and pushes the
+  // result into the player. Returns whether the player actually re-parsed
+  // (false = identical re-push deduped into a no-op).
+  bool reapplyLyricSelection();
+  void pushLyricsToRenderer();
+  void showNoLyricsPlaceholder();
+  void onSettingChanged(const QString& key, const QVariant& value);
+  void onLineChanged(int line);
 
-    AppContext& m_ctx;
-    LyricWindow& m_window;
-    LyricRenderer* m_renderer = nullptr;
-    LyricPlayer* m_player = nullptr;
-    std::unique_ptr<LyricSelector> m_selector;
-    // Last raw lyric fields, kept so a selection-config change can re-select
-    // without a fresh host snapshot.
-    QString m_lastLrc, m_lastTlrc, m_lastRlrc, m_lastLxlrc;
-    // Last track metadata, kept so the no-lyrics placeholder has
-    // title/artist/album to show.
-    QString m_trackName;
-    QString m_trackSinger;
-    QString m_trackAlbum;
-    bool m_hasLyric = false;
-    qint64 m_userOffsetMs = 0;
+  AppContext& m_ctx;
+  LyricWindow& m_window;
+  LyricRenderer* m_renderer = nullptr;
+  LyricPlayer* m_player = nullptr;
+  std::unique_ptr<LyricSelector> m_selector;
+  // Last raw lyric fields, kept so a selection-config change can re-select
+  // without a fresh host snapshot.
+  QString m_lastLrc, m_lastTlrc, m_lastRlrc, m_lastLxlrc;
+  // Last track metadata, kept so the no-lyrics placeholder has
+  // title/artist/album to show.
+  QString m_trackName;
+  QString m_trackSinger;
+  QString m_trackAlbum;
+  bool m_hasLyric = false;
+  qint64 m_userOffsetMs = 0;
 };
