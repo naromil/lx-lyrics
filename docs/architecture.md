@@ -43,6 +43,7 @@ Pushing selection logic (e.g. lxlrc-vs-lrc) or container decoding into the plugi
 
 - **Native C++/Qt6** for the app (no Electron) — the extracted feature is rewritten as a Qt widget app.
 - **Full settings port** — the `desktopLyric.*` key set is carried over verbatim, but the default values are tuned to user preference (enable, isAlwaysOnTop, isAlwaysOnTopLoop, fullscreenHide, width, fontSize, opacity, isZoomActiveLrc deviate from upstream); window positions default to auto (null).
+- **User-tuned behavior deviations** — the close button fades the content out (300 ms, reusing the reference's `#container` opacity-transition idiom) before quitting, where the reference closes the window instantly; and the active lyric line renders at the full configured played color, where the reference's hardcoded `body { opacity: .8 }` dims every pixel to 80%. Non-active lines keep that dimming here (applied per-line as `(opacity/100) × lerp(0.8, 1.0, colorProgress)` instead of a window-wide effect); all other quit paths (`--exit-on-disconnect`, WM close) stay instant like the reference.
 - **v1 lyric sources: tags + local `.lrc`** — embedded-tag lyrics and sidecar files only; online lyric APIs are deferred past v1.
 - **Spectrum in v1** — the analyser stream is part of the v1 protocol; the float→byte conversion is defined in `docs/protocol.md`.
 - **Separate app + socket** instead of a Fooyin-embedded window — keeps the display host-agnostic and testable, at the cost of a small process and loopback overhead.

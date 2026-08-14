@@ -542,6 +542,21 @@ void LyricRenderer::setZoomProgressForLine(int line, double progress)
   update();
 }
 
+void LyricRenderer::setColorProgressForLine(int line, double progress)
+{
+  if (line < 0 || line >= m_lineColorProgress.size())
+    return;
+  // Test accessor mirroring setZoomProgressForLine: freeze the transition
+  // engine and pin one line's color progress so a test can render (or
+  // measure) deterministic mid-transition frames.
+  m_transitionTimer->stop();
+  m_lineColorTransition.fill(LineTransition{}, m_lines.size());
+  m_lineColorProgress[line] = qBound(0.0, progress, 1.0);
+  if (line < m_lineCache.size())
+    m_lineCache[line].dirty = true; // The pinned progress may jump mid-flight.
+  update();
+}
+
 void LyricRenderer::setVertical(bool on)
 {
   m_vertical = on;
@@ -581,6 +596,23 @@ void LyricRenderer::setOpacityPercent(int percent)
 {
   m_opacityPercent = qBound(6, percent, 100);
   update();
+}
+
+void LyricRenderer::setBodyOpacity(qreal opacity)
+{
+  m_bodyOpacity = qBound<qreal>(0.0, opacity, 1.0);
+  update();
+}
+
+double LyricRenderer::lineBlitOpacity(int line) const
+{
+  // Non-active lines (color progress 0) keep the reference body dimming;
+  // the active line (progress 1) reaches the full configured color; the
+  // lerp keeps the 600 ms color transition continuous. colorProgressForLine
+  // is bounds-safe (0.0 out of range), so this is callable before any lines
+  // are set.
+  return (m_opacityPercent / 100.0) *
+         (m_bodyOpacity + (1.0 - m_bodyOpacity) * colorProgressForLine(line));
 }
 
 void LyricRenderer::setEllipsis(bool on)
@@ -881,7 +913,10 @@ void LyricRenderer::paintEvent(QPaintEvent*)
   // 1.2x active line rest at fractional offsets and get the same slight
   // filtering the reference applies when it composites its layers.
   painter.setRenderHint(QPainter::SmoothPixmapTransform);
-  painter.setOpacity(m_opacityPercent / 100.0); // Fresh painter: reset per paint.
+  // Baseline for non-line painting (e.g. the empty-state placeholder):
+  // every line blit overrides this with its own per-line opacity
+  // (lineBlitOpacity) so the active line reaches the full configured color.
+  painter.setOpacity(m_opacityPercent / 100.0);
 
   if (m_vertical)
     paintVertical(painter);
@@ -1118,6 +1153,10 @@ void LyricRenderer::paintHorizontal(QPainter& p)
     // text + 32-pass-shadow raster every 16 ms tick.
     if (m_lineCache.at(i).dirty || isLineTransitioning(i))
       renderLineToCache(i, rect);
+    // Per-blit opacity: the cache pixmaps hold full-strength content, so the
+    // body dimming and configured opacity apply here (paintEvent's base
+    // setOpacity is overwritten per line — see lineBlitOpacity).
+    p.setOpacity(lineBlitOpacity(i));
     p.drawPixmap(rect.topLeft() - QPointF(kCacheHaloPadPx, kCacheHaloPadPx),
                  m_lineCache.at(i).pixmap);
     y += h + gap;
@@ -1158,6 +1197,10 @@ void LyricRenderer::paintVertical(QPainter& p)
     const QRectF rect(right - groupWidth, 0, groupWidth, m_cachedGroupHeights.at(i));
     if (m_lineCache.at(i).dirty || isLineTransitioning(i))
       renderLineToCache(i, rect, &liveMetrics.at(i));
+    // Per-blit opacity, same as paintHorizontal: the cache pixmaps hold
+    // full-strength content; the body dimming and configured opacity apply
+    // at the blit (see lineBlitOpacity).
+    p.setOpacity(lineBlitOpacity(i));
     p.drawPixmap(rect.topLeft() - QPointF(kCacheHaloPadPx, kCacheHaloPadPx),
                  m_lineCache.at(i).pixmap);
     right -= groupWidth + gap;

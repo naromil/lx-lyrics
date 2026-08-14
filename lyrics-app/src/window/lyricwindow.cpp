@@ -35,8 +35,10 @@
 namespace {
 
 // Reference App.vue look: #main has border-radius 4px and a static
-// rgba(0,0,0,.2) background with NO border; body { opacity: .8 } dims the
-// whole window underneath the container fade.
+// rgba(0,0,0,.2) background with NO border. The reference body { opacity:
+// .8 } dimming is applied per component — the renderer's per-line blit,
+// the pane paint, the spectrum and control-bar effects (kBodyOpacity) —
+// while the container effect applies only the fade.
 constexpr int kRadiusBorder = 4;
 constexpr int kAlwaysOnTopReassertMs = 500;
 
@@ -52,7 +54,6 @@ constexpr int kNativeOpSaveDebounceMs = 200;
 // (reference #container transition: opacity .3s ease, .hide { opacity: .05 }).
 constexpr int kFadeAnimationMs = 300;
 constexpr double kFaintFactor = 0.05;
-constexpr double kBodyOpacity = 0.8; // reference body { opacity: .8 }
 
 // Pane-fill fade (parity item 1): the pane background cross-fades between
 // rgba(0,0,0,.2) and fully transparent over 400 ms when the window locks
@@ -221,12 +222,16 @@ LyricWindow::LyricWindow(DesktopLyricConfig& config, TranslationManager& i18n)
 
   // The container holds every child (control bar, lyric renderer, spectrum);
   // a graphics effect over it reproduces the reference #container { opacity }
-  // rule, multiplied by the static body opacity. NOTE: QGraphicsOpacityEffect
-  // can glitch on translucent top-levels on some platforms; if Wayland ever
-  // misrenders the fade, the fallback is per-widget painter opacity driven by
-  // the same fadeFactor() (children paint through the effect today).
+  // rule — the FADE only. The reference body { opacity: .8 } dimming
+  // (kBodyOpacity) now lives in the renderer's per-line blit, so the active
+  // line reaches the full configured color while non-active lines keep the
+  // reference dimming; the pane paint, the spectrum and the control bar
+  // apply the same dimming themselves. NOTE: QGraphicsOpacityEffect can
+  // glitch on translucent top-levels on some platforms; if Wayland ever
+  // misrenders the fade, the fallback is per-widget painter opacity driven
+  // by the same fadeFactor() (children paint through the effect today).
   m_contentEffect = new QGraphicsOpacityEffect(m_contentContainer);
-  m_contentEffect->setOpacity(kBodyOpacity * m_fadeFactor);
+  m_contentEffect->setOpacity(m_fadeFactor);
   m_contentContainer->setGraphicsEffect(m_contentEffect);
 
   // Control bar floats at the top; the spectrum visualizer sits below it and
@@ -234,7 +239,20 @@ LyricWindow::LyricWindow(DesktopLyricConfig& config, TranslationManager& i18n)
   // task). The visualizer is hidden unless desktopLyric.audioVisualization is
   // on; the SpectrumBridge gates its render loop off (isPlay && setting).
   m_controlBar = new ControlBar(m_config, m_i18n, m_contentContainer);
+  // The bar's hover-reveal ceiling is the reference body dimming; the window
+  // owns that value, the bar just consumes it (no renderer->window include).
+  m_controlBar->setRevealMaxOpacity(kBodyOpacity);
+  // Close animation: the X button only requests the close; this window
+  // animates the content fade to 0.0 and then emits closeAnimationFinished
+  // (main.cpp quits the app on it).
+  connect(m_controlBar, &ControlBar::closeRequested, this, &LyricWindow::animateClose);
   m_spectrumWidget = new SpectrumWidget(m_config, m_contentContainer);
+  // Parity: the container effect now applies only the fade (the reference
+  // body opacity moved into the renderer's per-line blit), so the spectrum
+  // keeps the reference body 0.8 dimming through its own static effect.
+  auto* spectrumEffect = new QGraphicsOpacityEffect(m_spectrumWidget);
+  spectrumEffect->setOpacity(kBodyOpacity);
+  m_spectrumWidget->setGraphicsEffect(spectrumEffect);
   m_spectrumWidget->setVisible(
     m_config.get(QStringLiteral("desktopLyric.audioVisualization")).toBool());
   auto* containerLayout = new QVBoxLayout(m_contentContainer);
@@ -315,6 +333,8 @@ void LyricWindow::openSettingsDialog()
 
 void LyricWindow::faint()
 {
+  if (m_closing)
+    return; // The close fade owns the content; hover/pause must not fight it.
   m_shouldBeFaint = true;
 
   // Reference #container.hide:not(.lock):hover — if the pointer is already
@@ -331,13 +351,43 @@ void LyricWindow::faint()
 
 void LyricWindow::unfaint()
 {
+  if (m_closing)
+    return; // The close fade owns the content; hover/pause must not fight it.
   m_shouldBeFaint = false;
   m_hoverOverride = false;
   animateFadeTo(1.0);
 }
 
+void LyricWindow::animateClose()
+{
+  if (m_closing)
+    return;
+  m_closing = true;
+  // The reference closes instantly (no animation); this reuses the
+  // reference's own content-fade idiom (#container transition: opacity .3s
+  // ease — kFadeAnimationMs OutCubic below) as a deliberate polish: the
+  // content fades to invisible, then the app quits.
+  if (qAbs(m_fadeFactor) < 1e-6) {
+    emit closeAnimationFinished();
+    return;
+  }
+  // SingleShotConnection auto-disconnects once the close fade fires, so a
+  // later legitimate fade-to-0 (e.g. a future hide-when-idle) cannot quit the
+  // app; UniqueConnection stays as belt-and-braces against duplicate wiring.
+  connect(m_fadeAnim, &QVariantAnimation::finished, this, &LyricWindow::closeAnimationFinished,
+          static_cast<Qt::ConnectionType>(Qt::UniqueConnection | Qt::SingleShotConnection));
+  animateFadeTo(0.0);
+}
+
 void LyricWindow::animateFadeTo(double target)
 {
+  // Choke point: faint/unfaint guard m_closing themselves, but enterEvent and
+  // leaveEvent call animateFadeTo directly — a mouse boundary crossing during
+  // the 300 ms close fade would otherwise retarget the fade upward and the
+  // app would quit with the window fully visible. Only the close fade itself
+  // (target 0.0) may touch the animation once closing.
+  if (m_closing && target > 0.0)
+    return; // The close fade owns the content; hover/leave must not retarget it up.
   // Retarget smoothly: a running fade is stopped, then restarted from the
   // last delivered frame (m_fadeFactor is kept live by valueChanged) to the
   // new target. QVariantAnimation::stop() does not emit a final valueChanged,
@@ -354,7 +404,9 @@ void LyricWindow::animateFadeTo(double target)
 
 void LyricWindow::applyFade()
 {
-  m_contentEffect->setOpacity(kBodyOpacity * m_fadeFactor);
+  // Fade only: the effect's opacity is m_fadeFactor alone (the reference
+  // body dimming lives in the renderer's per-line blit and the pane paint).
+  m_contentEffect->setOpacity(m_fadeFactor);
   update(); // Repaint the pane with the new opacity.
 }
 

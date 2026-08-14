@@ -6,7 +6,6 @@
  */
 #include "renderer/controlbar.h"
 
-#include <QApplication>
 #include <QCursor>
 #include <QGraphicsOpacityEffect>
 #include <QHBoxLayout>
@@ -123,8 +122,11 @@ ControlBar::ControlBar(DesktopLyricConfig& config, TranslationManager& i18n, QWi
 
   // Hover reveal (reference .control-bar opacity 0 / #main:hover opacity 1):
   // a graphics effect fades the whole strip — background and buttons — as
-  // one unit, exactly like the CSS opacity transition. The window's own
-  // container fade (LyricWindow) compounds with this multiplier.
+  // one unit, exactly like the CSS opacity transition. The reveal ceiling is
+  // m_revealMaxOpacity (default 1.0 undimmed; LyricWindow pushes its body
+  // dimming kBodyOpacity into the bar, since the window's container effect
+  // now applies only the fade). The window's container fade (LyricWindow)
+  // still compounds with this multiplier.
   m_hoverEffect = new QGraphicsOpacityEffect(this);
   m_hoverEffect->setOpacity(0.0);
   setGraphicsEffect(m_hoverEffect);
@@ -144,9 +146,11 @@ ControlBar::ControlBar(DesktopLyricConfig& config, TranslationManager& i18n, QWi
   // Reference order (ControlBar.vue): close, lock, font+, font-, opacity+,
   // opacity-, zoom, always-on-top; the settings gear is appended last.
   auto* closeButton = addIconButton(Icon::Close, QStringLiteral("desktop_lyric__close"));
-  connect(closeButton, &QToolButton::clicked, this, [] {
-    QApplication::quit();
-  });
+  closeButton->setObjectName(QStringLiteral("closeButton"));
+  // Close only requests the animated close: LyricWindow fades the content
+  // out (300 ms) and quits the app afterwards (closeAnimationFinished). The
+  // objectName lets the controller tests find the button.
+  connect(closeButton, &QToolButton::clicked, this, &ControlBar::closeRequested);
 
   auto* lockButton = addIconButton(Icon::Lock, QStringLiteral("desktop_lyric__lock"));
   connect(lockButton, &QToolButton::clicked, this, [this] {
@@ -266,9 +270,14 @@ void ControlBar::showEvent(QShowEvent* event)
   setHovered(isPointerInsideWindow());
 }
 
+void ControlBar::setRevealMaxOpacity(qreal max)
+{
+  m_revealMaxOpacity = qBound<qreal>(0.0, max, 1.0);
+}
+
 void ControlBar::setHovered(bool hovered)
 {
-  const double target = hovered ? 1.0 : 0.0;
+  const double target = hovered ? m_revealMaxOpacity : 0.0;
   if (qAbs(m_hoverFactor - target) < 1e-6) {
     m_hoverAnim->stop();
     return;

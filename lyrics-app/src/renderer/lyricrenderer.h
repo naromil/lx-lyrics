@@ -79,6 +79,14 @@ public:
   void setFontSize(int px);                  // 10..80
   void setLineGap(int px);                   // 0..25
   void setOpacityPercent(int percent);       // 6..100 (window/container opacity)
+  // Reference body { opacity: .8 } dimming, applied per line at blit time:
+  // non-active lines render dimmed while the active line reaches the full
+  // configured color (LyricWindow::kBodyOpacity; 1.0 = no dimming).
+  void setBodyOpacity(qreal opacity); // 0..1
+  // Opacity a line is blitted at: the configured window opacity times the
+  // body dimming lerped by the line's color progress (see
+  // colorProgressForLine). Paint-time helper, also unit-tested.
+  double lineBlitOpacity(int line) const;
   void setEllipsis(bool on);
   void setZoomActiveLrc(bool on); // active line font 1.2x, its extended 0.94x
   void setFontWeightFont(
@@ -134,6 +142,8 @@ public:
   // transition engine) so a test can render deterministic mid-transition
   // frames — the painted glyphs must grow continuously, not in pixel steps.
   void setZoomProgressForLine(int line, double progress);
+  // Test accessor mirroring setZoomProgressForLine for the color engine.
+  void setColorProgressForLine(int line, double progress);
 
   // Test accessor for the line list size (placeholder vs real lines).
   int lineCount() const { return m_lines.size(); }
@@ -291,6 +301,7 @@ private:
   int m_fontSize = 14;
   int m_lineGap = 15;
   int m_opacityPercent = 100;
+  qreal m_bodyOpacity = 1.0; // reference body { opacity: .8 } dimming, per line
   bool m_ellipsis = false;
   bool m_zoomActiveLrc = true;
   bool m_fontWeightLine = true;

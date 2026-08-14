@@ -36,15 +36,19 @@ class TranslationManager;
 // TranslationManager at show time and re-looked-up on language changes.
 //
 // Close is the only action that does not touch config: the standalone app has
-// no main window, so closing the lyric quits the application (the lx-music
-// plugin would respawn the app, which does not exist here).
+// no main window, so the close button only requests a close — LyricWindow
+// animates the content fade out (300 ms) and then quits the application (the
+// lx-music plugin would respawn the app, which does not exist here).
 //
 // Hover reveal (reference #main:hover .control-bar): the bar is drawn at
 // opacity 0 and fades in only while the pointer is over the lyric window.
 // LyricWindow drives this via setHovered() from its enter/leave events; the
-// bar animates its own QGraphicsOpacityEffect factor 0<->1 (300 ms in, 500 ms
-// out per reference animate.less). The lock visibility gate is unaffected —
-// a locked bar is simply hidden, hover or not.
+// bar animates its own QGraphicsOpacityEffect factor 0<->m_revealMaxOpacity
+// (default 1.0 = undimmed; LyricWindow pushes the reference body dimming
+// 0.8 — the window owns that value, since its container effect now applies
+// only the fade; 300 ms in, 500 ms out per reference animate.less). The lock
+// visibility gate is unaffected — a locked bar is simply hidden, hover or
+// not.
 class ControlBar : public QWidget {
   Q_OBJECT
 
@@ -52,16 +56,25 @@ public:
   explicit ControlBar(DesktopLyricConfig& config, TranslationManager& i18n,
                       QWidget* parent = nullptr);
 
-  // Hover reveal: animates the bar's opacity factor to 1 (hovered) or 0
-  // (not). Safe to call while hidden/locked — the visibility gate still
-  // governs presence, and the next show re-seeds the factor from the
-  // pointer position.
+  // Hover reveal: animates the bar's opacity factor to its reveal ceiling
+  // m_revealMaxOpacity (hovered) or 0 (not). Safe to call while hidden/
+  // locked — the visibility gate still governs presence, and the next show
+  // re-seeds the factor from the pointer position.
   void setHovered(bool hovered);
+
+  // Sets the hover-reveal ceiling (clamped 0..1). LyricWindow pushes its
+  // body-dimming value (kBodyOpacity) here so the bar matches the reference
+  // body { opacity: .8 }; default 1.0 keeps a standalone bar undimmed.
+  void setRevealMaxOpacity(qreal max);
 
 signals:
   // Emitted when the settings gear is clicked; LyricWindow opens the
   // modeless settings dialog in response.
   void settingsRequested();
+
+  // Emitted when the close button is clicked; LyricWindow animates the
+  // content fade to 0.0 and then quits the app (closeAnimationFinished).
+  void closeRequested();
 
 protected:
   void paintEvent(QPaintEvent* event) override;
@@ -120,4 +133,8 @@ private:
   QVariantAnimation* m_hoverAnim = nullptr;
   QGraphicsOpacityEffect* m_hoverEffect = nullptr;
   double m_hoverFactor = 0.0; // current bar opacity factor, 0 = hidden
+  // Hover-reveal ceiling: 1.0 undimmed by default; LyricWindow pushes its
+  // body-dimming value (kBodyOpacity 0.8) so the bar matches the reference
+  // body { opacity: .8 } without a renderer->window include.
+  qreal m_revealMaxOpacity = 1.0;
 };

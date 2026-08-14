@@ -76,6 +76,11 @@ int main(int argc, char* argv[])
   auto* window = new LyricWindow(appContext.config, *appContext.i18n);
   appContext.mainWindow = window;
 
+  // Close animation: the X button fades the content out (300 ms, inside
+  // LyricWindow), then this signal quits the app. Other quit paths
+  // (--exit-on-disconnect, WM close) stay instant.
+  QObject::connect(window, &LyricWindow::closeAnimationFinished, &app, &QCoreApplication::quit);
+
   // Assemble the full lyric pipeline (task 2.13): LyricSelector -> LyricPlayer
   // -> LyricRenderer inside the window, live-synced to config. Shared by both
   // modes below (host-driven and --demo self-feed).

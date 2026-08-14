@@ -46,6 +46,7 @@ private slots:
   void zoomGrowsSmoothlyBetweenProgressSteps();
   void zoomStaysAnchoredToAlignment();
   void lineFlushToAlignedBorder();
+  void lineBlitOpacityFollowsBodyOpacityAndColorProgress();
 };
 
 void TestLyricRenderer::fastChangesDoNotSnapColorBack()
@@ -572,6 +573,40 @@ void TestLyricRenderer::lineFlushToAlignedBorder()
   const QPair<int, int> l = paintedEdges(1.0);
   QVERIFY2(l.first >= 0, "no text painted (left-aligned)");
   QVERIFY2(l.first <= 3, qPrintable(QStringLiteral("left edge %1 not flush").arg(l.first)));
+}
+
+void TestLyricRenderer::lineBlitOpacityFollowsBodyOpacityAndColorProgress()
+{
+  // The blit opacity is the configured window opacity times the reference
+  // body dimming lerped by the line's color progress: non-active lines stay
+  // dimmed (0.8 * opacity), the active line reaches the FULL configured
+  // color (1.0 * opacity), and mid-transition lines interpolate — the
+  // QGraphicsOpacityEffect cannot exceed 1.0, so the dimming must live in
+  // the per-line blit for the active line to ever reach its color.
+  LyricRenderer renderer;
+  renderer.resize(600, 300);
+  renderer.setLines(makeLines(1)); // setColorProgressForLine needs a line.
+
+  // Default body opacity (1.0): the renderer alone paints at full strength.
+  QCOMPARE(renderer.lineBlitOpacity(0), 1.0);
+
+  renderer.setBodyOpacity(0.8); // LyricWindow::kBodyOpacity.
+  // Non-active line: the reference body dimming only.
+  QCOMPARE(renderer.lineBlitOpacity(0), 0.8);
+  // Mid-transition: the lerp keeps the 600 ms color fade continuous.
+  renderer.setColorProgressForLine(0, 0.5);
+  QCOMPARE(renderer.lineBlitOpacity(0), 0.9);
+  // Active line: the full configured color, unclamped by the effect.
+  renderer.setColorProgressForLine(0, 1.0);
+  QCOMPARE(renderer.lineBlitOpacity(0), 1.0);
+
+  // The configured window opacity still compounds on top.
+  renderer.setOpacityPercent(50);
+  QCOMPARE(renderer.lineBlitOpacity(0), 0.5);
+
+  // Out-of-range lines are safe before/without any lines (colorProgress 0).
+  LyricRenderer emptyRenderer;
+  QCOMPARE(emptyRenderer.lineBlitOpacity(0), 1.0);
 }
 
 QTEST_MAIN(TestLyricRenderer)

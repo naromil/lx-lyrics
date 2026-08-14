@@ -19,14 +19,19 @@
 // (same recipe as tst_config.cpp initTestCase).
 #include <QApplication>
 #include <QDir>
+#include <QElapsedTimer>
+#include <QEnterEvent>
+#include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTest>
+#include <QToolButton>
 
 #include "app/appcontext.h"
 #include "app/clioptions.h"
 #include "app/lyriccontroller.h"
 #include "config/desktoplyricconfig.h"
 #include "i18n/translationmanager.h"
+#include "renderer/controlbar.h"
 #include "renderer/lyricrenderer.h"
 #include "window/lyricwindow.h"
 
@@ -45,6 +50,13 @@ static const bool s_configIsolation = [] {
   return true;
 }();
 
+class TestLyricWindow : public LyricWindow {
+  Q_OBJECT
+public:
+  using LyricWindow::enterEvent; // Expose for choke-point testing.
+  using LyricWindow::LyricWindow;
+};
+
 class TestLyricController : public QObject {
   Q_OBJECT
 
@@ -55,6 +67,12 @@ private slots:
   void stopAfterValidLyricShowsPlaceholder();
   void metadataToggleReappliesPlaceholder();
   void mixedLyricNeverVisitsStaticLine();
+  void closeButtonRequestsClose();
+  void animateCloseFadesThenSignals();
+  void normalFaintDoesNotEmitCloseFinished();
+  void closeDuringFaintStillFadesOut();
+  void chokePointBlocksHoverFadeUpDuringClose();
+  void animateCloseReentryIsNoOp();
 };
 
 void TestLyricController::invalidTimestampsRenderAsStaticLines()
@@ -242,6 +260,169 @@ void TestLyricController::mixedLyricNeverVisitsStaticLine()
   // The static line 0 precedes the active line 1 and must stay unplayed —
   // never colored, even though play() advanced past its (nonexistent) time.
   QCOMPARE(renderer->colorProgressForLine(0), 0.0);
+}
+
+void TestLyricController::closeButtonRequestsClose()
+{
+  // The X button no longer quits directly: it emits closeRequested, and
+  // LyricWindow animates the fade-out. The window's ctor connect starts the
+  // 300 ms close fade here; the test ends before it completes and no quit
+  // connection exists in the test binary, so teardown just stops the fade.
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults(); // Idempotent; the ctor already loaded them.
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  // A visible window is required for QTest::mouseClick to deliver events
+  // (the offscreen test platform handles show() fine).
+  window.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&window));
+
+  auto* bar = window.contentContainer()->findChild<ControlBar*>();
+  QVERIFY(bar != nullptr);
+  auto* closeButton = bar->findChild<QToolButton*>(QStringLiteral("closeButton"));
+  QVERIFY(closeButton != nullptr);
+
+  QSignalSpy spy(bar, &ControlBar::closeRequested);
+  QTest::mouseClick(closeButton, Qt::LeftButton);
+  QCOMPARE(spy.count(), 1);
+
+  // The click's real side effect: the window's ctor wiring
+  // (closeRequested -> animateClose) starts the 300 ms close fade. Safe to
+  // assert here because the quit wiring lives only in main.cpp, never in the
+  // test binary.
+  QTRY_VERIFY(window.fadeFactor() < 0.5);
+}
+
+void TestLyricController::animateCloseFadesThenSignals()
+{
+  // animateClose drives the usual 300 ms content fade to 0.0 and then emits
+  // closeAnimationFinished (main.cpp quits the app on it; no such connection
+  // exists here, so the test only watches the signal).
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults(); // Idempotent; the ctor already loaded them.
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  QSignalSpy spy(&window, &LyricWindow::closeAnimationFinished);
+  window.animateClose();
+
+  QElapsedTimer timer;
+  timer.start();
+  while (spy.count() == 0 && timer.elapsed() < 1000)
+    QTest::qWait(25);
+
+  QCOMPARE(spy.count(), 1);
+  QVERIFY(window.fadeFactor() < 0.02);
+}
+
+void TestLyricController::normalFaintDoesNotEmitCloseFinished()
+{
+  // NEGATIVE regression: pause-faint (faint/unfaint) completes both fade
+  // directions without ever emitting closeAnimationFinished. Guards against
+  // moving the finished-connection into the ctor or losing the m_closing
+  // gate — the fade cycle must stay a pure content fade with zero close
+  // signals.
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults(); // Idempotent; the ctor already loaded them.
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  QSignalSpy spy(&window, &LyricWindow::closeAnimationFinished);
+
+  window.faint();
+  QTRY_VERIFY(window.fadeFactor() < 0.1);
+
+  window.unfaint();
+  QTRY_VERIFY(window.fadeFactor() > 0.99);
+
+  QCOMPARE(spy.count(), 0);
+}
+
+void TestLyricController::closeDuringFaintStillFadesOut()
+{
+  // The enter/leave retarget class: a fade-up attempt while the close
+  // animation runs must be ignored (enterEvent/leaveEvent hit the same
+  // animateFadeTo choke point, only reachable through unfaint() here), so
+  // the close still completes exactly once and the window stays faded out.
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults(); // Idempotent; the ctor already loaded them.
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  window.faint();
+  QTRY_VERIFY(window.fadeFactor() < 0.1);
+
+  QSignalSpy spy(&window, &LyricWindow::closeAnimationFinished);
+  window.animateClose();
+  window.unfaint(); // Fade-up attempt during close: must be blocked.
+
+  QElapsedTimer timer;
+  timer.start();
+  while (spy.count() == 0 && timer.elapsed() < 1000)
+    QTest::qWait(25);
+
+  QCOMPARE(spy.count(), 1);
+  QVERIFY(window.fadeFactor() < 0.02);
+}
+
+void TestLyricController::chokePointBlocksHoverFadeUpDuringClose()
+{
+  // REAL choke-point regression: enterEvent/leaveEvent call animateFadeTo
+  // directly (bypassing faint/unfaint), so only the m_closing guard inside
+  // animateFadeTo can stop a hover retarget from cancelling the close fade
+  // (which would quit the app with the window fully visible). The synthetic
+  // QEnterEvent drives the exact production hover path through the exposed
+  // protected handler.
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults(); // Idempotent; the ctor already loaded them.
+  TranslationManager i18n(ctx.config);
+  TestLyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  // faint() sets m_shouldBeFaint, so a hover enter would normally brighten
+  // the window back to full opacity.
+  window.faint();
+  QTRY_VERIFY(window.fadeFactor() < 0.1);
+
+  QSignalSpy spy(&window, &LyricWindow::closeAnimationFinished);
+  window.animateClose();
+
+  // Hover retarget during the close fade: without the choke point this would
+  // animate back to 1.0 and the app would quit fully visible.
+  QEnterEvent enter(QPointF(0, 0), QPointF(0, 0), QPointF(0, 0));
+  window.enterEvent(&enter);
+  QTest::qWait(50);
+
+  // Still fading down, not retargeted upward.
+  QVERIFY(window.fadeFactor() < 0.1);
+  QTRY_COMPARE(spy.count(), 1);
+}
+
+void TestLyricController::animateCloseReentryIsNoOp()
+{
+  // Idempotence: a second animateClose() during the running close fade
+  // early-returns on m_closing, so exactly one closeAnimationFinished fires.
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults(); // Idempotent; the ctor already loaded them.
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  QSignalSpy spy(&window, &LyricWindow::closeAnimationFinished);
+  window.animateClose();
+  window.animateClose();
+
+  QElapsedTimer timer;
+  timer.start();
+  while (spy.count() == 0 && timer.elapsed() < 1000)
+    QTest::qWait(25);
+
+  QCOMPARE(spy.count(), 1);
 }
 
 QTEST_MAIN(TestLyricController)

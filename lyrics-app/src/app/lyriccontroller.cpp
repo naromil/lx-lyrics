@@ -121,6 +121,10 @@ LyricController::LyricController(AppContext& ctx, LyricWindow& window, QObject* 
           &LyricController::onSettingChanged);
 
   applyRendererConfig();
+  // Window-driven (not config-driven): the renderer must dim non-active
+  // lines by the reference body opacity (LyricWindow::kBodyOpacity) while
+  // letting the active line reach the full configured color.
+  m_renderer->setBodyOpacity(LyricWindow::kBodyOpacity);
   applySelectorConfig();
   m_player->setPlaybackRate(m_ctx.config.get(kKeyPlaybackRate).toDouble());
 }

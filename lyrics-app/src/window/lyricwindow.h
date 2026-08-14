@@ -45,6 +45,13 @@ class LyricWindow : public QWidget {
 public:
   explicit LyricWindow(DesktopLyricConfig& config, TranslationManager& i18n);
 
+  // Reference body { opacity: .8 } dimming (App.vue). Applied per component:
+  // the renderer's per-line blit dims non-active lines while the active line
+  // reaches the full configured color; the pane paint, the spectrum effect
+  // and the control bar's hover ceiling use it directly. The container
+  // effect applies only the fade.
+  static constexpr qreal kBodyOpacity = 0.8;
+
   // Transparent full-bleed child widget; the lyric renderer and control bar
   // attach here in later tasks.
   QWidget* contentContainer() const { return m_contentContainer; }
@@ -71,6 +78,20 @@ public:
   // opacity or mouse transparency.
   void faint();
   void unfaint();
+
+signals:
+  // Emitted when the fade-out close animation completes (the content has
+  // reached opacity 0.0); main.cpp quits the app in response. WM/session
+  // closes and --exit-on-disconnect stay instant and never emit it.
+  void closeAnimationFinished();
+
+public slots:
+  // Fade-out close: animate the content fade to 0.0 over the usual
+  // kFadeAnimationMs, then emit closeAnimationFinished() (which quits the
+  // app in main.cpp). Idempotent via the m_closing guard; public so the
+  // controller tests can drive it directly. Once closing, hover/pause fades
+  // are ignored (faint/unfaint early-exit on m_closing).
+  void animateClose();
 
 protected:
   void paintEvent(QPaintEvent* event) override;
@@ -177,6 +198,7 @@ private:
   double m_fadeFactor = 1.0;    // 1.0 = full, kFaintFactor = pause-faint.
   bool m_shouldBeFaint = false; // Pause-faint state active (last faint()).
   bool m_hoverOverride = false; // Mouse is over while faint is active.
+  bool m_closing = false;       // Close animation started (X button).
 
   QVariantAnimation* m_paneAnim = nullptr;
   double m_paneAlpha = 0.2; // Pane fill alpha: 0.2 normal / 0.0 locked.
