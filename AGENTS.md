@@ -16,6 +16,7 @@ timeout 3 ./build/lx-lyrics-app --demo # expect exit code 124 (timeout kill = no
 - fooyin-plugin needs Fooyin built with `INSTALL_HEADERS=ON` and ICU; artifact is `build/fyplugin_lxlyrics.so`.
 - `build/` dirs are gitignored and shared across tasks; a concurrent LSP reconfiguration can transiently remove outputs — rebuild once before diagnosing.
 - The LSP diagnostic "tst_config.moc not found" is pre-existing (AUTOMOC generates it at build time); ignore it.
+- Always rebuild after any code modification — never report a change as done until `cmake --build build` succeeds.
 
 ## App quirks
 - `main.cpp` forces `QT_QPA_PLATFORM=xcb` before QApplication unless the env var is already set — client-side `move()`/position restore only works under X11. Set `QT_QPA_PLATFORM` beforehand to override. Always-on-top/click-through remain compositor best-effort on Wayland.

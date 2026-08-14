@@ -19,8 +19,9 @@
 // Multi-line parse behavior is a documented, deliberate deviation from the JS
 // reference: line-player.js's stateful /g exec drops every other timed line
 // (see kTimeFieldExp in lrcparser.cpp), while this port parses every line.
-// Static lines (text behind a broken timestamp like "[00:00.-1]") are a second
-// deliberate deviation: line-player.js drops them, this port keeps them as
+// Static lines — text behind a broken timestamp like "[00:00.-1]", or bare
+// unsynced text with no timestamp field at all — are a second deliberate
+// deviation: line-player.js drops them, this port keeps them as
 // rendered-but-never-visited lines (see LrcLine::isStatic).
 class TestEngine : public QObject {
   Q_OBJECT
@@ -43,6 +44,7 @@ private slots:
   void lrcParserNoFractionalSecondsBecomesStatic();
   void lrcParserManyColonFieldsParsedAtZero();
   void lrcParserInvalidTimestampParsedAsStatic();
+  void lrcParserBareTextBecomesStatic();
   void lrcParserSameLineBrokenAndValidFields();
   void lrcParserNegativeTimestampsDropped();
   void lrcParserNegativeOffset();
@@ -349,10 +351,74 @@ void TestEngine::lrcParserInvalidTimestampParsedAsStatic()
   QCOMPARE(brokenLead.lines.at(1).timeMs, qint64(5000));
   QCOMPARE(brokenLead.lines.at(1).text, QStringLiteral("real"));
 
-  // Tags and bare text remain dropped: static lines only come from text
-  // after a broken timestamp field, never from tags or plain lines.
+  // Bare text now joins broken-field text as a static line: the plain
+  // "Hello" line survives, while the [ti:...] tag line alone still parses
+  // to zero lines (tags are metadata, never lyric lines).
   const LrcParser::Result tags = LrcParser::parse(QStringLiteral("[ti:Title]\nHello"));
-  QCOMPARE(tags.lines.size(), 0);
+  QCOMPARE(tags.lines.size(), 1);
+  QVERIFY(tags.lines.at(0).isStatic);
+  QCOMPARE(tags.lines.at(0).timeMs, qint64(-1));
+  QCOMPARE(tags.lines.at(0).text, QStringLiteral("Hello"));
+
+  const LrcParser::Result tagOnly = LrcParser::parse(QStringLiteral("[ti:Title]"));
+  QCOMPARE(tagOnly.lines.size(), 0);
+}
+
+void TestEngine::lrcParserBareTextBecomesStatic()
+{
+  // A fully timestamp-less file (UNSYNCEDLYRICS tags, text-only .lrc
+  // sidecars) is bare text with NO bracket field at all: every line becomes
+  // a STATIC lyric line, so the app renders the text instead of "No lyrics".
+  // DELIBERATE DEVIATION from line-player.js, which drops such lines.
+  const LrcParser::Result unsynced = LrcParser::parse(QStringLiteral("Hello\nWorld"));
+
+  QCOMPARE(unsynced.lines.size(), 2);
+  // Statics lead via timeMs == -1; the stable sort keeps their file order.
+  QVERIFY(unsynced.lines.at(0).isStatic);
+  QCOMPARE(unsynced.lines.at(0).timeMs, qint64(-1));
+  QCOMPARE(unsynced.lines.at(0).text, QStringLiteral("Hello"));
+  QVERIFY(unsynced.lines.at(1).isStatic);
+  QCOMPARE(unsynced.lines.at(1).timeMs, qint64(-1));
+  QCOMPARE(unsynced.lines.at(1).text, QStringLiteral("World"));
+
+  // Mixed: the bare-text line becomes a static lead, the timed line parses
+  // normally.
+  const LrcParser::Result mixed = LrcParser::parse(QStringLiteral("Hello\n[00:01.00]World"));
+  QCOMPARE(mixed.lines.size(), 2);
+  QVERIFY(mixed.lines.at(0).isStatic);
+  QCOMPARE(mixed.lines.at(0).timeMs, qint64(-1));
+  QCOMPARE(mixed.lines.at(0).text, QStringLiteral("Hello"));
+  QVERIFY(!mixed.lines.at(1).isStatic);
+  QCOMPARE(mixed.lines.at(1).timeMs, qint64(1000));
+  QCOMPARE(mixed.lines.at(1).text, QStringLiteral("World"));
+
+  // Tags are metadata, not lyric lines: a tag-only file still parses to
+  // zero lines.
+  const LrcParser::Result tagOnly = LrcParser::parse(QStringLiteral("[ti:Title]"));
+  QCOMPARE(tagOnly.lines.size(), 0);
+
+  // A single bare line becomes one static line.
+  const LrcParser::Result single = LrcParser::parse(QStringLiteral("plain text"));
+  QCOMPARE(single.lines.size(), 1);
+  QVERIFY(single.lines.at(0).isStatic);
+  QCOMPARE(single.lines.at(0).timeMs, qint64(-1));
+  QCOMPARE(single.lines.at(0).text, QStringLiteral("plain text"));
+
+  // Edge cases pinning the accepted first-character trade-off: a leading '['
+  // that is neither a valid nor a broken time field is dropped, so text that
+  // merely CARRIES a bracket — a trailing time field or a leading ']' — is
+  // preserved verbatim as a static line (previously dropped unconditionally).
+  const LrcParser::Result trailingField = LrcParser::parse(QStringLiteral("Hello [00:01.00]"));
+  QCOMPARE(trailingField.lines.size(), 1);
+  QVERIFY(trailingField.lines.at(0).isStatic);
+  QCOMPARE(trailingField.lines.at(0).timeMs, qint64(-1));
+  QCOMPARE(trailingField.lines.at(0).text, QStringLiteral("Hello [00:01.00]"));
+
+  const LrcParser::Result leadingBracketClose = LrcParser::parse(QStringLiteral("]x"));
+  QCOMPARE(leadingBracketClose.lines.size(), 1);
+  QVERIFY(leadingBracketClose.lines.at(0).isStatic);
+  QCOMPARE(leadingBracketClose.lines.at(0).timeMs, qint64(-1));
+  QCOMPARE(leadingBracketClose.lines.at(0).text, QStringLiteral("]x"));
 }
 
 void TestEngine::lrcParserSameLineBrokenAndValidFields()

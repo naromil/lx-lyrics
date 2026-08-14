@@ -130,10 +130,11 @@ QVector<LrcLine> parseLines(const QString& lrc, const QStringList& extendedLyric
   // timestamps keep their JS insertion order after the stable sort.
   QHash<QString, LrcLine> lineMap;
   QVector<QString> insertionOrder;
-  // Text with no valid timestamp (broken or time-less field), in file order.
-  // Kept OUT of lineMap: statics have no time label, so translations cannot
-  // attach to them. isStatic implies timeMs == -1, so the final sort places
-  // them before every timed line.
+  // Text with no valid timestamp (broken field, time-less field, or no
+  // bracket field at all — bare unsynced text), in file order. Kept OUT of
+  // lineMap: statics have no time label, so translations cannot attach to
+  // them. isStatic implies timeMs == -1, so the final sort places them
+  // before every timed line.
   QVector<LrcLine> staticLines;
 
   for (const QString& rawLine : rawLines) {
@@ -222,8 +223,24 @@ QVector<LrcLine> parseLines(const QString& lrc, const QStringList& extendedLyric
       // BROKEN timestamp, NOT a tag: peel ONE such field and re-try the
       // remainder, so a valid field after the broken one is still parsed.
       const QRegularExpressionMatch invalidMatch = kInvalidTimeFieldExp.match(remainder);
-      if (!invalidMatch.hasMatch())
-        break; // Tags ([ti:...]), bare text, garbage: still dropped.
+      if (!invalidMatch.hasMatch()) {
+        // The first character is the discriminator: only a line whose first
+        // character is '[' while its content is neither a valid nor a broken
+        // time field is dropped here. EVERYTHING else — bare text, a
+        // timestamp-less line (e.g. UNSYNCEDLYRICS tags, text-only .lrc
+        // sidecars), text merely CARRYING a bracket (trailing time field like
+        // "Hello [00:01.00]", or a leading ']') — becomes a STATIC lyric
+        // line, the same deliberate deviation as text after a broken
+        // timestamp, so a fully unsynced file renders its text instead of
+        // "No lyrics". line-player.js drops such lines via `if (result)`.
+        if (remainder.startsWith(QLatin1Char('[')))
+          break; // Leading '[' that matches neither time-field pattern:
+                 // tags ([ti:...], [ar:...], [offset:...]) and unclosed or
+                 // malformed brackets — still dropped. Tags are parsed into
+                 // LrcTag by parseTags, garbage is meaningless.
+        staticLines.append(LrcLine{-1, remainder, {}, true});
+        break;
+      }
       // A '-' at the START of the field content (e.g. "[-00:05.00]")
       // drops the whole line, keeping lx-music's pre-roll parity; a dash
       // elsewhere (e.g. "[00:-05.00]x", negative seconds) is a broken

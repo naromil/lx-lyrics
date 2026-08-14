@@ -6,11 +6,12 @@
 // ("[00:00.-1]..." from Skyland - Mich.lrc) now parse to STATIC lyric lines —
 // rendered but never visited — and an all-static lyric is shown as a custom
 // placeholder: the static text itself, centered like the no-lyrics
-// placeholder, never active. The empty-raw-text path pins the pre-existing
-// metadata placeholder behavior, and a valid lyric proves real lines still
-// bypass both placeholders. stop() clears the player, whose zero-line push
-// must become the metadata placeholder, and toggling the metadata key while
-// a zero-line lyric is current (empty or tag-only) must re-apply the
+// placeholder, never active. Bare unsynced text (no timestamps at all) takes
+// the same path. The empty-raw-text path pins the pre-existing metadata
+// placeholder behavior, and a valid lyric proves real lines still bypass
+// both placeholders. stop() clears the player, whose zero-line push must
+// become the metadata placeholder, and toggling the metadata key while a
+// zero-line lyric is current (empty or tag-only) must re-apply the
 // placeholder live (it must NOT affect static lyrics).
 //
 // The user's real ~/.config/lx-lyrics/config.json is never touched:
@@ -62,6 +63,7 @@ class TestLyricController : public QObject {
 
 private slots:
   void invalidTimestampsRenderAsStaticLines();
+  void unsyncedLyricShowsStaticTextPlaceholder();
   void emptyLyricShowsPlaceholder();
   void validLyricShowsParsedLines();
   void stopAfterValidLyricShowsPlaceholder();
@@ -108,6 +110,41 @@ void TestLyricController::invalidTimestampsRenderAsStaticLines()
   // Static lines are never visited: no played color, ever.
   QCOMPARE(renderer->colorProgressForLine(0), 0.0);
   QCOMPARE(renderer->colorProgressForLine(1), 0.0);
+}
+
+void TestLyricController::unsyncedLyricShowsStaticTextPlaceholder()
+{
+  // Regression: a fully timestamp-less lyric (UNSYNCEDLYRICS tags, text-only
+  // .lrc sidecars) used to parse to ZERO lines and show "No lyrics" / the
+  // metadata placeholder. Bare text now parses to STATIC lines, so the
+  // unsynced text itself shows as the custom centered placeholder — like the
+  // broken-timestamp case, rendered but never active/colored.
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults(); // Idempotent; the ctor already loaded them.
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  TrackSnapshot snapshot;
+  snapshot.name = QStringLiteral("Skyland - Mich");
+  snapshot.singer = QStringLiteral("Michal Wisniewski");
+  snapshot.album = QStringLiteral("core");
+  snapshot.lrc = QStringLiteral("作词: Michal Wisniewski\n作曲: Michal Wisniewski");
+  controller.setTrack(snapshot);
+
+  auto* renderer = window.contentContainer()->findChild<LyricRenderer*>();
+  QVERIFY(renderer != nullptr);
+  // The static text itself — NOT the 3-line metadata placeholder (this is
+  // the regression: previously the zero-line parse showed the placeholder).
+  QCOMPARE(renderer->lineCount(), 2);
+  // Custom placeholder presentation: centered block, like the no-lyrics
+  // placeholder.
+  QVERIFY(renderer->centeredBlock());
+  // Static lines are never visited: no played color, ever, and no active
+  // line index is ever reported.
+  QCOMPARE(renderer->colorProgressForLine(0), 0.0);
+  QCOMPARE(renderer->colorProgressForLine(1), 0.0);
+  QCOMPARE(renderer->activeLine(), -1);
 }
 
 void TestLyricController::emptyLyricShowsPlaceholder()
