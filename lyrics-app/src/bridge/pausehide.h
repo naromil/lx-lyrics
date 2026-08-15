@@ -28,10 +28,11 @@ class PauseHide : public QObject {
 public:
   explicit PauseHide(DesktopLyricConfig& config, QObject* parent = nullptr);
 
-  // Feeds the current play boolean. When pauseHide is enabled, a false
-  // schedules faintRequested() after the 200 ms delay; a true cancels any
-  // pending faint and emits unfaintRequested() immediately if the window
-  // was fainted by this module.
+  // Feeds the current play boolean. The state is recorded even while
+  // pauseHide is disabled so a later enable applies the current state.
+  // When pauseHide is enabled, a false schedules faintRequested() after the
+  // 200 ms delay; a true cancels any pending faint and emits
+  // unfaintRequested() immediately if the window was fainted by this module.
   void setPlayState(bool isPlay);
 
 signals:
@@ -40,11 +41,13 @@ signals:
 
 private:
   void applySetting(const QString& key, const QVariant& value);
+  void applyPlayState();
   void cancelPendingFaint();
   void unfaintIfFainted();
 
   DesktopLyricConfig& m_config;
   QTimer m_faintTimer;
   bool m_pauseHideEnabled = false;
+  bool m_isPlay = false; // Mirrors store/state.ts isPlay = ref(false).
   bool m_isFainted = false;
 };

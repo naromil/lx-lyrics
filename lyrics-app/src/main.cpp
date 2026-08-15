@@ -180,6 +180,7 @@ int main(int argc, char* argv[])
     const TrackSnapshot demo = makeDemoTrack();
     lyricController->setTrack(demo);
     lyricController->play(0);
+    appContext.pauseHide->setPlayState(true); // The demo plays: keep it bright.
     window->setWindowTitle(QStringLiteral("DEMO: %1 - %2").arg(demo.name, demo.singer));
   }
 

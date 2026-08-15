@@ -335,7 +335,39 @@ void LyricWindow::faint()
 {
   if (m_closing)
     return; // The close fade owns the content; hover/pause must not fight it.
-  m_shouldBeFaint = true;
+  m_pauseFainted = true;
+  updateFaintState();
+}
+
+void LyricWindow::unfaint()
+{
+  if (m_closing)
+    return; // The close fade owns the content; hover/pause must not fight it.
+  m_pauseFainted = false;
+  updateFaintState();
+}
+
+void LyricWindow::setHoverFainted(bool hovered)
+{
+  if (m_closing)
+    return;
+  m_hoverFainted = hovered;
+  updateFaintState();
+}
+
+void LyricWindow::updateFaintState()
+{
+  // Reference App.vue: the pause-faint (isHide) and the hover-hide
+  // (isHoverHide) are INDEPENDENT booleans OR'd into the same hide class.
+  // Recompute from both sources so toggling/showing/polling one never clears
+  // the other (a restarted display must stay dimmed while paused).
+  m_shouldBeFaint = m_pauseFainted || m_hoverFainted;
+
+  if (!m_shouldBeFaint) {
+    m_hoverOverride = false;
+    animateFadeTo(1.0);
+    return;
+  }
 
   // Reference #container.hide:not(.lock):hover — if the pointer is already
   // over the window and it is unlocked, the hover rule wins and the window
@@ -347,15 +379,6 @@ void LyricWindow::faint()
   }
   m_hoverOverride = false;
   animateFadeTo(kFaintFactor);
-}
-
-void LyricWindow::unfaint()
-{
-  if (m_closing)
-    return; // The close fade owns the content; hover/pause must not fight it.
-  m_shouldBeFaint = false;
-  m_hoverOverride = false;
-  animateFadeTo(1.0);
 }
 
 void LyricWindow::animateClose()
@@ -434,7 +457,10 @@ void LyricWindow::updateHoverHidePolling()
 
   if (!m_hoverHideActive) {
     m_hoverPollTimer->stop();
-    unfaint(); // Hover-hide off (or unlocked): content returns to full.
+    // Hover-hide off (or unlocked): drop only the hover source — a live
+    // pause-faint must survive (a restarted display stays dimmed while
+    // paused). updateFaintState brightens when nothing is dimming.
+    setHoverFainted(false);
     return;
   }
   if (!isVisible()) {
@@ -453,13 +479,13 @@ void LyricWindow::pollHoverHide()
     m_hoverPollTimer->stop();
     return;
   }
-  // Same faint()/unfaint() machinery and the same 300 ms fade as pause-hide:
-  // cursor over the locked window dims the content to kFaintFactor, leaving
-  // it restores full opacity.
-  if (isCursorInsideWindow())
-    faint();
-  else
-    unfaint();
+  // The cursor-over case dims the content to kFaintFactor via
+  // setHoverFainted(); the cursor-outside case clears only the hover source —
+  // a live pause-faint (m_pauseFainted) keeps the window dimmed (reference
+  // hide: isHide || isHoverHide). The two sources are independent booleans
+  // OR'd by updateFaintState(), so this poll can never brighten a paused
+  // window.
+  setHoverFainted(isCursorInsideWindow());
 }
 
 bool LyricWindow::isCursorInsideWindow() const

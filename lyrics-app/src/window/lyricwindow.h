@@ -61,8 +61,9 @@ public:
   // SpectrumBridge in app/.
   SpectrumWidget* spectrumWidget() const { return m_spectrumWidget; }
 
-  // Current content fade factor (1.0 = full, 0.05 = pause-faint). Drives
-  // both the pane fill and the container opacity effect; exposed for tests.
+  // Current content fade factor (1.0 = full, 0.05 = pause- or hover-faint).
+  // Drives both the pane fill and the container opacity effect; exposed for
+  // tests.
   double fadeFactor() const { return m_fadeFactor; }
 
   // Current pane background alpha (0.2 normal / 0.0 locked). Drives the
@@ -94,6 +95,10 @@ public slots:
   void animateClose();
 
 protected:
+  // Hover-poll tick: sample the cursor against frameGeometry() and update the
+  // hover-faint source. Protected so the controller tests can drive the
+  // cursor-outside branch directly (the poll self-stops while hidden).
+  void pollHoverHide();
   void paintEvent(QPaintEvent* event) override;
   void showEvent(QShowEvent* event) override;
   void moveEvent(QMoveEvent* event) override;
@@ -148,12 +153,15 @@ private:
 
   // Hover-hide (Task H.1): while desktopLyric.isHoverHide is enabled and the
   // window is locked, a 500 ms cursor poll (reference mouseCheckTools) drives
-  // the same faint()/unfaint() fade used by pause-hide — the content dims to
-  // kFaintFactor while the cursor is over the locked window. A locked window
-  // is mouse-transparent (no enter/leave events fire), so the cursor position
-  // is sampled against frameGeometry() instead of relying on hover events.
+  // setHoverFainted() — the content dims to kFaintFactor while the cursor is
+  // over the locked window. Pause-faint and hover-faint are independent
+  // sources OR'd by updateFaintState(), so the poll never clears a live
+  // pause-faint. A locked window is mouse-transparent (no enter/leave events
+  // fire), so the cursor position is sampled against frameGeometry() instead
+  // of relying on hover events.
   void updateHoverHidePolling();
-  void pollHoverHide();
+  void setHoverFainted(bool hovered);
+  void updateFaintState();
   bool isCursorInsideWindow() const;
 
   void updateResizeHandles();
@@ -195,8 +203,10 @@ private:
 
   QVariantAnimation* m_fadeAnim = nullptr;
   QGraphicsOpacityEffect* m_contentEffect = nullptr;
-  double m_fadeFactor = 1.0;    // 1.0 = full, kFaintFactor = pause-faint.
-  bool m_shouldBeFaint = false; // Pause-faint state active (last faint()).
+  double m_fadeFactor = 1.0;    // 1.0 = full, kFaintFactor = pause- or hover-faint.
+  bool m_pauseFainted = false;  // Pause-faint source (PauseHide -> faint/unfaint).
+  bool m_hoverFainted = false;  // Hover-hide source (cursor over locked window).
+  bool m_shouldBeFaint = false; // Either source active (pause || hover).
   bool m_hoverOverride = false; // Mouse is over while faint is active.
   bool m_closing = false;       // Close animation started (X button).
 

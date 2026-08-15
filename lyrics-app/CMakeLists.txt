@@ -161,6 +161,7 @@ add_executable(lyrics-app-controller-tests
     tests/tst_controller.cpp
     src/app/appcontext.h
     src/app/lyriccontroller.cpp
+    src/bridge/pausehide.cpp
     src/window/lyricwindow.cpp
     src/renderer/lyricrenderer.cpp
     src/renderer/controlbar.cpp

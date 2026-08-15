@@ -19,6 +19,7 @@
 // static init block below redirects the config dir to a per-process temp dir
 // (same recipe as tst_config.cpp initTestCase).
 #include <QApplication>
+#include <QCursor>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEnterEvent>
@@ -30,6 +31,7 @@
 #include "app/appcontext.h"
 #include "app/clioptions.h"
 #include "app/lyriccontroller.h"
+#include "bridge/pausehide.h"
 #include "config/desktoplyricconfig.h"
 #include "i18n/translationmanager.h"
 #include "renderer/controlbar.h"
@@ -56,6 +58,7 @@ class TestLyricWindow : public LyricWindow {
 public:
   using LyricWindow::enterEvent; // Expose for choke-point testing.
   using LyricWindow::LyricWindow;
+  using LyricWindow::pollHoverHide; // Expose for hover-poll testing.
 };
 
 class TestLyricController : public QObject {
@@ -75,6 +78,13 @@ private slots:
   void closeDuringFaintStillFadesOut();
   void chokePointBlocksHoverFadeUpDuringClose();
   void animateCloseReentryIsNoOp();
+  void pauseFaintSurvivesLockToggle();
+  void pauseFaintSurvivesShowCycle();
+  void pauseFaintSurvivesHoverPollWhileLocked();
+  void pauseHideAutoFaintsAtStartup();
+  void pauseHideStartupFaintCancelledByPlay();
+  void pauseHideEnableMidSessionFaintsWhenPaused();
+  void pauseHideEnableMidSessionStaysBrightWhenPlaying();
 };
 
 void TestLyricController::invalidTimestampsRenderAsStaticLines()
@@ -460,6 +470,173 @@ void TestLyricController::animateCloseReentryIsNoOp()
     QTest::qWait(25);
 
   QCOMPARE(spy.count(), 1);
+}
+
+void TestLyricController::pauseFaintSurvivesLockToggle()
+{
+  // Regression (restart-brightening): the pause-faint must survive a lock
+  // toggle. updateHoverHidePolling() runs on desktopLyric.isLock changes;
+  // before the fix it unconditionally unfainted, so a paused window went
+  // bright until the next play-state message (which never comes while
+  // paused).
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults();
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  window.faint();
+  QTRY_VERIFY(window.fadeFactor() < 0.1);
+
+  ctx.config.set(QStringLiteral("desktopLyric.isLock"), true); // -> updateHoverHidePolling
+  QTest::qWait(400);                  // Let any (buggy) unfade run to completion.
+  QVERIFY(window.fadeFactor() < 0.1); // Still dimmed: the pause-faint survives.
+
+  ctx.config.set(QStringLiteral("desktopLyric.isLock"), false);
+  QTest::qWait(400);
+  QVERIFY(window.fadeFactor() < 0.1); // Still dimmed after the toggle round-trip.
+
+  window.unfaint(); // Sanity: the machinery still restores full brightness.
+  QTRY_VERIFY(window.fadeFactor() > 0.99);
+}
+
+void TestLyricController::pauseFaintSurvivesShowCycle()
+{
+  // The reported bug: paused dimmed lyrics become bright again after a
+  // display restart (re-show). showEvent -> updateHoverHidePolling used to
+  // unfaint unconditionally; the pause-faint must survive the re-show.
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults();
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  // Lock the window so faint()'s hover rule (!isLock && underMouse()) cannot
+  // brighten it when the real desktop cursor happens to be over the default
+  // geometry — on Wayland the compositor ignores move(), so geometry-parking
+  // cannot make this deterministic. The showEvent -> updateHoverHidePolling
+  // path under test is unaffected (hoverHide is off -> inactive branch
+  // regardless of lock).
+  ctx.config.set(QStringLiteral("desktopLyric.isLock"), true);
+
+  window.show(); // showEvent -> updateHoverHidePolling (hover-hide off by default).
+  window.faint();
+  QTRY_VERIFY(window.fadeFactor() < 0.1);
+
+  window.hide();
+  window.show(); // The display restart: showEvent fires updateHoverHidePolling again.
+  QTest::qWait(400);
+  QVERIFY(window.fadeFactor() < 0.1); // Still dimmed.
+}
+
+void TestLyricController::pauseFaintSurvivesHoverPollWhileLocked()
+{
+  // Hover-hide poll path: while hover-hide is active (locked) the 500 ms
+  // cursor poll runs. A cursor-outside tick must clear only the hover source;
+  // a live pause-faint must keep the window dimmed (reference
+  // hide: isHide || isHoverHide).
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults();
+  TranslationManager i18n(ctx.config);
+  TestLyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  ctx.config.set(QStringLiteral("desktopLyric.isLock"), true);
+  ctx.config.set(QStringLiteral("desktopLyric.isHoverHide"), true); // Arms the 500 ms poll.
+
+  // pollHoverHide self-stops while hidden, so the window must be shown for
+  // the cursor check to run at all. Park it far away first: on the offscreen
+  // test platform the cursor stays at (0,0), which can never fall inside that
+  // geometry, so the poll deterministically takes the cursor-outside branch
+  // (show() alone could land the cursor inside the default geometry and pass
+  // pre-fix for the wrong reason).
+  window.show();
+  window.move(-100000, -100000);
+
+  window.faint();
+  QTRY_VERIFY(window.fadeFactor() < 0.1);
+
+  // On the offscreen test platform the cursor is fixed at (0,0), which can
+  // never fall inside the parked geometry; a WM that clamps the parked window
+  // back on-screen would silently disarm the cursor-outside branch below, so
+  // assert the precondition instead of letting discrimination degrade.
+  QVERIFY(!window.frameGeometry().contains(QCursor::pos()));
+
+  // Drive the poll directly: a cursor-outside tick must clear only the hover
+  // source and leave the pause-faint dimmed.
+  window.pollHoverHide();
+  QTest::qWait(400);                  // Let any (buggy) unfade run to completion.
+  QVERIFY(window.fadeFactor() < 0.1); // Poll must NOT brighten the paused window.
+}
+
+void TestLyricController::pauseHideAutoFaintsAtStartup()
+{
+  // Reference parity: usePauseHide.ts watches isPlay with immediate:true and
+  // the store defaults isPlay=false — a freshly loaded window is treated as
+  // paused and faints after 200 ms. This keeps a RESTARTED display dimmed
+  // while the music is paused even before the first set_info/set_status
+  // arrives (or if the host is unreachable).
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults(); // desktopLyric.pauseHide defaults to true.
+  PauseHide pauseHide(ctx.config);
+
+  QSignalSpy faintSpy(&pauseHide, &PauseHide::faintRequested);
+  QTRY_COMPARE(faintSpy.count(), 1); // Fires ~200 ms after construction.
+}
+
+void TestLyricController::pauseHideStartupFaintCancelledByPlay()
+{
+  // The startup faint must be cancelled when playback is reported playing —
+  // a playing window must not dim 200 ms after load (set_info(isPlay=true)
+  // arrives during the delay).
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults();
+  PauseHide pauseHide(ctx.config);
+
+  QSignalSpy faintSpy(&pauseHide, &PauseHide::faintRequested);
+  pauseHide.setPlayState(true); // Play resumed during the startup delay.
+  QTest::qWait(400);            // Past the 200 ms delay.
+  QCOMPARE(faintSpy.count(), 0);
+
+  pauseHide.setPlayState(false); // Now pause: the 200 ms faint must fire.
+  QTRY_COMPARE(faintSpy.count(), 1);
+}
+
+void TestLyricController::pauseHideEnableMidSessionFaintsWhenPaused()
+{
+  // Mid-session symmetry: enabling desktopLyric.pauseHide while playback is
+  // paused must faint after the 200 ms delay — the reference outer watcher
+  // re-applies the current isPlay on every enable. A bare return on enable
+  // would leave the window bright until the next play-state message (which
+  // never comes while paused). DesktopLyricConfig loads defaults in its ctor
+  // and PauseHide reads the key in its ctor, so the disabled state must be
+  // set BEFORE constructing.
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults();
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.pauseHide"), false));
+  PauseHide pauseHide(ctx.config);
+
+  QSignalSpy faintSpy(&pauseHide, &PauseHide::faintRequested);
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.pauseHide"), true));
+  QTRY_VERIFY(faintSpy.count() >= 1); // Fires ~200 ms after enable.
+}
+
+void TestLyricController::pauseHideEnableMidSessionStaysBrightWhenPlaying()
+{
+  // The flip side: enabling pauseHide while playback is reported PLAYING must
+  // not faint. setPlayState(true) is recorded while disabled (the re-enable
+  // must see the current state, not the isPlay=false default), so this guards
+  // the enable branch from fainting on a stale default.
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults();
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.pauseHide"), false));
+  PauseHide pauseHide(ctx.config);
+
+  QSignalSpy faintSpy(&pauseHide, &PauseHide::faintRequested);
+  pauseHide.setPlayState(true); // Recorded while disabled; applies on enable.
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.pauseHide"), true));
+  QTest::qWait(400);              // Past the 200 ms delay.
+  QVERIFY(faintSpy.count() == 0); // Enabling while playing must NOT faint.
 }
 
 QTEST_MAIN(TestLyricController)
