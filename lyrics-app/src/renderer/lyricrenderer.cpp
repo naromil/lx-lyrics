@@ -1207,6 +1207,61 @@ void LyricRenderer::paintVertical(QPainter& p)
   }
 }
 
+QVector<QRectF> LyricRenderer::lineGroupRects()
+{
+  // Mirror of the paint path's layout math (paintHorizontal/paintVertical)
+  // WITHOUT the drawing: the same measure cache key (dirty/transitioning)
+  // keeps the hit-test bands identical to the painted rects, including the
+  // centered-block placeholder layout.
+  QVector<QRectF> rects;
+  rects.reserve(m_lines.size());
+  if (m_lines.isEmpty())
+    return rects;
+
+  if (m_vertical) {
+    const qreal gap = verticalGroupGap(m_lineGap);
+    qreal blockWidth = 0;
+    if (m_lines.size() > 1)
+      blockWidth += gap * (m_lines.size() - 1);
+    for (int i = 0; i < m_lines.size(); ++i) {
+      if (m_lineCache.at(i).dirty || isLineTransitioning(i)) {
+        const VerticalGroupMetrics metrics = measureVerticalGroup(m_lines.at(i), i);
+        m_cachedGroupWidths[i] = metrics.groupWidth;
+        m_cachedGroupHeights[i] = metrics.groupHeight;
+      }
+      blockWidth += m_cachedGroupWidths.at(i);
+    }
+    const qreal xOffset = m_centeredBlock ? qMax<qreal>(0, (width() - blockWidth) / 2.0)
+                                          : qRound(kLyricSpaceRatio * width());
+    // writing-mode: vertical-rl — blocks stack right-to-left, line 0 rightmost.
+    qreal right = xOffset + blockWidth - m_scrollOffset;
+    for (int i = 0; i < m_lines.size(); ++i) {
+      const qreal groupWidth = m_cachedGroupWidths.at(i);
+      rects.append(QRectF(right - groupWidth, 0, groupWidth, m_cachedGroupHeights.at(i)));
+      right -= groupWidth + gap;
+    }
+  } else {
+    const qreal gap = m_lineGap;
+    qreal blockHeight = 0;
+    if (m_lines.size() > 1)
+      blockHeight += m_lineGap * (m_lines.size() - 1);
+    for (int i = 0; i < m_lines.size(); ++i) {
+      if (m_lineCache.at(i).dirty || isLineTransitioning(i))
+        m_cachedGroupHeights[i] = measureLineGroupHeight(i);
+      blockHeight += m_cachedGroupHeights.at(i);
+    }
+    const qreal yOffset = m_centeredBlock ? qMax<qreal>(0, (height() - blockHeight) / 2.0)
+                                          : qRound(kLyricSpaceRatio * height());
+    qreal y = yOffset - m_scrollOffset;
+    for (int i = 0; i < m_lines.size(); ++i) {
+      const qreal h = m_cachedGroupHeights.at(i);
+      rects.append(QRectF(0, y, width(), h));
+      y += h + gap;
+    }
+  }
+  return rects;
+}
+
 void LyricRenderer::invalidateLineCaches()
 {
   // Every line re-rasterizes and re-measures on the next paint (resize keeps
@@ -1703,10 +1758,14 @@ void LyricRenderer::wheelEvent(QWheelEvent* event)
   const int deltaY = event->angleDelta().y();
   if (deltaY != 0) {
     suspendAutoScroll();
-    // Horizontal: wheel down scrolls forward (offset grows, matching the
-    // reference scrollTop += deltaY). Vertical-rl scrolls left instead, so
-    // the sign is flipped (reference scrollLeft -= deltaY).
-    const qreal delta = m_vertical ? -qreal(deltaY) : qreal(deltaY);
+    // Qt's angleDelta().y() is POSITIVE for wheel up — the opposite of the
+    // browser deltaY the reference uses (deltaY > 0 = wheel down, and
+    // scrollTop += deltaY advances to later lyrics). The negation maps wheel
+    // DOWN onto a growing offset in BOTH layouts: horizontal scrolls forward
+    // exactly like the reference, and vertical-rl keeps its natural reading
+    // direction (wheel down -> later columns, the block moves leftward) —
+    // the reference's vertical sign is a quirk we deliberately do not copy.
+    const qreal delta = -qreal(deltaY);
     m_scrollOffset = qBound<qreal>(0, m_scrollOffset + delta, maxScrollOffset());
     update();
     rearmResumeTimer();
@@ -1720,6 +1779,49 @@ void LyricRenderer::mousePressEvent(QMouseEvent* event)
     QWidget::mousePressEvent(event);
     return;
   }
+
+  // Static placeholder (centeredBlock): maxScrollOffset() is 0, so a drag
+  // could never scroll — starting drag mode would only flip the cursor to
+  // ClosedHand, emit userInteractingChanged(true) and suspend auto-scroll for
+  // 3 s for nothing. Fall through to the window drag (base class) like any
+  // other empty-space press.
+  if (m_centeredBlock) {
+    QWidget::mousePressEvent(event);
+    return;
+  }
+
+  // Reference handleLyricDown: a press on a LYRIC line ('.font-lrc' /
+  // '.extended') starts the scroll drag; a press on background/empty space
+  // moves the WINDOW instead (winEvent.isMsDown -> setWindowBounds). The
+  // group bands come from the same layout math as the paint path, so the
+  // hit-test agrees with what is painted (halo tolerance included).
+  // DELIBERATE DEVIATION from the reference: the drag-scroll band covers the
+  // FULL row (reference restricts the drag to the painted text spans) so the
+  // scroll target is larger; empty space between rows still falls through to
+  // the window drag.
+  const QPointF pressPos = event->position();
+  const qreal tolerance = kCacheHaloPadPx / 2.0;
+  const QVector<QRectF> groupRects = lineGroupRects();
+  bool onLyric = false;
+  for (const QRectF& rect : groupRects) {
+    // Horizontal: the group's vertical band spans the full width; vertical:
+    // its horizontal band spans the full height.
+    const QRectF band =
+      m_vertical ? QRectF(rect.left() - tolerance, 0, rect.width() + 2 * tolerance, height())
+                 : QRectF(0, rect.top() - tolerance, width(), rect.height() + 2 * tolerance);
+    if (band.contains(pressPos)) {
+      onLyric = true;
+      break;
+    }
+  }
+  if (!onLyric) {
+    // Background press: do NOT consume — the default ignores the event, Qt
+    // propagates it to the parent, and LyricWindow::mousePressEvent's
+    // beginWindowDrag moves the window (reference window-drag parity).
+    QWidget::mousePressEvent(event);
+    return;
+  }
+
   m_dragging = true;
   m_dragStartPos = event->position().toPoint();
   m_dragStartOffset = m_scrollOffset;

@@ -196,6 +196,14 @@ void WsClient::sendGetAnalyserData()
   sendRequest(QStringLiteral("get_analyser_data_array"));
 }
 
+void WsClient::sendCloseRequested()
+{
+  // §4 close_requested: user-initiated close of the lyric window. The host
+  // stops its session without respawning; dropped when disconnected (the
+  // host may already be gone — that is not an error).
+  sendRequest(QStringLiteral("close_requested"));
+}
+
 void WsClient::openSocket()
 {
   if (!m_url.isValid() || m_url.scheme() != QStringLiteral("ws")) {
@@ -294,6 +302,13 @@ void WsClient::dispatchIncomingText(const QString& frame)
     emit stopReceived();
   } else if (action == QStringLiteral("open_settings")) {
     emit openSettingsRequested();
+  } else if (action == QStringLiteral("set_fullscreen")) {
+    bool isFullscreen = false;
+    if (!parseBoolField(obj, QStringLiteral("isFullscreen"), &isFullscreen, &error)) {
+      failProtocol(error);
+      return;
+    }
+    emit fullscreenReceived(isFullscreen);
   } else {
     failProtocol(QStringLiteral("unknown action '%1'").arg(action));
   }

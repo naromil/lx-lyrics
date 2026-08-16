@@ -19,6 +19,7 @@
 #include <QObject>
 
 #include <memory>
+#include <optional>
 
 class LxLyricsSettingsPage;
 class QAction;
@@ -49,10 +50,45 @@ private:
   void startDesktopLyrics();
   void stopDesktopLyrics();
   void onClientDisconnected();
+  /// The app reported the user intentionally closed the lyric window
+  /// (HostServer::closeRequested, protocol.md §4): end the desktop-lyrics
+  /// session like a toggle-off so the disconnect never enters the
+  /// crash-recovery respawn path. Unchecks the toggle IMMEDIATELY
+  /// (signal-blocked, so no synchronous teardown) and defers the actual
+  /// server teardown one event-loop turn — this slot runs inside the
+  /// emitting HostServer's message handler, which must survive its own
+  /// signal. Idempotent; only ever invoked with a connected client.
+  void onCloseRequested();
+  /// A connected client was closed for a protocol violation
+  /// (HostServer::protocolErrorClosed): clear stale spawner bookkeeping
+  /// only — no respawn, no toggle change, server keeps listening.
+  void onProtocolErrorClosed();
   /// Push the plugin-side settings (app path / auto-spawn) into the spawner
   /// before every launch; called again on setting change via subscribe().
   void applySpawnerSettings();
   [[nodiscard]] QUrl serverWsUrl() const;
+  /// Recomputes whether any Fooyin window is fullscreen and pushes it to the
+  /// app as set_fullscreen (protocol.md §5) when the state changed, or
+  /// whenever `force` is set (a freshly connected client must receive the
+  /// current state even if it has not changed).
+  void updateFullscreen(bool force = false);
+  /// Wires windowStateChanged on EVERY window in QGuiApplication::allWindows()
+  /// (Qt::UniqueConnection + this as context: destroyed windows auto-clean,
+  /// repeated connects dedupe), plus a visibleChanged re-scan hook and a
+  /// destroyed re-check, then pushes the current fullscreen state. Called at
+  /// startup and from focusWindowChanged; see GuiPlugin::initialise.
+  void watchAllWindows();
+  // The three slots below are connected from watchAllWindows() as
+  // member-function pointers (not lambdas): Qt::UniqueConnection with a
+  // functor slot asserts in Debug builds (Qt 6.11 qobject.h).
+  /// QWindow::windowStateChanged slot: re-push the fullscreen state.
+  void onWindowStateChanged();
+  /// QWindow::visibleChanged slot: a newly visible window may not have been
+  /// wired yet, so re-scan.
+  void onWindowVisibleChanged();
+  /// QObject::destroyed slot: the removed window may have been the fullscreen
+  /// one, so re-check.
+  void onWindowDestroyed();
 
   // Owned by later tasks (PlayerBridge, lyric sources, settings page).
   // Stored at initialise time; intentionally minimal now.
@@ -69,4 +105,10 @@ private:
   std::unique_ptr<PlayerBridge> m_playerBridge;
   std::unique_ptr<SpectrumSource> m_spectrumSource;
   std::unique_ptr<AppSpawner> m_appSpawner;
+
+  // Fullscreen watcher (set_fullscreen): the last fullscreen state pushed to
+  // the app; only a CHANGE is reported (except on client connect, where the
+  // current state is forced). The per-window observation lives in
+  // watchAllWindows(), driven from GuiPlugin::initialise.
+  std::optional<bool> m_lastFullscreenSent;
 };

@@ -40,15 +40,18 @@ class TranslationManager;
 // animates the content fade out (300 ms) and then quits the application (the
 // lx-music plugin would respawn the app, which does not exist here).
 //
-// Hover reveal (reference #main:hover .control-bar): the bar is drawn at
-// opacity 0 and fades in only while the pointer is over the lyric window.
-// LyricWindow drives this via setHovered() from its enter/leave events; the
-// bar animates its own QGraphicsOpacityEffect factor 0<->m_revealMaxOpacity
-// (default 1.0 = undimmed; LyricWindow pushes the reference body dimming
-// 0.8 — the window owns that value, since its container effect now applies
-// only the fade; 300 ms in, 500 ms out per reference animate.less). The lock
-// visibility gate is unaffected — a locked bar is simply hidden, hover or
-// not.
+// Reveal (DELIBERATE DEVIATION from lx-music's hover-only fade): the bar is
+// drawn at opacity 0 and fades in over 300 ms to m_revealMaxOpacity when it
+// first becomes visible; while the window is unlocked it stays at that
+// ceiling — the controls are persistent and discoverable (product
+// requirement), so LyricWindow no longer drives setHovered() from
+// enter/leave events and the bar itself seeds hovered on every show instead
+// of sampling the pointer. The lock visibility gate is unaffected — a locked
+// bar is simply hidden, hover or not. m_revealMaxOpacity defaults to 1.0
+// undimmed; LyricWindow pushes the reference body dimming 0.8 (the window
+// owns that value, since its container effect now applies only the fade).
+// The 300 ms fade-in / 500 ms fade-out durations mirror reference
+// animate.less.
 class ControlBar : public QWidget {
   Q_OBJECT
 
@@ -56,10 +59,10 @@ public:
   explicit ControlBar(DesktopLyricConfig& config, TranslationManager& i18n,
                       QWidget* parent = nullptr);
 
-  // Hover reveal: animates the bar's opacity factor to its reveal ceiling
-  // m_revealMaxOpacity (hovered) or 0 (not). Safe to call while hidden/
-  // locked — the visibility gate still governs presence, and the next show
-  // re-seeds the factor from the pointer position.
+  // Reveal: animates the bar's opacity factor to its reveal ceiling
+  // m_revealMaxOpacity (hovered) or 0 (not). The unlocked bar is kept
+  // persistently hovered (deliberate deviation), so callers other than the
+  // bar itself (updateVisibility/showEvent) rarely need to touch this.
   void setHovered(bool hovered);
 
   // Sets the hover-reveal ceiling (clamped 0..1). LyricWindow pushes its
@@ -118,7 +121,6 @@ private:
   void onSettingChanged(const QString& key, const QVariant& value);
   void changeFontSize(int delta);
   void changeOpacity(int delta);
-  bool isPointerInsideWindow() const;
 
   DesktopLyricConfig& m_config;
   TranslationManager& m_i18n;

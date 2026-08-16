@@ -6,7 +6,6 @@
  */
 #include "renderer/controlbar.h"
 
-#include <QCursor>
 #include <QGraphicsOpacityEffect>
 #include <QHBoxLayout>
 #include <QPainter>
@@ -120,13 +119,17 @@ ControlBar::ControlBar(DesktopLyricConfig& config, TranslationManager& i18n, QWi
   setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
   setAttribute(Qt::WA_TranslucentBackground); // the rounded-top strip shows through
 
-  // Hover reveal (reference .control-bar opacity 0 / #main:hover opacity 1):
-  // a graphics effect fades the whole strip — background and buttons — as
-  // one unit, exactly like the CSS opacity transition. The reveal ceiling is
-  // m_revealMaxOpacity (default 1.0 undimmed; LyricWindow pushes its body
-  // dimming kBodyOpacity into the bar, since the window's container effect
-  // now applies only the fade). The window's container fade (LyricWindow)
-  // still compounds with this multiplier.
+  // Reveal animation (reference .control-bar opacity 0 / #main:hover opacity
+  // 1): a graphics effect fades the whole strip — background and buttons — as
+  // one unit, exactly like the CSS opacity transition. DELIBERATE DEVIATION
+  // from the reference hover-fade: the unlocked bar is kept persistently
+  // visible (product requirement), so updateVisibility() seeds setHovered(true)
+  // and the factor fades in to m_revealMaxOpacity once and stays there; the
+  // pointer no longer drives it. The reveal ceiling is m_revealMaxOpacity
+  // (default 1.0 undimmed; LyricWindow pushes its body dimming kBodyOpacity
+  // into the bar, since the window's container effect now applies only the
+  // fade). The window's container fade (LyricWindow) still compounds with
+  // this multiplier.
   m_hoverEffect = new QGraphicsOpacityEffect(this);
   m_hoverEffect->setOpacity(0.0);
   setGraphicsEffect(m_hoverEffect);
@@ -263,11 +266,11 @@ void ControlBar::showEvent(QShowEvent* event)
   QWidget::showEvent(event);
   raise(); // Stay above future siblings (the lyric renderer) inside the container.
 
-  // The window's enter/leave events only fire on boundary crossings; a
-  // lock->unlock flip while the pointer sits inside emits no new enter, so
-  // seed the hover factor from the pointer position (reference #main:hover
-  // is a position-based CSS evaluation too).
-  setHovered(isPointerInsideWindow());
+  // Seed the hover factor unconditionally: the unlocked bar is persistently
+  // visible (DELIBERATE DEVIATION from lx-music's pointer-driven hover-fade),
+  // so a show always animates the fade-in to m_revealMaxOpacity — never from
+  // the pointer position. setHovered's at-target guard makes repeats cheap.
+  setHovered(true);
 }
 
 void ControlBar::setRevealMaxOpacity(qreal max)
@@ -292,14 +295,6 @@ void ControlBar::setHovered(bool hovered)
   m_hoverAnim->setStartValue(m_hoverFactor);
   m_hoverAnim->setEndValue(target);
   m_hoverAnim->start();
-}
-
-bool ControlBar::isPointerInsideWindow() const
-{
-  const QWidget* top = window();
-  if (!top || !top->isVisible())
-    return false;
-  return top->frameGeometry().contains(QCursor::pos());
 }
 
 void ControlBar::syncCheckableStates()
@@ -329,7 +324,16 @@ void ControlBar::retranslate()
 
 void ControlBar::updateVisibility()
 {
-  setVisible(!m_config.isLock());
+  const bool unlocked = !m_config.isLock();
+  setVisible(unlocked);
+  if (unlocked) {
+    // DELIBERATE DEVIATION from lx-music's hover-only reveal: the unlocked
+    // controls stay persistently visible/discoverable (product requirement).
+    // Seed the hover factor so the 300 ms fade-in reaches m_revealMaxOpacity;
+    // setHovered's at-target guard keeps repeats (lock flips, re-shows) from
+    // restarting the animation. A locked bar stays hidden, hover or not.
+    setHovered(true);
+  }
 }
 
 void ControlBar::onSettingChanged(const QString& key, const QVariant&)

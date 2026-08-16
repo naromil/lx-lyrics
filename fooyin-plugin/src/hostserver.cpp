@@ -94,6 +94,11 @@ void HostServer::sendSetPlaybackRate(double rate)
   sendJson(QStringLiteral("set_playbackRate"), {{QStringLiteral("rate"), rate}});
 }
 
+void HostServer::sendSetFullscreen(bool isFullscreen)
+{
+  sendJson(QStringLiteral("set_fullscreen"), {{QStringLiteral("isFullscreen"), isFullscreen}});
+}
+
 void HostServer::sendSetPlay(qint64 time)
 {
   sendJson(QStringLiteral("set_play"), {{QStringLiteral("time"), time}});
@@ -188,6 +193,11 @@ void HostServer::onTextMessageReceived(const QString& message)
     emit requestStatus();
   } else if (actionName == QLatin1String("get_analyser_data_array")) {
     emit requestAnalyserData();
+  } else if (actionName == QLatin1String("close_requested")) {
+    // protocol.md §4: the user intentionally closed the lyric window. The
+    // plugin ends its session without respawning (the following disconnect
+    // must not enter the crash-recovery path). No payload to validate.
+    emit closeRequested();
   } else {
     closeForProtocolError(QStringLiteral("unknown action: %1").arg(actionName));
   }
@@ -231,6 +241,14 @@ void HostServer::closeForProtocolError(const QString& reason)
   m_client = nullptr;
   client->close(protocolErrorCloseCode(), reason);
   client->deleteLater();
+
+  // Dedicated signal, deliberately NOT clientDisconnected: the normal
+  // disconnect event is a session-crash/reconnect trigger for the plugin,
+  // while a protocol violation is a malformed-client event — the plugin must
+  // reset bookkeeping without scheduling a respawn. Clearing m_client first
+  // (above) keeps the socket's own disconnected signal from reaching
+  // onClientDisconnected, exactly as before.
+  emit protocolErrorClosed();
 }
 
 void HostServer::sendJson(const QString& action, const QJsonObject& fields)

@@ -19,8 +19,11 @@
 
 #include <QAction>
 #include <QDebug>
+#include <QGuiApplication>
+#include <QPointer>
 #include <QTimer>
 #include <QUrl>
+#include <QWindow>
 
 void LxLyricsPlugin::initialise(const Fooyin::CorePluginContext& context)
 {
@@ -95,6 +98,38 @@ void LxLyricsPlugin::initialise(const Fooyin::GuiPluginContext& context)
     });
   }
 
+  // Fullscreen watcher (protocol.md §5 set_fullscreen): the lyric app hides
+  // behind Fooyin's MAIN window going fullscreen (reference
+  // main_window_fullscreen event). The plugin lives INSIDE Fooyin's process,
+  // so QGuiApplication::allWindows() reliably lists Fooyin's own windows.
+  // EVERY window's windowStateChanged is observed, not just the focused
+  // window's: a fullscreen window that leaves fullscreen while ANOTHER
+  // window holds focus would otherwise never fire — the old focus-only
+  // wiring missed that and the app stayed hidden until the next focus
+  // change. Qt 6.11 has no QGuiApplication::windowAdded/windowRemoved, so
+  // discovery is signal-driven: watchAllWindows() runs at startup, on every
+  // focus move, and whenever any window's visibility changes; a destroyed
+  // window re-checks whether the fullscreen window is gone (its
+  // windowStateChanged connection auto-cleans via the context object).
+  // Qt::UniqueConnection dedupes the repeated connects.
+  //
+  // Residual gap: a window created AND shown entirely between two scans is
+  // never wired (its visibleChanged(true) fired before the connect), so if
+  // it then enters fullscreen without taking focus, the lyric app stays
+  // visible until the next re-scan trigger. No focus-based re-scan can
+  // close this — an unwired window emits no focus signal by definition —
+  // and practical impact is low: fullscreen is normally a focused-window
+  // action (which re-scans first), and focusWindowChanged plus the forced
+  // state send on client connect self-heal.
+  if (auto* guiApp = qobject_cast<QGuiApplication*>(QCoreApplication::instance())) {
+    watchAllWindows(); // Seeds the tracked state before any client connects.
+    // Belt-and-braces: a focus move re-scans (a new focused window gets
+    // wired) and re-checks the current state.
+    connect(guiApp, &QGuiApplication::focusWindowChanged, this, [this](QWindow*) {
+      watchAllWindows();
+    });
+  }
+
   qInfo() << "[LX Lyrics] GuiPlugin initialised; actionManager stored; 'Desktop Lyrics' toggle "
              "added to View menu";
 }
@@ -133,9 +168,23 @@ void LxLyricsPlugin::startDesktopLyrics()
     m_hostServer = std::make_unique<HostServer>();
     connect(m_hostServer.get(), &HostServer::clientConnected, this, [this] {
       qInfo() << "[LX Lyrics] lyrics app connected";
+      // Force the current fullscreen state on connect: a freshly spawned app
+      // must start correctly hidden when Fooyin is already fullscreen (the
+      // changed-only watcher would otherwise never send anything).
+      updateFullscreen(true);
     });
     connect(m_hostServer.get(), &HostServer::clientDisconnected, this,
             &LxLyricsPlugin::onClientDisconnected);
+    // A protocol-error close is NOT a crash: clear stale spawner
+    // bookkeeping only (the app exits on the socket close via
+    // --exit-on-disconnect), keep the server listening for a corrected
+    // client, and never schedule the respawn loop.
+    connect(m_hostServer.get(), &HostServer::protocolErrorClosed, this,
+            &LxLyricsPlugin::onProtocolErrorClosed);
+    // The user closed the lyric window in the app: end the session without
+    // respawning (the disconnect that follows must not look like a crash).
+    connect(m_hostServer.get(), &HostServer::closeRequested, this,
+            &LxLyricsPlugin::onCloseRequested);
 
     m_playerBridge = std::make_unique<PlayerBridge>(m_playerController, m_hostServer.get(), this);
     // Lyric acquisition: raw embedded tags / local .lrc files only. The
@@ -219,6 +268,55 @@ void LxLyricsPlugin::stopDesktopLyrics()
   }
 }
 
+void LxLyricsPlugin::onCloseRequested()
+{
+  // protocol.md §4: the user intentionally closed the lyric window. End the
+  // desktop-lyrics session like a View-menu toggle-off — the action must read
+  // unchecked IMMEDIATELY so the disconnect that follows early-exits
+  // onClientDisconnected (its toggle check) and can never enter the
+  // crash-recovery respawn path. The teardown itself is DEFERRED one event
+  // loop turn: this slot runs synchronously inside the emitting
+  // HostServer::onTextMessageReceived, and the normal toggle path would
+  // destroy m_hostServer — the signal's own sender — mid-emission.
+  // QSignalBlocker suppresses the synchronous toggleDesktopLyrics teardown;
+  // the queued callback below performs it once the emission has fully
+  // returned. Idempotent: a duplicate frame schedules a second callback that
+  // early-exits on the identity guard (the server is already gone).
+  if (m_toggleAction != nullptr) {
+    const QSignalBlocker blocker(m_toggleAction);
+    m_toggleAction->setChecked(false);
+  }
+
+  // Capture the emitting server: the queued teardown must only destroy the
+  // server that actually closed. If the user manually toggled the action
+  // back ON while we waited (reusing the still-alive server) or the
+  // lifecycle replaced the server (toggle off/on), the session is no longer
+  // the one that closed and must be left alone.
+  QPointer<HostServer> closingHost = m_hostServer.get();
+  QTimer::singleShot(0, this, [this, closingHost] {
+    if (m_toggleAction != nullptr && m_toggleAction->isChecked())
+      return; // The user re-enabled desktop lyrics while we waited.
+    if (m_hostServer.get() != closingHost)
+      return; // Replaced (or already torn down): the new session owns its lifecycle.
+    stopDesktopLyrics();
+  });
+}
+
+void LxLyricsPlugin::onProtocolErrorClosed()
+{
+  // A connected client was closed for a protocol violation (hostserver.cpp):
+  // this is a malformed-client event, NOT a crash. Keep the server listening
+  // so a corrected client may reconnect; only clear the spawner's stale
+  // running flag — the detached app exits on its own when the socket closes
+  // (--exit-on-disconnect) and must not block a later manual spawn with
+  // "already running". No respawn loop, no toggle change. Null-safe and
+  // idempotent.
+  qWarning() << "[LX Lyrics] client closed for protocol error; keeping server listening";
+  if (m_appSpawner != nullptr) {
+    m_appSpawner->stop();
+  }
+}
+
 void LxLyricsPlugin::onClientDisconnected()
 {
   if (m_toggleAction == nullptr || !m_toggleAction->isChecked()) {
@@ -230,15 +328,28 @@ void LxLyricsPlugin::onClientDisconnected()
 
   // protocol.md §2: the host may respawn the app after a disconnect. The
   // server keeps listening on the same port, so the URL is unchanged.
+  // Guard against stale servers (task D): the user may toggle off/on during
+  // the 1500 ms delay, replacing m_hostServer with a NEW server on a NEW
+  // port; the old timer must never spawn against it. Capture the emitting
+  // instance and the URL at schedule time, and require the current server to
+  // still BE that instance before acting.
+  QPointer<HostServer> disconnectedHost = m_hostServer.get();
+  const QUrl url = serverWsUrl();
+
   qInfo() << "[LX Lyrics] app disconnected; respawning in 1500 ms";
-  QTimer::singleShot(1500, this, [this] {
+  QTimer::singleShot(1500, this, [this, disconnectedHost, url] {
+    if (m_hostServer.get() != disconnectedHost) {
+      // The server was replaced while waiting (toggle off/on): drop the
+      // stale respawn — the new session owns its own lifecycle.
+      return;
+    }
     if (!m_toggleAction->isChecked() || m_hostServer == nullptr || !m_hostServer->isListening()) {
       return;
     }
     m_appSpawner->stop();
     // Respawn is a manual path too: it only fires while the toggle is
     // checked, so the AutoSpawn key must not block it.
-    m_appSpawner->spawn(serverWsUrl(), true);
+    m_appSpawner->spawn(url, true);
   });
 }
 
@@ -258,4 +369,63 @@ void LxLyricsPlugin::applySpawnerSettings()
   }
   m_appSpawner->setAppPath(m_settingsManager->value(LxLyrics::appPathKey).toString());
   m_appSpawner->setAutoSpawn(m_settingsManager->value(LxLyrics::autoSpawnKey).toBool());
+}
+
+void LxLyricsPlugin::watchAllWindows()
+{
+  const QList<QWindow*> windows = QGuiApplication::allWindows();
+  for (QWindow* window : windows) {
+    // UniqueConnection + this as the connection context: repeated connects
+    // dedupe, and destroyed windows auto-clean their connections. The slots
+    // are member functions, not lambdas: Qt::UniqueConnection with a functor
+    // slot asserts in Debug builds (Qt 6.11 qobject.h).
+    connect(window, &QWindow::windowStateChanged, this, &LxLyricsPlugin::onWindowStateChanged,
+            Qt::UniqueConnection);
+    connect(window, &QWindow::visibleChanged, this, &LxLyricsPlugin::onWindowVisibleChanged,
+            Qt::UniqueConnection);
+    connect(window, &QObject::destroyed, this, &LxLyricsPlugin::onWindowDestroyed,
+            Qt::UniqueConnection);
+  }
+  updateFullscreen();
+}
+
+void LxLyricsPlugin::onWindowStateChanged()
+{
+  updateFullscreen();
+}
+
+void LxLyricsPlugin::onWindowVisibleChanged()
+{
+  watchAllWindows(); // A newly visible window may not have been wired yet.
+}
+
+void LxLyricsPlugin::onWindowDestroyed()
+{
+  updateFullscreen(); // The removed window may have been the fullscreen one.
+}
+
+void LxLyricsPlugin::updateFullscreen(bool force)
+{
+  // Fooyin's own windows (the plugin lives in its process): any window in
+  // the fullscreen state counts — the lyric app must hide behind the main
+  // window's fullscreen (protocol.md §5 set_fullscreen, reference
+  // main_window_fullscreen event).
+  bool isFullscreen = false;
+  const QList<QWindow*> windows = QGuiApplication::allWindows();
+  for (QWindow* window : windows) {
+    // windowStates() carries the QFlags (QWindow::windowState() alone
+    // returns a single Qt::WindowState in this Qt version).
+    if (window->windowStates().testFlag(Qt::WindowFullScreen)) {
+      isFullscreen = true;
+      break;
+    }
+  }
+
+  if (!force && m_lastFullscreenSent.has_value() && m_lastFullscreenSent.value() == isFullscreen) {
+    return; // Unchanged state: nothing to report.
+  }
+  m_lastFullscreenSent = isFullscreen;
+  if (m_hostServer != nullptr) {
+    m_hostServer->sendSetFullscreen(isFullscreen);
+  }
 }

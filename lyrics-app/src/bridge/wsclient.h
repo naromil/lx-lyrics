@@ -79,6 +79,11 @@ public:
   void sendGetInfo();
   void sendGetStatus();
   void sendGetAnalyserData();
+  // The user intentionally closed the desktop lyric window (control-bar X or
+  // WM close); {"v":1,"action":"close_requested"}, no payload (§4). The host
+  // ends its display session WITHOUT respawning the app. Harmless when
+  // disconnected (dropped like every other request).
+  void sendCloseRequested();
 
 signals:
   void connected();
@@ -95,6 +100,9 @@ signals:
   // Host requested the app to open its configuration dialog
   // ({"v":1,"action":"open_settings"}); no payload.
   void openSettingsRequested();
+  // The host's main window entered/left fullscreen
+  // ({"v":1,"action":"set_fullscreen","isFullscreen":bool}).
+  void fullscreenReceived(bool isFullscreen);
   // Exactly 128 bytes of log-scaled spectrum magnitudes.
   void analyserDataReceived(const QByteArray& data);
 

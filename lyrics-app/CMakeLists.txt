@@ -106,13 +106,17 @@ target_link_libraries(lyrics-app-lyricplayer-tests PRIVATE
 add_test(NAME lyricplayer COMMAND lyrics-app-lyricplayer-tests)
 
 # Tests for the WebSocket bridge protocol round-trip (docs/protocol.md).
+# The plugin's HostServer is compiled in too: it has zero Fooyin dependencies
+# and is the OTHER side of the wire contract, so its frames are asserted here.
 add_executable(lyrics-app-protocol-tests
     tests/tst_protocol.cpp
     src/bridge/wsclient.cpp
     src/bridge/wsclient.h
+    ../fooyin-plugin/src/hostserver.cpp
+    ../fooyin-plugin/src/hostserver.h
 )
 
-target_include_directories(lyrics-app-protocol-tests PRIVATE src/)
+target_include_directories(lyrics-app-protocol-tests PRIVATE src/ ../fooyin-plugin/src)
 
 target_link_libraries(lyrics-app-protocol-tests PRIVATE
     Qt6::Test

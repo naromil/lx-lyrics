@@ -179,6 +179,19 @@ protected:
   void mouseMoveEvent(QMouseEvent* event) override;
   void mouseReleaseEvent(QMouseEvent* event) override;
 
+  // Painted group rects of the current layout, computed with the SAME
+  // measure cache as the paint path (dirty/transitioning lines re-measure,
+  // settled lines reuse the cached extents) so a press hit-test agrees with
+  // what is painted. Non-const: like paintEvent, it refreshes the cache.
+  // Protected (not private) so the hit-test tests can compute the bands from
+  // the same layout math via an ExposedRenderer subclass.
+  QVector<QRectF> lineGroupRects();
+
+  // Test hook: whether a scroll drag is active (a press landed on a lyric
+  // band and has not been released). Protected and re-exposed by the
+  // ExposedRenderer test subclass.
+  bool isDragging() const { return m_dragging; }
+
 private:
   void drawTextWithStroke(QPainter& p, const QString& text, const QRectF& rect, const QFont& font,
                           const QColor& fill, const QColor& stroke, StrokeStyle style,

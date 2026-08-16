@@ -296,6 +296,14 @@ LyricWindow::LyricWindow(DesktopLyricConfig& config, TranslationManager& i18n)
   connect(m_controlBar, &ControlBar::settingsRequested, this, &LyricWindow::openSettingsDialog);
 
   applyTransparentForMouseEvents();
+
+  // Apply the host-visible conditions at startup: the config is loaded before
+  // the window exists, so desktopLyric.enable=false starts the app with the
+  // window hidden instead of flashing it once. main.cpp's host path calls
+  // this same method INSTEAD of show(), so the hidden state set here survives
+  // startup (show() would have defeated it); only the --demo path shows
+  // unconditionally.
+  updateHiddenByHostConditions();
 }
 
 void LyricWindow::openSettingsDialog()
@@ -316,11 +324,9 @@ void LyricWindow::openSettingsDialog()
   m_settingsDialog->setWindowState(m_settingsDialog->windowState() & ~Qt::WindowMinimized);
 
   if (alreadyVisible) {
-    // The dialog can exist in a hidden state (e.g. a parent window-flag
-    // flip hid it with the window); re-show it before raising, or the
-    // settings stay unreachable until restart.
-    if (!m_settingsDialog->isVisible())
-      m_settingsDialog->show();
+    // The dialog is visible here because the !alreadyVisible guard guarantees
+    // the flag flip cannot have run on a visible dialog (changing window flags
+    // on a visible widget hides it). Only the raise/activate path remains.
     m_settingsDialog->raise();
     m_settingsDialog->activateWindow();
     return;
@@ -386,6 +392,10 @@ void LyricWindow::animateClose()
   if (m_closing)
     return;
   m_closing = true;
+  // The control-bar X path: report the user-initiated close once so the host
+  // (main.cpp wiring) can end its session without respawning the app (§4
+  // close_requested).
+  reportCloseInitiated();
   // The reference closes instantly (no animation); this reuses the
   // reference's own content-fade idiom (#container transition: opacity .3s
   // ease — kFadeAnimationMs OutCubic below) as a deliberate polish: the
@@ -523,27 +533,27 @@ void LyricWindow::enterEvent(QEnterEvent* event)
 {
   // Reference #container.hide:not(.lock):hover — hovering the fainted window
   // while unlocked restores full content opacity; leaving fades it back.
+  // NOTE: this window no longer drives the control bar's reveal from
+  // enter/leave events — the unlocked bar is persistently visible (deliberate
+  // deviation from lx-music's hover-fade, see ControlBar), so a leave must
+  // not hide it.
   if (m_shouldBeFaint && !m_config.isLock()) {
     m_hoverOverride = true;
     animateFadeTo(1.0);
   }
-  // Task F: hovering the window reveals the control bar (reference
-  // #main:hover .control-bar). Fires on boundary crossing only, so the bar
-  // never flickers while its own buttons are hovered (a child of this
-  // window).
-  m_controlBar->setHovered(true);
   QWidget::enterEvent(event);
 }
 
 void LyricWindow::leaveEvent(QEvent* event)
 {
   // Only fade back if this window was brightened by hover; a plain leave
-  // while playing (m_shouldBeFaint false) must not dim the window.
+  // while playing (m_shouldBeFaint false) must not dim the window. The
+  // control bar is untouched: its persistence is governed by the lock state
+  // alone (deliberate deviation, see ControlBar).
   if (m_hoverOverride) {
     m_hoverOverride = false;
     animateFadeTo(kFaintFactor);
   }
-  m_controlBar->setHovered(false);
   QWidget::leaveEvent(event);
 }
 
@@ -563,6 +573,11 @@ void LyricWindow::showEvent(QShowEvent* event)
             << "config x/y:" << m_config.get(QStringLiteral("desktopLyric.x"))
             << m_config.get(QStringLiteral("desktopLyric.y"));
   }
+  // Seed the control bar hovered unconditionally — never from the pointer
+  // position: the unlocked bar is persistently visible (DELIBERATE
+  // DEVIATION from lx-music's hover-fade, product requirement), so every
+  // window show animates the 300 ms fade-in to the reveal ceiling.
+  m_controlBar->setHovered(true);
   updateAlwaysOnTopLoop();
   updateHoverHidePolling(); // (Re)start the hover-hide cursor poll on show.
 }
@@ -585,7 +600,19 @@ void LyricWindow::closeEvent(QCloseEvent* event)
   // quit button) before teardown; the quit-boundary save in the constructor
   // covers event-loop exits that never deliver this event. Idempotent.
   saveBounds();
+  // The WM close / Alt+F4 path: report the user-initiated close once (§4
+  // close_requested). If the animated close already reported it (m_closing),
+  // the once-only guard keeps the host from receiving a second frame.
+  reportCloseInitiated();
   QWidget::closeEvent(event);
+}
+
+void LyricWindow::reportCloseInitiated()
+{
+  if (m_closeInitiatedReported)
+    return; // Animated close + WM close in one session: report exactly once.
+  m_closeInitiatedReported = true;
+  emit closeInitiated();
 }
 
 void LyricWindow::mousePressEvent(QMouseEvent* event)
@@ -690,6 +717,15 @@ void LyricWindow::applySetting(const QString& key, const QVariant& value)
   } else if (key == QStringLiteral("desktopLyric.isAlwaysOnTop")) {
     setWindowFlagKeepingVisible(Qt::WindowStaysOnTopHint, value.toBool());
     updateAlwaysOnTopLoop();
+  } else if (key == QStringLiteral("desktopLyric.isAlwaysOnTopLoop")) {
+    // Toggling the loop live starts/stops the 500 ms re-assert timer.
+    updateAlwaysOnTopLoop();
+  } else if (key == QStringLiteral("desktopLyric.enable") ||
+             key == QStringLiteral("desktopLyric.fullscreenHide")) {
+    // Live hide/show: the enable checkbox and the fullscreen-hide toggle
+    // both re-run the host-visible condition check (reference updated_config
+    // -> closeWindow/createWindow).
+    updateHiddenByHostConditions();
   } else if (key == QStringLiteral("desktopLyric.isShowTaskbar")) {
     setWindowFlagKeepingVisible(Qt::Tool, value.toBool());
   } else if (key == QStringLiteral("desktopLyric.isLockScreen")) {
@@ -799,10 +835,46 @@ void LyricWindow::applyTransparentForMouseEvents()
 
 void LyricWindow::updateAlwaysOnTopLoop()
 {
-  if (m_config.isAlwaysOnTop())
+  // The loop only re-asserts while BOTH the always-on-top flag and the loop
+  // toggle are on (reference isAlwaysOnTopLoop): turning the loop off stops
+  // the 500 ms re-raise tick even when the window stays on top.
+  if (m_config.isAlwaysOnTop() && m_config.isAlwaysOnTopLoop())
     m_alwaysOnTopTimer->start();
   else
     m_alwaysOnTopTimer->stop();
+}
+
+void LyricWindow::setHostFullscreen(bool isFullscreen)
+{
+  if (m_hostFullscreen == isFullscreen)
+    return;
+  m_hostFullscreen = isFullscreen;
+  updateHiddenByHostConditions();
+}
+
+void LyricWindow::updateHiddenByHostConditions()
+{
+  // Reference winLyric/index.ts: the lyric window closes while the MAIN
+  // window is fullscreen (desktopLyric.fullscreenHide) and reopens when it
+  // leaves; toggling desktopLyric.enable closes/recreates it. In this
+  // standalone app the analog of closeWindow()/createWindow() is
+  // hide()/show().
+  const bool shouldHide = !m_config.isEnable() || (m_config.isFullscreenHide() && m_hostFullscreen);
+
+  if (shouldHide) {
+    // Keep the modeless settings dialog reachable: hiding the parent hides
+    // the dialog with it (Qt propagates visibility to children), so it is
+    // re-shown explicitly — the re-enable path must not strand the dialog.
+    const bool dialogWasVisible = m_settingsDialog && m_settingsDialog->isVisible();
+    hide();
+    m_alwaysOnTopTimer->stop(); // showEvent() re-runs updateAlwaysOnTopLoop.
+    if (dialogWasVisible)
+      m_settingsDialog->show();
+  } else {
+    // showEvent applies geometry (m_geometryApplied guard) and re-runs the
+    // always-on-top loop + hover-hide poll.
+    show();
+  }
 }
 
 void LyricWindow::setWindowFlagKeepingVisible(Qt::WindowType flag, bool on)

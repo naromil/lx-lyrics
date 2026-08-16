@@ -6,6 +6,8 @@
  */
 #include <QTest>
 
+#include <limits>
+
 #include "engine/lrcparser.h"
 #include "engine/lyricselector.h"
 #include "engine/wordparser.h"
@@ -49,6 +51,10 @@ private slots:
   void lrcParserNegativeTimestampsDropped();
   void lrcParserNegativeOffset();
   void lrcParserHexOffsetDefaultsZero();
+  void lrcParserOffsetTrailingJunk();
+  void lrcParserOffsetEmptyAndWhitespace();
+  void lrcParserOffsetSaturatesAtQint64Bounds();
+  void lrcParserOffsetRejectsUnicodeDigits();
 
   void wordParserKaraokeWords();
   void wordParserLineModePlainText();
@@ -487,6 +493,97 @@ void TestEngine::lrcParserHexOffsetDefaultsZero()
     LrcParser::parse(QStringLiteral("[offset:0x10]\n[00:01.00]Hello"));
 
   QCOMPARE(result.tag.offsetMs, qint64(0));
+}
+
+void TestEngine::lrcParserOffsetTrailingJunk()
+{
+  // Parity with JS parseInt's leading-decimal semantics: the longest leading
+  // run of decimal digits wins and everything after the first non-decimal
+  // character is ignored. QString::toInt() used to reject these outright.
+  const LrcParser::Result ms = LrcParser::parse(QStringLiteral("[offset:500ms]\n[00:01.00]Hello"));
+  QCOMPARE(ms.tag.offsetMs, qint64(500));
+
+  // parseInt("1e3") stops at 'e': 1, not 1000 (no exponent syntax).
+  const LrcParser::Result exponent =
+    LrcParser::parse(QStringLiteral("[offset:1e3]\n[00:01.00]Hello"));
+  QCOMPARE(exponent.tag.offsetMs, qint64(1));
+
+  const LrcParser::Result decimal =
+    LrcParser::parse(QStringLiteral("[offset:1500.5]\n[00:01.00]Hello"));
+  QCOMPARE(decimal.tag.offsetMs, qint64(1500));
+
+  // An explicit plus sign is accepted, like parseInt("+250").
+  const LrcParser::Result plus = LrcParser::parse(QStringLiteral("[offset:+250]\n[00:01.00]Hello"));
+  QCOMPARE(plus.tag.offsetMs, qint64(250));
+
+  // A leading-digit run followed by junk ("0x10") still yields 0 — the hex
+  // deviation is pinned by lrcParserHexOffsetDefaultsZero.
+  const LrcParser::Result hexLike = LrcParser::parse(QStringLiteral("[offset:0x10]\n[00:01.00]Hi"));
+  QCOMPARE(hexLike.tag.offsetMs, qint64(0));
+}
+
+void TestEngine::lrcParserOffsetEmptyAndWhitespace()
+{
+  // parseInt("") is NaN -> 0; parseInt("  700  ") skips leading whitespace.
+  const LrcParser::Result empty = LrcParser::parse(QStringLiteral("[offset:]\n[00:01.00]Hello"));
+  QCOMPARE(empty.tag.offsetMs, qint64(0));
+
+  const LrcParser::Result spaced =
+    LrcParser::parse(QStringLiteral("[offset:  700  ]\n[00:01.00]Hello"));
+  QCOMPARE(spaced.tag.offsetMs, qint64(700));
+
+  // "- 500" (sign separated from the digits) has no digits after the sign:
+  // NaN -> 0, exactly like parseInt("- 500").
+  const LrcParser::Result brokenSign =
+    LrcParser::parse(QStringLiteral("[offset:- 500]\n[00:01.00]Hello"));
+  QCOMPARE(brokenSign.tag.offsetMs, qint64(0));
+}
+
+void TestEngine::lrcParserOffsetSaturatesAtQint64Bounds()
+{
+  // Sign-specific saturation: positive overflow clamps to qint64::max(),
+  // negative overflow clamps to qint64::min(), and the exact |qint64::min()|
+  // magnitude (2^63) is representable. The old sign-agnostic saturation
+  // parsed the magnitude against qint64::max() and then negated, so the
+  // exact minimum came back as -max (off by one) and negative overflow
+  // never reached qint64::min() at all.
+  const LrcParser::Result max =
+    LrcParser::parse(QStringLiteral("[offset:9223372036854775807]\n[00:01.00]Hello"));
+  QCOMPARE(max.tag.offsetMs, std::numeric_limits<qint64>::max());
+
+  const LrcParser::Result min =
+    LrcParser::parse(QStringLiteral("[offset:-9223372036854775808]\n[00:01.00]Hello"));
+  QCOMPARE(min.tag.offsetMs, std::numeric_limits<qint64>::min());
+
+  // Overflow clamps; it never wraps around.
+  const LrcParser::Result positiveOverflow =
+    LrcParser::parse(QStringLiteral("[offset:9223372036854775808]\n[00:01.00]Hello"));
+  QCOMPARE(positiveOverflow.tag.offsetMs, std::numeric_limits<qint64>::max());
+
+  const LrcParser::Result negativeOverflow =
+    LrcParser::parse(QStringLiteral("[offset:-9223372036854775809]\n[00:01.00]Hello"));
+  QCOMPARE(negativeOverflow.tag.offsetMs, std::numeric_limits<qint64>::min());
+}
+
+void TestEngine::lrcParserOffsetRejectsUnicodeDigits()
+{
+  // JS parseInt is ASCII-oriented: a Unicode decimal digit (full-width,
+  // Arabic-Indic, ...) is NOT a digit for the leading run, so a value made
+  // of them has no leading ASCII digits and reads 0. QChar::isDigit() used
+  // to accept these and parse a nonzero offset.
+  const LrcParser::Result fullWidth =
+    LrcParser::parse(QStringLiteral("[offset:１５]\n[00:01.00]Hello"));
+  QCOMPARE(fullWidth.tag.offsetMs, qint64(0));
+
+  // A Unicode digit before an ASCII run ends the scan before any ASCII digit
+  // is consumed: still 0, exactly like parseInt's first-non-digit stop.
+  const LrcParser::Result mixedLead =
+    LrcParser::parse(QStringLiteral("[offset:５00]\n[00:01.00]Hello"));
+  QCOMPARE(mixedLead.tag.offsetMs, qint64(0));
+
+  const LrcParser::Result arabicIndic =
+    LrcParser::parse(QStringLiteral("[offset:١٢٣]\n[00:01.00]Hello"));
+  QCOMPARE(arabicIndic.tag.offsetMs, qint64(0));
 }
 
 void TestEngine::wordParserKaraokeWords()

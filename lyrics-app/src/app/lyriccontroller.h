@@ -26,8 +26,9 @@ struct PlaybackSnapshot;
 //
 // Music-state entry points mirror the host protocol (docs/protocol.md §5):
 // setTrack/setLyric ingest lyric snapshots, play/pause/stop/setStatus drive the
-// player, setOffset accumulates the delta sent by the host, setPlaybackRate
-// forwards the rate.
+// player, setOffset REPLACES the user offset with the absolute value sent by
+// the host (reference setLyricOffset semantics), setPlaybackRate forwards the
+// rate.
 class LyricController : public QObject {
   Q_OBJECT
 
@@ -44,6 +45,10 @@ public:
   void stop();
   void setOffset(qint64 tempOffset);
   void setPlaybackRate(double rate);
+
+  // Test accessor: the player behind the pipeline (offset assertions in the
+  // controller tests; same role as the renderer's test accessors).
+  LyricPlayer* player() const { return m_player; }
 
 private:
   void applyRendererConfig();

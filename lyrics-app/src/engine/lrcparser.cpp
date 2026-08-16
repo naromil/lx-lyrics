@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <limits>
 
 namespace {
 
@@ -63,6 +64,62 @@ QString formatTimeLabel(const QString& label)
   return stripped;
 }
 
+// JS parseInt semantics for the [offset:] tag, minus the radix inference:
+// optional leading whitespace, an optional sign, then the LONGEST LEADING RUN
+// of ASCII decimal digits; everything after the first non-decimal character
+// is ignored, so "500ms" -> 500, "1e3" -> 1, "1500.5" -> 1500, " 700 " -> 700,
+// "-500" -> -500. A value with no leading digits ("abc", "", "0x10") yields 0
+// — parseInt would read "0x10" as hex 16, a DELIBERATE DEVIATION pinned by
+// the lrcParserHexOffsetDefaultsZero test. The digit scan is ASCII-only like
+// JS parseInt: a Unicode decimal digit (e.g. full-width '１') stops the scan
+// like any other non-ASCII character and never contributes a value. Saturates
+// at SIGN-SPECIFIC qint64 bounds instead of overflowing on pathological digit
+// runs: positive overflow clamps to qint64::max(), negative overflow clamps
+// to qint64::min(), and the exact |qint64::min()| magnitude (2^63) is
+// representable.
+qint64 parseLeadingDecimalInt(const QString& text)
+{
+  int i = 0;
+  while (i < text.size() && text.at(i).isSpace())
+    ++i; // JS parseInt skips leading whitespace.
+
+  bool negative = false;
+  if (i < text.size() && (text.at(i) == QLatin1Char('+') || text.at(i) == QLatin1Char('-'))) {
+    negative = text.at(i) == QLatin1Char('-');
+    ++i;
+  }
+
+  // The magnitude is accumulated unsigned: |qint64::min()| is 2^63, one more
+  // than qint64::max(), so it only fits in an unsigned type — and negating an
+  // overflowing SIGNED magnitude would be undefined arithmetic. The guard
+  // below only multiplies when value * 10 + digit stays within the limit, so
+  // the unsigned math never overflows either.
+  const int digitsStart = i;
+  quint64 value = 0;
+  const quint64 kMagnitudeLimit =
+    negative ? quint64{1} << 63 : static_cast<quint64>(std::numeric_limits<qint64>::max());
+  while (i < text.size()) {
+    const QChar c = text.at(i);
+    if (c < QLatin1Char('0') || c > QLatin1Char('9'))
+      break; // The ASCII digit run ends (JS parseInt stops at the first non-digit).
+    const quint64 digit = static_cast<quint64>(c.toLatin1() - '0');
+    if (value > (kMagnitudeLimit - digit) / 10)
+      value = kMagnitudeLimit; // Saturate: parseInt yields a huge double, never NaN.
+    else
+      value = value * 10 + digit;
+    ++i;
+  }
+  if (i == digitsStart)
+    return 0; // No leading digits: JS parseInt -> NaN -> 0.
+  if (negative) {
+    // The exact |qint64::min()| magnitude maps to qint64::min(); everything
+    // below the limit negates losslessly (value <= max is guaranteed here).
+    return value == (quint64{1} << 63) ? std::numeric_limits<qint64>::min()
+                                       : -static_cast<qint64>(value);
+  }
+  return static_cast<qint64>(value);
+}
+
 void parseTags(const QString& lrc, LrcTag& tag)
 {
   // JS: lyric.match(new RegExp(`\\[${tag}:([^\\]]*)]`, 'i')).
@@ -75,15 +132,14 @@ void parseTags(const QString& lrc, LrcTag& tag)
       tag.*(entry.field) = match.captured(1);
   }
 
-  // JS: parseInt(this.tags.offset), Number.isNaN -> 0.
+  // JS: parseInt(this.tags.offset), Number.isNaN -> 0. The C++ port uses
+  // leading-decimal parseInt semantics (parseLeadingDecimalInt): trailing
+  // junk like "500ms" or "1e3" is accepted, "0x10" stays 0 (see helper).
   const QRegularExpression offsetPattern(QStringLiteral("\\[offset:([^\\]]*)]"),
                                          QRegularExpression::CaseInsensitiveOption);
   const QRegularExpressionMatch offsetMatch = offsetPattern.match(lrc);
-  if (offsetMatch.hasMatch()) {
-    bool ok = false;
-    const int parsed = offsetMatch.captured(1).toInt(&ok);
-    tag.offsetMs = ok ? parsed : 0;
-  }
+  if (offsetMatch.hasMatch())
+    tag.offsetMs = parseLeadingDecimalInt(offsetMatch.captured(1));
 }
 
 void attachExtendedLyric(QHash<QString, LrcLine>& lineMap, const QString& extendedLyric)

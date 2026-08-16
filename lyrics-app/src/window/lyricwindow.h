@@ -80,11 +80,36 @@ public:
   void faint();
   void unfaint();
 
+  // Host main-window fullscreen state (protocol set_fullscreen). While
+  // desktopLyric.fullscreenHide is enabled the lyric window hides when the
+  // host's main window is fullscreen and shows again when it leaves
+  // (reference main_window_fullscreen event); the recompute runs through
+  // updateHiddenByHostConditions().
+  void setHostFullscreen(bool isFullscreen);
+
+  // Recomputes whether the window may be visible from the host-visible
+  // conditions — desktopLyric.enable off, or desktopLyric.fullscreenHide
+  // while the host main window is fullscreen (m_hostFullscreen) — and
+  // hides/shows it accordingly (the standalone analog of the reference
+  // closeWindow()/createWindow(), winLyric/index.ts). Public so main.cpp can
+  // apply the same rule at startup instead of show()ing a window that must
+  // stay hidden (enable=false, or the host already fullscreen).
+  void updateHiddenByHostConditions();
+
 signals:
   // Emitted when the fade-out close animation completes (the content has
   // reached opacity 0.0); main.cpp quits the app in response. WM/session
   // closes and --exit-on-disconnect stay instant and never emit it.
   void closeAnimationFinished();
+
+  // The user/application initiated a window close: the control-bar X button
+  // (through animateClose) or a WM close / Alt+F4 (through closeEvent).
+  // Emitted at most once per session (m_closeInitiatedReported guard);
+  // main.cpp forwards it to the host as §4 close_requested so the host ends
+  // its session WITHOUT respawning the app. Not emitted by quit-time
+  // boundaries that never pass a user close (--exit-on-disconnect, app
+  // shutdown).
+  void closeInitiated();
 
 public slots:
   // Fade-out close: animate the content fade to 0.0 over the usual
@@ -145,6 +170,11 @@ private:
   // into the pane paint and the container opacity effect.
   void animateFadeTo(double target);
   void applyFade();
+
+  // Once-only close-origin report (closeInitiated): the control-bar close and
+  // a WM close may both run in one session (animated close followed by the
+  // WM teardown); the host must receive exactly one close_requested.
+  void reportCloseInitiated();
 
   // Pane-fill fade (parity item 1): animates m_paneAlpha between 0.2 and 0.0
   // so the pane background goes fully transparent while the window is locked
@@ -209,6 +239,9 @@ private:
   bool m_shouldBeFaint = false; // Either source active (pause || hover).
   bool m_hoverOverride = false; // Mouse is over while faint is active.
   bool m_closing = false;       // Close animation started (X button).
+  // closeInitiated already reported once (animated close + WM close must not
+  // send the host two close_requested frames).
+  bool m_closeInitiatedReported = false;
 
   QVariantAnimation* m_paneAnim = nullptr;
   double m_paneAlpha = 0.2; // Pane fill alpha: 0.2 normal / 0.0 locked.
@@ -217,4 +250,8 @@ private:
   // and on show; self-stops while hidden (pollHoverHide guards isVisible).
   QTimer* m_hoverPollTimer = nullptr;
   bool m_hoverHideActive = false; // desktopLyric.isHoverHide && isLock.
+
+  // Host main window is fullscreen (protocol set_fullscreen). Consumed by
+  // updateHiddenByHostConditions under desktopLyric.fullscreenHide.
+  bool m_hostFullscreen = false;
 };

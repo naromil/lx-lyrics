@@ -23,6 +23,7 @@
 #include <QVariant>
 
 #include <algorithm>
+#include <optional>
 
 #include "app/appcontext.h"
 #include "bridge/wsclient.h"
@@ -185,14 +186,26 @@ void LyricController::stop()
 
 void LyricController::setOffset(qint64 tempOffset)
 {
-  // Protocol §5: set_offset carries a DELTA from the lyric's own [offset:]
-  // tag. Accumulate into the user offset, then let the player re-anchor.
-  m_userOffsetMs += tempOffset;
+  // Protocol §5 + reference setLyricOffset (renderer/core/lyric.ts): the
+  // host sends the ABSOLUTE user-part offset (the total user offset minus
+  // the lyric's own [offset:] tag), and REPLACES on every message — an
+  // adjustment change or reconnect resend must not double-apply. Assign,
+  // then let the player re-anchor.
+  m_userOffsetMs = tempOffset;
   m_player->setOffset(m_userOffsetMs);
 }
 
 void LyricController::setPlaybackRate(double rate)
 {
+  // Parse at the protocol boundary (task F): an out-of-range, zero, negative
+  // or non-finite rate is dropped loudly BEFORE it can reach the player —
+  // the current rate stays. The player's own setter repeats this check as
+  // the final defense in depth for config-sourced values.
+  if (!LyricPlayer::isValidPlaybackRate(rate)) {
+    qWarning() << "LyricController: rejecting playback rate" << rate << "(supported range"
+               << LyricPlayer::kMinPlaybackRate << ".." << LyricPlayer::kMaxPlaybackRate << ")";
+    return;
+  }
   m_player->setPlaybackRate(rate);
 }
 
@@ -365,21 +378,27 @@ void LyricController::onSettingChanged(const QString& key, const QVariant& value
     applySelectorConfig();
     if (!m_hasLyric)
       return;
-    const bool wasPlaying = m_player->isPlaying();
-    const qint64 positionMs = m_player->currentPositionMs();
+    // Capture the RAW caller position BEFORE re-selecting: the clock
+    // position already includes the OLD total offset, and the re-selected
+    // lyric may carry a different [offset:] tag or line mode, so the total
+    // offset changes. Re-anchoring with the offset-inclusive position would
+    // apply the offset twice and jump the lyric; play() adds the NEW total
+    // offset to the raw position exactly once. Empty when paused — a paused
+    // player keeps its position and only re-anchors on an explicit play().
+    const std::optional<qint64> rawPositionMs = m_player->rawLivePositionMs();
     const bool applied = reapplyLyricSelection();
     // Resume only when the lyric actually changed (a dedup'd re-selection
     // never paused the player, so replaying would re-emit the current line
     // spuriously) and there are lines to play.
-    if (applied && wasPlaying && m_selector->hasLyrics())
-      m_player->play(positionMs);
+    if (applied && rawPositionMs.has_value() && m_selector->hasLyrics())
+      m_player->play(*rawPositionMs);
     // Mirror the play state — isPlaying() is the single source of truth for
     // the renderer's 3 s resume re-center gate.
     m_renderer->setPlaying(m_player->isPlaying());
     return;
   }
   if (key == kKeyPlaybackRate)
-    m_player->setPlaybackRate(value.toDouble());
+    setPlaybackRate(value.toDouble()); // Through the boundary: invalid config values are dropped.
 }
 
 void LyricController::onLineChanged(int line)

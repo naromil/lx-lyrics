@@ -73,8 +73,10 @@ void DesktopLyricConfig::loadDefaults()
   // style.opacity, style.isZoomActiveLrc. The remaining keys mirror the
   // file, and platform-dependent keys keep its isWin / !isMac expressions.
   // x/y intentionally default to null (auto-position).
-  // Reserved keys (stored, no consumer): enable (window shows unconditionally),
-  // isAlwaysOnTopLoop (loop keys off isAlwaysOnTop alone), fullscreenHide (no fullscreen handling).
+  // Consumers: enable + fullscreenHide hide/show the lyric window live
+  // (LyricWindow::updateHiddenByHostConditions, driven by the host's
+  // set_fullscreen message), and isAlwaysOnTopLoop gates the always-on-top
+  // re-assert loop.
   m_defaults = {
     {QStringLiteral("desktopLyric.enable"), true},
     {QStringLiteral("desktopLyric.isLock"), false},
@@ -216,6 +218,11 @@ void DesktopLyricConfig::flush()
     qWarning() << "DesktopLyricConfig: commit failed" << path << file.errorString();
 }
 
+bool DesktopLyricConfig::isEnable() const
+{
+  return get(QStringLiteral("desktopLyric.enable")).toBool();
+}
+
 bool DesktopLyricConfig::isLock() const
 {
   return get(QStringLiteral("desktopLyric.isLock")).toBool();
@@ -224,6 +231,16 @@ bool DesktopLyricConfig::isLock() const
 bool DesktopLyricConfig::isAlwaysOnTop() const
 {
   return get(QStringLiteral("desktopLyric.isAlwaysOnTop")).toBool();
+}
+
+bool DesktopLyricConfig::isAlwaysOnTopLoop() const
+{
+  return get(QStringLiteral("desktopLyric.isAlwaysOnTopLoop")).toBool();
+}
+
+bool DesktopLyricConfig::isFullscreenHide() const
+{
+  return get(QStringLiteral("desktopLyric.fullscreenHide")).toBool();
 }
 
 bool DesktopLyricConfig::isShowTaskbar() const

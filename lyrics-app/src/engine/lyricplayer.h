@@ -12,6 +12,8 @@
 #include <QTimer>
 #include <QVector>
 
+#include <optional>
+
 #include "engine/lrcparser.h"
 #include "engine/lyricclock.h"
 
@@ -25,6 +27,21 @@
 class LyricPlayer : public QObject {
   Q_OBJECT
 public:
+  // Supported playback-rate range (defense in depth, task F): rates outside
+  // [kMinPlaybackRate, kMaxPlaybackRate] — including zero, negatives, NaN
+  // and infinities — are REJECTED by setPlaybackRate, never clamped; the
+  // current rate stays. The range is conservative for a lyrics overlay
+  // (0.25x–4.0x) and keeps the delay math (division, qint64 conversion) away
+  // from overflow and 0 ms timer spins.
+  static constexpr double kMinPlaybackRate = 0.25;
+  static constexpr double kMaxPlaybackRate = 4.0;
+
+  // True when `rate` is a finite value inside the supported range. Shared by
+  // the controller's protocol boundary (parse at the boundary), the player's
+  // own setter (final guard) and LyricClock::setRate (deepest guard: direct
+  // clock callers bypass both outer layers).
+  static bool isValidPlaybackRate(double rate);
+
   explicit LyricPlayer(QObject* parent = nullptr);
 
   // Parses lrc + extendedLyrics and emits lyricsChanged. Returns false when
@@ -44,6 +61,20 @@ public:
   bool isPlaying() const;
   const QVector<LrcLine>& lines() const;
   qint64 offset() const;
+  // Test accessor: the active playback rate (1.0 until a valid rate is set;
+  // invalid setPlaybackRate calls leave it unchanged).
+  double playbackRate() const { return m_rate; }
+  // Raw live re-anchor support (setOffset/setPlaybackRate/setVertical and
+  // the controller's selector re-selection): the clock anchors the raw
+  // caller position independently of the offset-inclusive position that
+  // drives line selection, so a position captured BEFORE an
+  // offset/lyric/rate change can be re-anchored through play() with the NEW
+  // offset exactly once — otherwise the offset is applied twice and the
+  // lyric jumps. Recoverable continuously while playing, even when the
+  // inclusive anchor saturated (a subtractive reconstruction would be bogus
+  // there). Empty when paused: a paused player keeps its position and only
+  // re-anchors on the next explicit play().
+  [[nodiscard]] std::optional<qint64> rawLivePositionMs() const;
 
 signals:
   void lineChanged(int line, const QString& text);
@@ -53,6 +84,19 @@ private:
   void refresh();
   int findCurLineNum(qint64 curTime, int startIndex = 0) const;
   void scheduleNext(qint64 delayMs);
+  // Saturated composition of the total offset: [offset:] tag + user offset +
+  // the 60 ms line-mode lead-in. Saturating so extreme tags/offsets (already
+  // clamped to qint64 bounds by the parser) can never wrap into an
+  // opposite-sign offset.
+  void recomputeTotalOffset();
+  // Delay from the live clock to targetTimeMs in whole milliseconds, clamped
+  // to the QTimer-supported int range: the gap subtraction saturates and the
+  // result is bounded BEFORE any narrowing conversion, so a pathological gap
+  // (min-offset lyric, multi-hour line timestamp) schedules a finite
+  // far-future timer instead of an overflowed interval or a 0 ms spin.
+  // Returns 0 when the target is already due — callers treat that as "re-
+  // anchor to the clock" rather than scheduling.
+  qint64 lineDelayMs(qint64 targetTimeMs) const;
 
   LyricClock m_clock;
   QTimer m_timer;

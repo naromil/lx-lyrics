@@ -10,9 +10,12 @@
 // scroll must roll instead of freezing and then jumping.
 #include <QApplication>
 #include <QImage>
+#include <QMouseEvent>
 #include <QPainter>
+#include <QRectF>
 #include <QTest>
 #include <QVector>
+#include <QWheelEvent>
 
 #include "renderer/lyricrenderer.h"
 #include "testbootstrap.h"
@@ -29,6 +32,35 @@ QVector<RenderLine> makeLines(int count)
 }
 
 } // namespace
+
+// Exposes the protected wheel handler so the wheel-direction tests can drive
+// it directly (the production path is a Qt event dispatch).
+class ExposedRenderer : public LyricRenderer {
+  Q_OBJECT
+public:
+  using LyricRenderer::LyricRenderer;
+  using LyricRenderer::mousePressEvent; // hit-test tests dispatch via
+  using LyricRenderer::wheelEvent;
+  // QTest::mousePress (virtual), kept for direct drive
+  using LyricRenderer::isDragging;     // protected test hook
+  using LyricRenderer::lineGroupRects; // compute the exact painted bands
+};
+
+// Records whether it received a mousePressEvent: the fall-through sink for
+// presses the renderer does NOT consume. In production those propagate to
+// LyricWindow::mousePressEvent, which starts the window drag.
+class PressRecordingContainer : public QWidget {
+public:
+  using QWidget::QWidget;
+  int pressCount = 0;
+
+protected:
+  void mousePressEvent(QMouseEvent* event) override
+  {
+    ++pressCount;
+    QWidget::mousePressEvent(event);
+  }
+};
 
 class TestLyricRenderer : public QObject {
   Q_OBJECT
@@ -47,6 +79,18 @@ private slots:
   void zoomStaysAnchoredToAlignment();
   void lineFlushToAlignedBorder();
   void lineBlitOpacityFollowsBodyOpacityAndColorProgress();
+  void wheelDownAdvancesOffset();
+  void wheelUpRetreatsOffset();
+  void wheelIgnoredWhenNotInteractive();
+  // Hit-test coverage (FIX E): presses inside a lyric band start the scroll
+  // drag, presses in the gaps/empty space fall through to the parent, and
+  // the centered-block placeholder never starts a useless drag (FIX F).
+  // NOTE: the vertical layout is NOT covered here — this suite has no
+  // existing mechanism that switches the renderer to vertical mode
+  // (production drives it config-wise through LyricController); the vertical
+  // bands share the same lineGroupRects()/tolerance hit-test machinery.
+  void pressOnLyricBandStartsDragAndGapFallsThrough();
+  void pressInCenteredPlaceholderFallsThrough();
 };
 
 void TestLyricRenderer::fastChangesDoNotSnapColorBack()
@@ -607,6 +651,160 @@ void TestLyricRenderer::lineBlitOpacityFollowsBodyOpacityAndColorProgress()
   // Out-of-range lines are safe before/without any lines (colorProgress 0).
   LyricRenderer emptyRenderer;
   QCOMPARE(emptyRenderer.lineBlitOpacity(0), 1.0);
+}
+
+void TestLyricRenderer::wheelDownAdvancesOffset()
+{
+  ExposedRenderer renderer;
+  renderer.resize(600, 300);
+  renderer.setLines(makeLines(12));
+  renderer.setDelayScroll(false);
+  renderer.setInteractive(true); // Wheel is gated on interactivity.
+  renderer.setActiveLine(0);
+  QTest::qWait(700); // The first line-0 scrolls to its centered target.
+  const qreal before = renderer.scrollOffset();
+  QVERIFY(before > 50);
+
+  // Qt angleDelta().y() < 0 = wheel DOWN, the opposite of the browser deltaY
+  // the reference uses (deltaY > 0 = down). After the sign fix the offset
+  // must GROW (later lyrics), matching reference scrollTop += deltaY.
+  QWheelEvent wheelDown(QPointF(300, 150), QPointF(300, 150), QPoint(), QPoint(0, -120),
+                        Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+  renderer.wheelEvent(&wheelDown);
+  QVERIFY2(
+    renderer.scrollOffset() > before,
+    qPrintable(QStringLiteral("offset=%1 before=%2").arg(renderer.scrollOffset()).arg(before)));
+}
+
+void TestLyricRenderer::wheelUpRetreatsOffset()
+{
+  ExposedRenderer renderer;
+  renderer.resize(600, 300);
+  renderer.setLines(makeLines(12));
+  renderer.setDelayScroll(false);
+  renderer.setInteractive(true);
+  renderer.setActiveLine(0);
+  QTest::qWait(700); // Settle at the centered line-0 target.
+  const qreal settled = renderer.scrollOffset();
+
+  QWheelEvent wheelDown(QPointF(300, 150), QPointF(300, 150), QPoint(), QPoint(0, -120),
+                        Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+  renderer.wheelEvent(&wheelDown);
+  const qreal advanced = renderer.scrollOffset();
+  QVERIFY2(advanced > settled,
+           qPrintable(QStringLiteral("advanced=%1 settled=%2").arg(advanced).arg(settled)));
+
+  // Wheel UP (angleDelta().y() > 0) must retreat toward the earlier lyrics
+  // and land exactly where the down-step started (integer 120-step round
+  // trip on the clamped offset).
+  QWheelEvent wheelUp(QPointF(300, 150), QPointF(300, 150), QPoint(), QPoint(0, 120), Qt::NoButton,
+                      Qt::NoModifier, Qt::NoScrollPhase, false);
+  renderer.wheelEvent(&wheelUp);
+  QVERIFY2(
+    renderer.scrollOffset() < advanced,
+    qPrintable(QStringLiteral("offset=%1 advanced=%2").arg(renderer.scrollOffset()).arg(advanced)));
+  QVERIFY2(
+    qAbs(renderer.scrollOffset() - settled) < 1e-6,
+    qPrintable(QStringLiteral("round-trip drift=%1").arg(renderer.scrollOffset() - settled)));
+}
+
+void TestLyricRenderer::wheelIgnoredWhenNotInteractive()
+{
+  ExposedRenderer renderer;
+  renderer.resize(600, 300);
+  renderer.setLines(makeLines(12));
+  renderer.setDelayScroll(false);
+  // m_interactive stays false (default): a locked window gates wheel off.
+  renderer.setActiveLine(0);
+  QTest::qWait(700); // Settle.
+  const qreal before = renderer.scrollOffset();
+
+  QWheelEvent wheel(QPointF(300, 150), QPointF(300, 150), QPoint(), QPoint(0, -120), Qt::NoButton,
+                    Qt::NoModifier, Qt::NoScrollPhase, false);
+  renderer.wheelEvent(&wheel);
+  QCOMPARE(renderer.scrollOffset(), before);
+}
+
+void TestLyricRenderer::pressOnLyricBandStartsDragAndGapFallsThrough()
+{
+  // Hit-test regression: a left press inside a lyric group's band starts the
+  // scroll drag (the renderer consumes the event); a press in the gap
+  // between groups must NOT be consumed — it falls through to the parent,
+  // which is the LyricWindow window-drag path in production.
+  PressRecordingContainer container;
+  container.resize(600, 400);
+  ExposedRenderer renderer(&container);
+  renderer.setGeometry(0, 0, 600, 300);
+  renderer.setInteractive(true); // The drag path is gated on interactivity.
+  renderer.setLines(makeLines(12));
+  renderer.setDelayScroll(false);
+  renderer.setActiveLine(0);
+  QTest::qWait(700); // Settle: line 0 centered and fully zoomed.
+
+  container.show();
+  QTest::qWait(50); // Propagated events need visible widgets.
+
+  // Compute the exact bands from the same layout helper the hit-test uses
+  // (lineGroupRects mirrors the paint path's math; the hit-test extends each
+  // band by kCacheHaloPadPx / 2 = 4 px).
+  const QVector<QRectF> rects = renderer.lineGroupRects();
+  QCOMPARE(rects.size(), 12);
+
+  // Press inside line 0's band: consumed, drag starts, container silent.
+  const QPoint inBand = rects[0].center().toPoint();
+  QTest::mousePress(&renderer, Qt::LeftButton, Qt::NoModifier, inBand);
+  QVERIFY2(renderer.isDragging(), "press inside a lyric band must start the drag");
+  QCOMPARE(container.pressCount, 0);
+  QTest::mouseRelease(&renderer, Qt::LeftButton, Qt::NoModifier, inBand);
+  QVERIFY(!renderer.isDragging());
+
+  // Press in the gap between groups 0 and 1: the tolerance-extended bands
+  // stop 4 px short of the 15 px gap, so the gap midpoint is empty space —
+  // the press falls through to the parent (window drag).
+  const QPoint gap(rects[0].center().x(), qRound(rects[0].bottom() + 7.5));
+  QVERIFY2(gap.y() > rects[0].bottom() + 4 && gap.y() < rects[1].top() - 4,
+           "gap midpoint must sit between the tolerance-extended bands");
+  QTest::mousePress(&renderer, Qt::LeftButton, Qt::NoModifier, gap);
+  QVERIFY2(!renderer.isDragging(), "a gap press must not start a drag");
+  QCOMPARE(container.pressCount, 1); // Fell through to the parent.
+  QTest::mouseRelease(&renderer, Qt::LeftButton, Qt::NoModifier, gap);
+}
+
+void TestLyricRenderer::pressInCenteredPlaceholderFallsThrough()
+{
+  // Static placeholder (centeredBlock — the controller's no-lyrics / custom
+  // placeholder): maxScrollOffset() is 0, so a drag could never scroll.
+  // Every press must fall through to the parent (window drag) — starting
+  // drag mode would only flip the cursor to ClosedHand, emit
+  // userInteractingChanged(true) and suspend auto-scroll for 3 s for nothing
+  // (FIX F).
+  PressRecordingContainer container;
+  container.resize(600, 400);
+  ExposedRenderer renderer(&container);
+  renderer.setGeometry(0, 0, 600, 300);
+  renderer.setInteractive(true);
+  renderer.setLines(makeLines(3)); // e.g. the "No lyrics" placeholder text.
+  renderer.setCenteredBlock(true);
+  QVERIFY(renderer.centeredBlock());
+
+  container.show();
+  QTest::qWait(50);
+
+  // Press INSIDE the first group's band: the one place that WOULD start a
+  // drag in the scrollable layout — still falls through here.
+  const QVector<QRectF> rects = renderer.lineGroupRects();
+  QCOMPARE(rects.size(), 3);
+  const QPoint inBand = rects[0].center().toPoint();
+  QTest::mousePress(&renderer, Qt::LeftButton, Qt::NoModifier, inBand);
+  QVERIFY2(!renderer.isDragging(), "a centered placeholder press must never start a drag");
+  QCOMPARE(container.pressCount, 1);
+  QTest::mouseRelease(&renderer, Qt::LeftButton, Qt::NoModifier, inBand);
+
+  // Press again elsewhere (band or empty space): falls through the same way.
+  QTest::mousePress(&renderer, Qt::LeftButton, Qt::NoModifier, QPoint(300, 150));
+  QVERIFY(!renderer.isDragging());
+  QCOMPARE(container.pressCount, 2);
+  QTest::mouseRelease(&renderer, Qt::LeftButton, Qt::NoModifier, QPoint(300, 150));
 }
 
 QTEST_MAIN(TestLyricRenderer)

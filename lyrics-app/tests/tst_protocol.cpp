@@ -14,6 +14,7 @@
 #include <QWebSocketServer>
 
 #include "bridge/wsclient.h"
+#include "hostserver.h"
 
 // Round-trip tests for the WebSocket bridge (docs/protocol.md).
 //
@@ -138,7 +139,12 @@ private slots:
   void hostSetInfoFullPayload();
   void hostSetLyricAndStatus();
   void hostPlayPauseStopOffsetRate();
+  void hostSetFullscreen();
+  void hostServerSendsSetFullscreen();
   void binaryAnalyserFrame();
+  void clientSendsCloseRequested();
+  void hostServerRecognizesCloseRequested();
+  void hostServerProtocolErrorEmitsDedicatedSignal();
   void malformedJsonFailsFast();
   void unknownActionFailsFast();
   void badVersionFailsFast();
@@ -316,6 +322,64 @@ void TestProtocol::hostPlayPauseStopOffsetRate()
   QCOMPARE(rateSpy.at(0).at(0).toDouble(), 2.0);
 }
 
+void TestProtocol::hostSetFullscreen()
+{
+  QSignalSpy connectedSpy(m_client, &WsClient::connected);
+  QSignalSpy fullscreenSpy(m_client, &WsClient::fullscreenReceived);
+
+  m_client->connectToHost(m_host->url());
+  QTRY_COMPARE_WITH_TIMEOUT(connectedSpy.count(), 1, kWaitMs);
+
+  m_host->sendText(textFrame({
+    {QStringLiteral("v"), 1},
+    {QStringLiteral("action"), QStringLiteral("set_fullscreen")},
+    {QStringLiteral("isFullscreen"), true},
+  }));
+  QTRY_COMPARE_WITH_TIMEOUT(fullscreenSpy.count(), 1, kWaitMs);
+  QCOMPARE(fullscreenSpy.at(0).at(0).toBool(), true);
+
+  m_host->sendText(textFrame({
+    {QStringLiteral("v"), 1},
+    {QStringLiteral("action"), QStringLiteral("set_fullscreen")},
+    {QStringLiteral("isFullscreen"), false},
+  }));
+  QTRY_COMPARE_WITH_TIMEOUT(fullscreenSpy.count(), 2, kWaitMs);
+  QCOMPARE(fullscreenSpy.at(1).at(0).toBool(), false);
+}
+
+void TestProtocol::hostServerSendsSetFullscreen()
+{
+  // The host side of the same contract: HostServer must emit exactly
+  // {"v":1,"action":"set_fullscreen","isFullscreen":bool}. HostServer has no
+  // Fooyin dependencies, so it is compiled into this test target and driven
+  // through a real QWebSocket client (round-trip on the wire).
+  HostServer host;
+  QVERIFY(host.isListening());
+  QSignalSpy clientConnectedSpy(&host, &HostServer::clientConnected);
+
+  QWebSocket client;
+  QSignalSpy clientSocketSpy(&client, &QWebSocket::connected);
+  QSignalSpy frameSpy(&client, &QWebSocket::textMessageReceived);
+
+  client.open(QUrl(QStringLiteral("ws://127.0.0.1:%1").arg(host.serverPort())));
+  QTRY_COMPARE_WITH_TIMEOUT(clientConnectedSpy.count(), 1, kWaitMs);
+  QTRY_COMPARE_WITH_TIMEOUT(clientSocketSpy.count(), 1, kWaitMs);
+
+  host.sendSetFullscreen(true);
+  QTRY_COMPARE_WITH_TIMEOUT(frameSpy.count(), 1, kWaitMs);
+  const QJsonObject first =
+    QJsonDocument::fromJson(frameSpy.at(0).at(0).toString().toUtf8()).object();
+  QCOMPARE(first.value(QStringLiteral("v")).toInt(), 1);
+  QCOMPARE(first.value(QStringLiteral("action")).toString(), QStringLiteral("set_fullscreen"));
+  QCOMPARE(first.value(QStringLiteral("isFullscreen")).toBool(), true);
+
+  host.sendSetFullscreen(false);
+  QTRY_COMPARE_WITH_TIMEOUT(frameSpy.count(), 2, kWaitMs);
+  const QJsonObject second =
+    QJsonDocument::fromJson(frameSpy.at(1).at(0).toString().toUtf8()).object();
+  QCOMPARE(second.value(QStringLiteral("isFullscreen")).toBool(), false);
+}
+
 void TestProtocol::binaryAnalyserFrame()
 {
   QSignalSpy connectedSpy(m_client, &WsClient::connected);
@@ -341,6 +405,114 @@ void TestProtocol::binaryAnalyserFrame()
   QTRY_COMPARE_WITH_TIMEOUT(analyserSpy.count(), 2, kWaitMs);
   QCOMPARE(analyserSpy.at(0).at(0).toByteArray(), frame);
   QCOMPARE(analyserSpy.at(1).at(0).toByteArray(), frame);
+}
+
+void TestProtocol::clientSendsCloseRequested()
+{
+  // App side of §4 close_requested: exactly {"v":1,"action":"close_requested"}
+  // with no payload, sent when the user closes the lyric window.
+  QSignalSpy connectedSpy(m_client, &WsClient::connected);
+  QSignalSpy frameSpy(m_host, &StubHost::textFrameReceived);
+
+  m_client->connectToHost(m_host->url());
+  QTRY_COMPARE_WITH_TIMEOUT(connectedSpy.count(), 1, kWaitMs);
+
+  m_client->sendCloseRequested();
+
+  QTRY_COMPARE_WITH_TIMEOUT(frameSpy.count(), 1, kWaitMs);
+  const QJsonDocument doc = QJsonDocument::fromJson(frameSpy.at(0).at(0).toString().toUtf8());
+  QVERIFY(doc.isObject());
+  const QJsonObject obj = doc.object();
+  QCOMPARE(obj.value(QStringLiteral("v")).toInt(), 1);
+  QCOMPARE(obj.value(QStringLiteral("action")).toString(), QStringLiteral("close_requested"));
+  QCOMPARE(obj.size(), 2); // v + action only: no payload.
+
+  // Harmless when disconnected (the host may already be gone): dropped, no
+  // frame, no crash, and the reconnect path is untouched.
+  m_host->closeClient();
+  QTRY_VERIFY_WITH_TIMEOUT(!m_client->isConnected(), kWaitMs);
+  const int framesBefore = frameSpy.count();
+  m_client->sendCloseRequested();
+  QTest::qWait(100);
+  QCOMPARE(frameSpy.count(), framesBefore); // Dropped, not sent.
+}
+
+void TestProtocol::hostServerRecognizesCloseRequested()
+{
+  // Host side of §4 close_requested: HostServer must emit closeRequested —
+  // a KNOWN action, not a protocol error (the connection must survive).
+  // The plugin DEFERS its teardown to a queued callback because this signal
+  // fires while HostServer is still inside its message handler: the emitting
+  // server must survive its own closeRequested emission — still listening and
+  // still serving the connected client — until the plugin's deferred teardown
+  // runs (which is not under test here, only the contract it relies on).
+  HostServer host;
+  QVERIFY(host.isListening());
+  QSignalSpy clientConnectedSpy(&host, &HostServer::clientConnected);
+  QSignalSpy closeSpy(&host, &HostServer::closeRequested);
+  QSignalSpy protocolErrorSpy(&host, &HostServer::protocolErrorClosed);
+  QSignalSpy clientDisconnectedSpy(&host, &HostServer::clientDisconnected);
+
+  QWebSocket client;
+  QSignalSpy clientSocketSpy(&client, &QWebSocket::connected);
+  QSignalSpy frameSpy(&client, &QWebSocket::textMessageReceived);
+  client.open(QUrl(QStringLiteral("ws://127.0.0.1:%1").arg(host.serverPort())));
+  QTRY_COMPARE_WITH_TIMEOUT(clientConnectedSpy.count(), 1, kWaitMs);
+  QTRY_COMPARE_WITH_TIMEOUT(clientSocketSpy.count(), 1, kWaitMs);
+
+  client.sendTextMessage(QStringLiteral("{\"v\":1,\"action\":\"close_requested\"}"));
+  QTRY_COMPARE_WITH_TIMEOUT(closeSpy.count(), 1, kWaitMs);
+
+  // Not a protocol error: no dedicated error signal, no disconnect, and the
+  // socket stays up (the plugin decides what to do with the signal).
+  QTest::qWait(100);
+  QCOMPARE(protocolErrorSpy.count(), 0);
+  QCOMPARE(clientDisconnectedSpy.count(), 0);
+  QCOMPARE(client.state(), QAbstractSocket::ConnectedState);
+
+  // The sender survives its own emission: still listening, and a host->app
+  // frame still reaches the connected client after the signal returned.
+  QVERIFY(host.isListening());
+  host.sendSetFullscreen(true);
+  QTRY_COMPARE_WITH_TIMEOUT(frameSpy.count(), 1, kWaitMs);
+  const QJsonObject frame =
+    QJsonDocument::fromJson(frameSpy.at(0).at(0).toString().toUtf8()).object();
+  QCOMPARE(frame.value(QStringLiteral("action")).toString(), QStringLiteral("set_fullscreen"));
+  QCOMPARE(client.state(), QAbstractSocket::ConnectedState);
+}
+
+void TestProtocol::hostServerProtocolErrorEmitsDedicatedSignal()
+{
+  // §7 protocol-error close (task C): HostServer emits the DEDICATED
+  // protocolErrorClosed signal — never clientDisconnected — and keeps
+  // listening so a corrected client may reconnect.
+  HostServer host;
+  QVERIFY(host.isListening());
+  QSignalSpy clientConnectedSpy(&host, &HostServer::clientConnected);
+  QSignalSpy protocolErrorSpy(&host, &HostServer::protocolErrorClosed);
+  QSignalSpy clientDisconnectedSpy(&host, &HostServer::clientDisconnected);
+
+  QWebSocket client;
+  QSignalSpy clientSocketSpy(&client, &QWebSocket::connected);
+  client.open(QUrl(QStringLiteral("ws://127.0.0.1:%1").arg(host.serverPort())));
+  QTRY_COMPARE_WITH_TIMEOUT(clientConnectedSpy.count(), 1, kWaitMs);
+  QTRY_COMPARE_WITH_TIMEOUT(clientSocketSpy.count(), 1, kWaitMs);
+
+  client.sendTextMessage(QStringLiteral("{not json"));
+  QTRY_COMPARE_WITH_TIMEOUT(protocolErrorSpy.count(), 1, kWaitMs);
+
+  // The close is a malformed-client event: the normal clientDisconnected
+  // signal must NOT fire (the plugin's crash-respawn must not trigger), and
+  // the server keeps listening for a reconnect.
+  QTest::qWait(100);
+  QCOMPARE(clientDisconnectedSpy.count(), 0);
+
+  // A replacement client can reconnect and is accepted (§7 recovery).
+  QWebSocket replacement;
+  QSignalSpy replacementSocketSpy(&replacement, &QWebSocket::connected);
+  replacement.open(QUrl(QStringLiteral("ws://127.0.0.1:%1").arg(host.serverPort())));
+  QTRY_COMPARE_WITH_TIMEOUT(clientConnectedSpy.count(), 2, kWaitMs);
+  QTRY_COMPARE_WITH_TIMEOUT(replacementSocketSpy.count(), 1, kWaitMs);
 }
 
 void TestProtocol::malformedJsonFailsFast()

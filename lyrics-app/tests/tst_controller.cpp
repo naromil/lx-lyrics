@@ -23,19 +23,24 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEnterEvent>
+#include <QGraphicsOpacityEffect>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTest>
 #include <QToolButton>
+
+#include <limits>
 
 #include "app/appcontext.h"
 #include "app/clioptions.h"
 #include "app/lyriccontroller.h"
 #include "bridge/pausehide.h"
 #include "config/desktoplyricconfig.h"
+#include "engine/lyricplayer.h"
 #include "i18n/translationmanager.h"
 #include "renderer/controlbar.h"
 #include "renderer/lyricrenderer.h"
+#include "settings/settingsdialog.h"
 #include "window/lyricwindow.h"
 
 // Config isolation (never touch the developer's real tuned config): test mode
@@ -57,6 +62,7 @@ class TestLyricWindow : public LyricWindow {
   Q_OBJECT
 public:
   using LyricWindow::enterEvent; // Expose for choke-point testing.
+  using LyricWindow::leaveEvent; // Expose for control-bar persistence testing.
   using LyricWindow::LyricWindow;
   using LyricWindow::pollHoverHide; // Expose for hover-poll testing.
 };
@@ -72,7 +78,14 @@ private slots:
   void stopAfterValidLyricShowsPlaceholder();
   void metadataToggleReappliesPlaceholder();
   void mixedLyricNeverVisitsStaticLine();
+  void setOffsetReplaceSemantics();
+  void selectorToggleWhilePlayingKeepsRawPosition();
+  void enableHideShowsWindow();
+  void fullscreenHideHidesWindow();
+  void settingsDialogSurvivesWindowHide();
   void closeButtonRequestsClose();
+  void unlockedControlBarStaysVisible();
+  void playbackRateBoundaryRejectsInvalid();
   void animateCloseFadesThenSignals();
   void normalFaintDoesNotEmitCloseFinished();
   void closeDuringFaintStillFadesOut();
@@ -309,6 +322,158 @@ void TestLyricController::mixedLyricNeverVisitsStaticLine()
   QCOMPARE(renderer->colorProgressForLine(0), 0.0);
 }
 
+void TestLyricController::setOffsetReplaceSemantics()
+{
+  // Protocol §5 + reference setLyricOffset (renderer/core/lyric.ts): the
+  // host sends the ABSOLUTE user-part offset (total user offset minus the
+  // lyric's own [offset:] tag) and REPLACES on every message. Accumulating
+  // would double-apply on an adjustment change or reconnect resend (1000 +
+  // 1500 = 2500). The tagged lyric keeps m_lineMode false and carries no
+  // [offset:] tag, so player->offset() equals the user part exactly.
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults(); // Idempotent; the ctor already loaded them.
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  TrackSnapshot snapshot;
+  snapshot.name = QStringLiteral("Test");
+  snapshot.singer = QStringLiteral("Singer");
+  snapshot.lrc = QStringLiteral("[00:01.00]<0,999>Hello\n[00:02.00]World");
+  controller.setTrack(snapshot);
+
+  controller.setOffset(1000);
+  QCOMPARE(controller.player()->offset(), qint64(1000));
+
+  // A second message (adjustment change / reconnect resend) REPLACES.
+  controller.setOffset(1500);
+  QCOMPARE(controller.player()->offset(), qint64(1500)); // NOT 2500.
+}
+
+void TestLyricController::selectorToggleWhilePlayingKeepsRawPosition()
+{
+  // REGRESSION (double-offset, selector re-selection): toggling a lyric
+  // selector key (player.isPlayLxlrc / translation / roma) while playing
+  // re-selects the lyric, and the new selection can carry a DIFFERENT
+  // [offset:] tag and line mode — so the total offset changes. The
+  // controller used to capture the offset-INCLUSIVE clock position and
+  // re-anchor through play(), applying the OLD total offset a second time on
+  // top of the NEW one: the lyric jumped by the tag/user offset. The raw
+  // caller position must cross the re-anchor instead, so the new total
+  // offset applies exactly once.
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults(); // Idempotent; the ctor already loaded them.
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  // lxlrc (default selection: karaoke, no tag, no line mode) vs plain lrc
+  // (line mode + [offset:500]) — switching between them changes the total
+  // offset from 1000 to 1560 with a 1000 ms user offset.
+  TrackSnapshot snapshot;
+  snapshot.name = QStringLiteral("Selector");
+  snapshot.singer = QStringLiteral("Singer");
+  snapshot.lrc = QStringLiteral("[offset:500]\n[00:01.00]A\n[00:03.00]B\n[00:05.00]C");
+  snapshot.lxlrc = QStringLiteral("[00:01.00]<0,500>A\n[00:03.00]<0,500>B\n[00:05.00]<0,500>C");
+  controller.setTrack(snapshot);
+
+  controller.setOffset(1000);
+  controller.play(2000); // lxlrc selected: total 1000, clock 3000, line 1 "B".
+
+  QCOMPARE(controller.player()->offset(), qint64(1000));
+  QVERIFY(controller.player()->isPlaying());
+  QCOMPARE(controller.player()->currentLine(), 1);
+
+  // Toggle isPlayLxlrc off: the plain lrc is selected — total offset becomes
+  // 500 (tag) + 1000 (user) + 60 (line mode) = 1560. The clock must
+  // re-anchor to raw (~2000) + 1560 = ~3560 — still inside line 1's span —
+  // with NO extra jump from the old offset (the buggy path re-anchored the
+  // old clock ~3000 + 1560 = ~4560, a 1000 ms jump).
+  QVERIFY(ctx.config.set(QStringLiteral("player.isPlayLxlrc"), false));
+
+  QCOMPARE(controller.player()->offset(), qint64(1560));
+  QVERIFY(controller.player()->isPlaying());
+  QCOMPARE(controller.player()->currentLine(), 1);
+  QCOMPARE(controller.player()->currentText(), QStringLiteral("B"));
+  QVERIFY(qAbs(controller.player()->currentPositionMs() - 3560) < 100);
+}
+
+void TestLyricController::enableHideShowsWindow()
+{
+  // The "Enable desktop lyric" checkbox (desktopLyric.enable) now has a
+  // consumer: off hides the window, on shows it again — the standalone
+  // analog of the reference closeWindow()/createWindow() (winLyric/index.ts).
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults();
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  // The ctor applies the host conditions once: with enable=true (default)
+  // the window is already shown by the fixture.
+  QVERIFY(window.isVisible());
+
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.enable"), false));
+  QVERIFY(!window.isVisible());
+
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.enable"), true));
+  QVERIFY(window.isVisible());
+}
+
+void TestLyricController::fullscreenHideHidesWindow()
+{
+  // Protocol set_fullscreen (host main-window fullscreen) + desktopLyric.
+  // fullscreenHide: hidden while the host is fullscreen, shown again when it
+  // leaves; without fullscreenHide the fullscreen state must not touch the
+  // window (reference main_window_fullscreen event).
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults();
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+  QVERIFY(window.isVisible());
+
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.fullscreenHide"), true));
+  window.setHostFullscreen(true);
+  QVERIFY(!window.isVisible());
+
+  window.setHostFullscreen(false);
+  QVERIFY(window.isVisible());
+
+  // fullscreenHide off: fullscreen must leave the window visible.
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.fullscreenHide"), false));
+  window.setHostFullscreen(true);
+  QVERIFY(window.isVisible());
+}
+
+void TestLyricController::settingsDialogSurvivesWindowHide()
+{
+  // The modeless settings dialog must stay reachable while the window is
+  // hidden by the host conditions: hiding the parent hides the dialog with
+  // it (Qt propagates visibility to children), so
+  // updateHiddenByHostConditions re-shows it explicitly — the re-enable path
+  // must not strand the dialog. Verified on the offscreen platform: a child
+  // window re-shown while its parent stays hidden does display.
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults();
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  window.openSettingsDialog();
+  auto* dialog = window.findChild<SettingsDialog*>();
+  QVERIFY(dialog != nullptr);
+  QVERIFY(dialog->isVisible());
+
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.enable"), false));
+  QVERIFY(!window.isVisible());
+  QVERIFY(dialog->isVisible()); // Re-shown explicitly: still reachable.
+
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.enable"), true));
+  QVERIFY(window.isVisible());
+  QVERIFY(dialog->isVisible());
+}
+
 void TestLyricController::closeButtonRequestsClose()
 {
   // The X button no longer quits directly: it emits closeRequested, and
@@ -340,6 +505,82 @@ void TestLyricController::closeButtonRequestsClose()
   // assert here because the quit wiring lives only in main.cpp, never in the
   // test binary.
   QTRY_VERIFY(window.fadeFactor() < 0.5);
+}
+
+void TestLyricController::unlockedControlBarStaysVisible()
+{
+  // REGRESSION (hunt 2, A): the control buttons must stay visible when the
+  // window is unlocked. The bar used to hover-fade from enter/leave events
+  // (reference parity) and vanished as soon as the pointer left the window;
+  // the product requirement makes the unlocked controls persistent — a
+  // DELIBERATE DEVIATION from lx-music. The reveal ceiling is kBodyOpacity
+  // (0.8), pushed into the bar by LyricWindow. No synthetic pointer hover is
+  // injected anywhere: persistence must hold with the pointer parked away.
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults(); // Default isLock=false: the bar must be visible.
+  TranslationManager i18n(ctx.config);
+  TestLyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  auto* bar = window.contentContainer()->findChild<ControlBar*>();
+  QVERIFY(bar != nullptr);
+  auto* effect = qobject_cast<QGraphicsOpacityEffect*>(bar->graphicsEffect());
+  QVERIFY(effect != nullptr);
+
+  // Unlocked: visible, and the 300 ms fade-in reaches the reveal ceiling
+  // (0.8) on its own — no enterEvent needed. underMouse() is intentionally
+  // NOT asserted: it depends on where the real desktop cursor happens to sit
+  // relative to the default window geometry, which no test can control.
+  QVERIFY(bar->isVisible());
+  QTRY_VERIFY_WITH_TIMEOUT(effect->opacity() > 0.79, 1000);
+
+  // Locking hides the bar (the pane fade and hover-hide are unaffected).
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.isLock"), true));
+  QVERIFY(!bar->isVisible());
+
+  // Unlocking brings it back, persistently visible again.
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.isLock"), false));
+  QVERIFY(bar->isVisible());
+  QTRY_VERIFY_WITH_TIMEOUT(effect->opacity() > 0.79, 1000);
+
+  // A leave-style event must NOT hide the bar (it used to via
+  // LyricWindow::leaveEvent -> setHovered(false)). Drive the production
+  // handler through the exposed protected method.
+  QEvent leave(QEvent::Leave);
+  window.leaveEvent(&leave);
+  QTest::qWait(600); // Longer than the 500 ms fade-out that would hide it.
+  QVERIFY(bar->isVisible());
+  QVERIFY(effect->opacity() > 0.79); // Still at the ceiling: not faded out.
+}
+
+void TestLyricController::playbackRateBoundaryRejectsInvalid()
+{
+  // Defense in depth (hunt 2, F): the controller is the protocol boundary —
+  // invalid rates are dropped here and must never reach the player's clock.
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults();
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  // Config default player.playbackRate = 1.0, applied through the boundary
+  // in the controller ctor.
+  QCOMPARE(controller.player()->playbackRate(), 1.0);
+
+  controller.setPlaybackRate(0.0);
+  QCOMPARE(controller.player()->playbackRate(), 1.0);
+  controller.setPlaybackRate(-1.0);
+  QCOMPARE(controller.player()->playbackRate(), 1.0);
+  controller.setPlaybackRate(std::numeric_limits<double>::quiet_NaN());
+  QCOMPARE(controller.player()->playbackRate(), 1.0);
+  controller.setPlaybackRate(std::numeric_limits<double>::infinity());
+  QCOMPARE(controller.player()->playbackRate(), 1.0);
+  controller.setPlaybackRate(42.0); // Out of the supported 0.25..4.0 range.
+  QCOMPARE(controller.player()->playbackRate(), 1.0);
+
+  // A valid rate still flows through and re-anchors (existing behavior).
+  controller.setPlaybackRate(2.0);
+  QCOMPARE(controller.player()->playbackRate(), 2.0);
 }
 
 void TestLyricController::animateCloseFadesThenSignals()

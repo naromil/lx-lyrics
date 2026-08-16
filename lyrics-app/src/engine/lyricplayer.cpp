@@ -17,9 +17,13 @@
 
 #include "engine/lyricplayer.h"
 
+#include "engine/checkedarith.h"
 #include "engine/wordparser.h"
 
 #include <QtGlobal>
+
+#include <cmath>
+#include <limits>
 
 LyricPlayer::LyricPlayer(QObject* parent)
   : QObject(parent)
@@ -60,9 +64,7 @@ bool LyricPlayer::setLyric(const QString& lrc, const QStringList& extendedLyrics
   // (broken timestamp) must not flip a karaoke lyric into line mode.
   m_lineMode = m_firstTimedIndex >= 0 && !WordParser::hasTimeTags(m_lines[m_firstTimedIndex].text);
   m_tagOffsetMs = result.tag.offsetMs;
-  // Line mode reserves the first 60 ms for the un-timed lead-in word, exactly
-  // like the Lyric facade in index.js.
-  m_totalOffsetMs = m_tagOffsetMs + m_userOffsetMs + (m_lineMode ? 60 : 0);
+  recomputeTotalOffset();
   m_curLineNum = 0;
   emit lyricsChanged();
   return true;
@@ -76,7 +78,13 @@ void LyricPlayer::play(qint64 positionMs)
     return;
   pause();
   m_playing = true;
-  m_clock.resync(positionMs + m_totalOffsetMs);
+  // The clock anchors BOTH the raw caller position and the offset-inclusive
+  // position (saturated composition): line selection runs on the inclusive
+  // side, while the raw side is what a later live re-anchor recovers. The
+  // raw position is stored independently — never reconstructed by
+  // subtracting the offset, which is not invertible once the inclusive
+  // composition saturates.
+  m_clock.resync(positionMs, m_totalOffsetMs);
   m_curLineNum = findCurLineNum(m_clock.currentPositionMs()) - 1;
   refresh();
 }
@@ -108,33 +116,101 @@ void LyricPlayer::stop()
 
 void LyricPlayer::setOffset(qint64 offsetMs)
 {
+  // Capture the raw caller position BEFORE the offset changes: play()
+  // applies the NEW total offset to the raw position exactly once —
+  // replaying the offset-inclusive clock position would apply the offset
+  // a second time.
+  const std::optional<qint64> rawPositionMs = rawLivePositionMs();
   m_userOffsetMs = offsetMs;
-  m_totalOffsetMs = m_tagOffsetMs + m_userOffsetMs + (m_lineMode ? 60 : 0);
-  if (m_playing) {
-    const qint64 pos = m_clock.currentPositionMs();
+  recomputeTotalOffset();
+  if (rawPositionMs.has_value()) {
     pause();
-    play(pos);
+    play(*rawPositionMs);
   }
 }
 
 void LyricPlayer::setPlaybackRate(double rate)
 {
+  // Final defense-in-depth guard (the controller's protocol boundary already
+  // validated, but the player owns the timing math): an invalid rate must
+  // never replace a valid current rate — zero/negative rates divide the
+  // next-line delay by zero, and non-finite or out-of-range values can
+  // overflow the qint64 conversions into a 0 ms timer spin. Rejected BEFORE
+  // any capture, so the current rate AND playback position stay untouched.
+  if (!isValidPlaybackRate(rate))
+    return;
+  // Same raw-position capture as setOffset, taken while the clock still runs
+  // at the OLD rate: play() then re-anchors that raw position with the new
+  // rate and the (unchanged) total offset exactly once, keeping the lyric
+  // position continuous across the rate change.
+  const std::optional<qint64> rawPositionMs = rawLivePositionMs();
   m_rate = rate;
   m_clock.setRate(rate);
-  if (m_playing) {
-    const qint64 pos = m_clock.currentPositionMs();
+  if (rawPositionMs.has_value()) {
     pause();
-    play(pos);
+    play(*rawPositionMs);
   }
+}
+
+std::optional<qint64> LyricPlayer::rawLivePositionMs() const
+{
+  if (!m_playing)
+    return std::nullopt;
+  // The clock anchors the raw caller position independently of the
+  // offset-inclusive position (see play()), so the raw position is
+  // recoverable continuously — including when the inclusive anchor
+  // saturated and a subtractive reconstruction (clock - total offset)
+  // would return a bogus value. The raw channel advances with the SAME
+  // elapsed time and playback rate as the inclusive position, and is only
+  // ever empty here (paused): callers skip the re-anchor instead of
+  // inventing a position.
+  return m_clock.rawPositionMs();
+}
+
+void LyricPlayer::recomputeTotalOffset()
+{
+  // Line mode reserves the first 60 ms for the un-timed lead-in word, exactly
+  // like the Lyric facade in index.js. Saturated composition: the tag and
+  // user parts may each sit at the qint64 bounds, so the sum must clamp
+  // instead of wrapping.
+  m_totalOffsetMs =
+    saturatingAdd(saturatingAdd(m_tagOffsetMs, m_userOffsetMs), m_lineMode ? 60 : 0);
+}
+
+qint64 LyricPlayer::lineDelayMs(qint64 targetTimeMs) const
+{
+  const qint64 gapMs = saturatingSub(targetTimeMs, m_clock.currentPositionMs());
+  if (gapMs <= 0)
+    return 0;
+  // m_rate is validated in [kMinPlaybackRate, kMaxPlaybackRate] (never
+  // zero), so the division is safe. The clamp BEFORE the double->qint64
+  // conversion keeps the narrowing exact: an out-of-range conversion would
+  // be UB, and an overflowed delay would schedule an invalid timer interval.
+  const double delay = gapMs / m_rate;
+  if (delay >= static_cast<double>(std::numeric_limits<int>::max()))
+    return std::numeric_limits<int>::max();
+  return static_cast<qint64>(delay);
+}
+
+bool LyricPlayer::isValidPlaybackRate(double rate)
+{
+  // Reject, never clamp: a host that sends a rate outside the supported
+  // range must not silently distort the lyric clock. The range bounds the
+  // delay math (division by m_rate, qint64 rounding) away from UB.
+  return std::isfinite(rate) && rate >= kMinPlaybackRate && rate <= kMaxPlaybackRate;
 }
 
 void LyricPlayer::setVertical(bool isVertical)
 {
   Q_UNUSED(isVertical);
-  if (m_playing) {
-    const qint64 pos = m_clock.currentPositionMs();
+  // Same raw re-anchor as setOffset/setPlaybackRate: the clock position
+  // already includes the total offset and play() adds it again, so the RAW
+  // position must cross the re-anchor. No production caller today (the
+  // renderer owns vertical layout); kept correct through the shared helper.
+  const std::optional<qint64> rawPositionMs = rawLivePositionMs();
+  if (rawPositionMs.has_value()) {
     pause();
-    play(pos);
+    play(*rawPositionMs);
   }
 }
 
@@ -209,10 +285,12 @@ void LyricPlayer::refresh()
 
   const LrcLine& curLine = m_lines[m_curLineNum];
   const qint64 currentTime = m_clock.currentPositionMs();
-  const qint64 driftTimeMs = currentTime - curLine.timeMs;
+  // Saturating: a boundary clock position (extreme offset) minus a line
+  // time must not wrap into the opposite sign.
+  const qint64 driftTimeMs = saturatingSub(currentTime, curLine.timeMs);
 
   if (driftTimeMs >= 0) {
-    const qint64 delayToNextLineMs = (m_lines[m_curLineNum + 1].timeMs - currentTime) / m_rate;
+    const qint64 delayToNextLineMs = lineDelayMs(m_lines[m_curLineNum + 1].timeMs);
     if (delayToNextLineMs > 0) {
       emit lineChanged(m_curLineNum, curLine.text);
       scheduleNext(delayToNextLineMs);
@@ -231,7 +309,7 @@ void LyricPlayer::refresh()
     // Before the first timed line (static lines lead the list) the player
     // stays in the (-1,"") lead-in state and waits for that line.
     emit lineChanged(-1, QString());
-    scheduleNext((m_lines[m_firstTimedIndex].timeMs - currentTime) / m_rate);
+    scheduleNext(lineDelayMs(m_lines[m_firstTimedIndex].timeMs));
     return;
   }
 
@@ -247,7 +325,11 @@ void LyricPlayer::scheduleNext(qint64 delayMs)
     return;
   // delayMs is already integral (the fractional part is dropped when the
   // call site converts the double), so no rounding is needed here.
-  m_timer.start(qMax<qint64>(0, delayMs));
+  // QTimer::start() takes int milliseconds: clamp to the supported range so
+  // an extreme (or negative) delay can never narrow into an invalid timer
+  // interval.
+  const qint64 clamped = std::clamp(delayMs, qint64(0), qint64(std::numeric_limits<int>::max()));
+  m_timer.start(static_cast<int>(clamped));
 }
 
 void LyricPlayer::onTimerTimeout()

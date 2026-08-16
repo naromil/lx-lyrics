@@ -162,6 +162,20 @@ int main(int argc, char* argv[])
     QObject::connect(ws, &WsClient::openSettingsRequested, window,
                      &LyricWindow::openSettingsDialog);
 
+    // Host fullscreen state (§5 set_fullscreen): while desktopLyric.
+    // fullscreenHide is enabled the lyric window hides when the host's main
+    // window enters fullscreen and shows again when it leaves.
+    QObject::connect(ws, &WsClient::fullscreenReceived, window, &LyricWindow::setHostFullscreen);
+
+    // User-initiated window close (control-bar X or WM close, once per
+    // session): tell the host so it stops its session WITHOUT respawning the
+    // app (protocol §4 close_requested). WS mode only — the demo has no host.
+    // Dropped when the socket is already gone; the host-side handler is
+    // idempotent, so a stale/dead socket cannot change plugin state.
+    QObject::connect(window, &LyricWindow::closeInitiated, &appContext, [ws] {
+      ws->sendCloseRequested();
+    });
+
     // Spectrum visualizer wiring (task 2.11, unchanged): the bridge owns
     // all spectrum-only couplings (frames -> widget, requests -> host, the
     // (isPlay && audioVisualization) gate). The controller does NOT own it.
@@ -184,7 +198,16 @@ int main(int argc, char* argv[])
     window->setWindowTitle(QStringLiteral("DEMO: %1 - %2").arg(demo.name, demo.singer));
   }
 
-  window->show();
+  // Show path split (host-visibility): the DEMO always displays — it must
+  // prove the render path even when the config would hide the window
+  // (enable=false, or host fullscreen + fullscreenHide). The host path
+  // re-runs the host-visible conditions instead of show(), so a window that
+  // must stay hidden (desktopLyric.enable off at startup, or the host
+  // already fullscreen) never flashes on screen once.
+  if (cli.demo)
+    window->show();
+  else
+    window->updateHiddenByHostConditions();
 
   return QApplication::exec();
 }

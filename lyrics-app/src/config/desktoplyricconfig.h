@@ -53,8 +53,11 @@ public:
   void flush();
 
   // Typed convenience getters (thin wrappers around get()).
+  bool isEnable() const;
   bool isLock() const;
   bool isAlwaysOnTop() const;
+  bool isAlwaysOnTopLoop() const;
+  bool isFullscreenHide() const;
   bool isShowTaskbar() const;
   bool isLockScreen() const;
   QString direction() const;

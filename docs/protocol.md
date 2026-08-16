@@ -80,6 +80,16 @@ Request one spectrum snapshot. Host replies with a **binary** `send_analyser_dat
 {"v": 1, "action": "get_analyser_data_array"}
 ```
 
+### `close_requested`
+
+The user **intentionally closed** the desktop lyric window (control-bar close button or WM close/Alt+F4). No payload.
+
+The host ends its display session — unchecks its "Desktop Lyrics" toggle and stops its spawner — so the disconnect that follows is **never** treated as a crash and the app is **not** respawned. The handler is idempotent: a duplicate frame or a toggle already off is a no-op. Apps SHOULD only send it when connected; a dropped request (host already gone) is not an error.
+
+```json
+{"v": 1, "action": "close_requested"}
+```
+
 ---
 
 ## 5. Message actions (host → app)
@@ -92,11 +102,12 @@ All host→app messages are JSON text frames **except** `send_analyser_data_arra
 | `set_lyric` | `lrc, tlrc, rlrc, lxlrc` | Lyric-only update, no metadata/state. Sent on lyric refetch or lyric edit while the same track is playing. |
 | `set_status` | `isPlay, line, played_time` | Playback state sync (start/pause/seek/finish). `line` **SHOULD be `-1`** — hosts that do not parse LRC cannot compute a line number; the app recomputes the line from `played_time` and ignores `line` entirely. |
 | `set_offset` | `tempOffset` | Lyric time offset in **ms**. Semantics mirror lx-music: `tempOffset` is a **delta** from the lyric's own offset tag (`[offset:…]`), not an absolute offset. |
-| `set_playbackRate` | `rate` | Float playback rate, e.g. `0.5`, `1.0`, `2.0`. Fooyin sends `1.0` (Fooyin exposes no rate API). **Reserved for future hosts** that support rate control. |
+| `set_playbackRate` | `rate` | Float playback rate. **Supported range: `0.25`–`4.0`** (inclusive). Rates outside the range — including `0`, negatives, `NaN` and infinities — are **ignored by the app** (the current rate is kept), so hosts should clamp before sending. Fooyin sends `1.0` (Fooyin exposes no rate API). **Reserved for future hosts** that support rate control. |
 | `set_play` | `time` | Resume/seek to `time` (ms). App resumes/restarts playback of the lyric timer at that position. |
 | `set_pause` | *(none)* | Pause lyric rendering. |
 | `set_stop` | *(none)* | Stop playback entirely; clear the active lyric line. |
 | `open_settings` | *(none)* | Requests the lyrics app to open its configuration dialog (equivalent to the app's settings gear / Ctrl+,). Used by hosts to let users reconfigure a locked lyrics window. |
+| `set_fullscreen` | `isFullscreen` | The host's main window entered/left fullscreen. When `desktopLyric.fullscreenHide` is enabled the app hides the lyric window while `isFullscreen` is true and shows it again when false. Mirrors lx-music's `main_window_fullscreen` event. |
 | `send_analyser_data_array` | *(binary frame)* | Spectrum data. **Exactly 128 bytes**, each byte 0–255, log-scaled spectrum magnitudes. See conversion contract below. |
 
 ### `send_analyser_data_array` conversion contract
@@ -123,10 +134,11 @@ byte = clamp(round(255 * log10(1 + magnitude * SCALE) / log10(256)), 0, 255)
 | `id` | Opaque track id string. May be `""`/`null` for "no track". |
 | `singer`, `name`, `album` | Display strings. May be `""` when absent. |
 | `isPlay` | Boolean playback state. |
+| `isFullscreen` | Boolean; the host's main window is fullscreen. |
 | `line` | Integer; `-1` unless the host actually parses LRC (see §5 — the app ignores it). |
 | `played_time` | Integer milliseconds. |
 | `tempOffset` | Integer milliseconds (delta from the lyric's own offset tag). |
-| `rate` | Float. |
+| `rate` | Float. Must be finite and within `0.25`–`4.0` (inclusive); the app ignores out-of-range or non-finite values and keeps the current rate. |
 | `time` | Integer milliseconds. |
 
 All strings are **UTF-8**. The host performs all encoding conversion (non-UTF-8 → UTF-8 via ICU) at the boundary; the app never receives raw non-UTF-8 text.
@@ -178,6 +190,9 @@ bars:     host → app     <binary frame, exactly 128 bytes>
 open settings (from the host plugin's LX Lyrics settings page):
           host → app     {"v":1,"action":"open_settings"}      # app opens/raises its config dialog
 
+user close (control-bar X or WM close):
+          app  → host    {"v":1,"action":"close_requested"}    # host stops its session; no respawn
+
 close:    host socket closes → app started with --exit-on-disconnect terminates.
 ```
 
@@ -186,6 +201,7 @@ close:    host socket closes → app started with --exit-on-disconnect terminate
 ## 11. Future extensions
 
 - **`tlrc` / `rlrc` / `lxlrc` are carried but empty in v1 from the Fooyin plugin.** v1 lyric sources are embedded tags and local `.lrc` files; when both are present the plugin sends their union (sidecar first). The wire format already supports them (§5/§6) so richer sources can be enabled without a protocol change.
-- **`set_playbackRate` is reserved.** Fooyin sends `1.0`; the field exists so rate-capable hosts can use it later.
+- **`set_playbackRate` is reserved.** Fooyin sends `1.0`; the field exists so rate-capable hosts can use it later. The app only accepts finite rates in `0.25`–`4.0` (§5/§6); anything else is ignored and the current rate is kept.
 - **`open_settings` is a control message, not a state message.** It carries no payload and expects no reply; the app opens its configuration dialog, or raises an already-open one. Apps built before this action treat it as an unknown `action` and close the connection per §7, so hosts SHOULD only send it when they know the connected app supports it (e.g. a version-negotiated spawn).
+- **`close_requested` is a control message, not a state message.** It carries no payload and expects no reply; the host ends its session without respawning (§4). Hosts built before this action treat it as an unknown `action` and close the connection per §7, so apps SHOULD only send it when connected to a host that supports it (the current lx-lyrics host does).
 - **Wayland always-on-top caveat is app-level, not protocol.** Making the lyric window stay on top under Wayland compositors is entirely the display app's concern and out of scope for this wire contract.
