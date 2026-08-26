@@ -509,48 +509,56 @@ void TestLyricController::closeButtonRequestsClose()
 
 void TestLyricController::unlockedControlBarStaysVisible()
 {
-  // REGRESSION (hunt 2, A): the control buttons must stay visible when the
-  // window is unlocked. The bar used to hover-fade from enter/leave events
-  // (reference parity) and vanished as soon as the pointer left the window;
-  // the product requirement makes the unlocked controls persistent — a
-  // DELIBERATE DEVIATION from lx-music. The reveal ceiling is kBodyOpacity
-  // (0.8), pushed into the bar by LyricWindow. No synthetic pointer hover is
-  // injected anywhere: persistence must hold with the pointer parked away.
+  // Reference #main:hover .control-bar — the control bar is visible only
+  // while the pointer is over the unlocked window. It fades in (300 ms) on
+  // enter and out (500 ms) on leave; a locked bar stays hidden. This test
+  // drives the production enter/leave handlers directly so it does not
+  // depend on the real cursor position.
   AppContext ctx(CliOptions{});
-  ctx.config.loadDefaults(); // Default isLock=false: the bar must be visible.
+  ctx.config.loadDefaults(); // Default isLock=false: the bar must be hover-revealed.
   TranslationManager i18n(ctx.config);
   TestLyricWindow window(ctx.config, i18n);
   LyricController controller(ctx, window);
 
   auto* bar = window.contentContainer()->findChild<ControlBar*>();
   QVERIFY(bar != nullptr);
-  auto* effect = qobject_cast<QGraphicsOpacityEffect*>(bar->graphicsEffect());
-  QVERIFY(effect != nullptr);
 
-  // Unlocked: visible, and the 300 ms fade-in reaches the reveal ceiling
-  // (0.8) on its own — no enterEvent needed. underMouse() is intentionally
-  // NOT asserted: it depends on where the real desktop cursor happens to sit
-  // relative to the default window geometry, which no test can control.
+  // Unlocked: widget is visible. Force a known non-hover state first so the
+  // test does not depend on where the real cursor sits at startup.
   QVERIFY(bar->isVisible());
-  QTRY_VERIFY_WITH_TIMEOUT(effect->opacity() > 0.79, 1000);
+  QEvent leave0(QEvent::Leave);
+  window.leaveEvent(&leave0);
+  QTRY_VERIFY_WITH_TIMEOUT(bar->currentOpacity() < 0.01, 1000);
 
-  // Locking hides the bar (the pane fade and hover-hide are unaffected).
+  // Hover in: fade to the 0.8 ceiling.
+  QEnterEvent enterEv(QPointF(10, 10), QPointF(10, 10), QPointF(10, 10));
+  window.enterEvent(&enterEv);
+  QTRY_VERIFY_WITH_TIMEOUT(bar->currentOpacity() > 0.79, 1000);
+  QVERIFY(bar->isVisible());
+
+  // Hover out: fade back to 0.
+  QEvent leave(QEvent::Leave);
+  window.leaveEvent(&leave);
+  QTRY_VERIFY_WITH_TIMEOUT(bar->currentOpacity() < 0.01, 1000);
+  QVERIFY(bar->isVisible()); // Still in layout, just transparent.
+
+  // Locking hides the bar entirely (widget hidden, not just transparent).
   QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.isLock"), true));
   QVERIFY(!bar->isVisible());
 
-  // Unlocking brings it back, persistently visible again.
+  // Unlocking brings it back, still hover-gated (opacity 0 until next enter).
   QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.isLock"), false));
   QVERIFY(bar->isVisible());
-  QTRY_VERIFY_WITH_TIMEOUT(effect->opacity() > 0.79, 1000);
+  // The unlock's showEvent may have seeded from cursor position; force leave
+  // to get back to 0 deterministically.
+  window.leaveEvent(&leave0);
+  QTRY_VERIFY_WITH_TIMEOUT(bar->currentOpacity() < 0.01, 1000);
 
-  // A leave-style event must NOT hide the bar (it used to via
-  // LyricWindow::leaveEvent -> setHovered(false)). Drive the production
-  // handler through the exposed protected method.
-  QEvent leave(QEvent::Leave);
+  // One more hover to prove the gate re-armed.
+  window.enterEvent(&enterEv);
+  QTRY_VERIFY_WITH_TIMEOUT(bar->currentOpacity() > 0.79, 1000);
   window.leaveEvent(&leave);
-  QTest::qWait(600); // Longer than the 500 ms fade-out that would hide it.
-  QVERIFY(bar->isVisible());
-  QVERIFY(effect->opacity() > 0.79); // Still at the ceiling: not faded out.
+  QTRY_VERIFY_WITH_TIMEOUT(bar->currentOpacity() < 0.01, 1000);
 }
 
 void TestLyricController::playbackRateBoundaryRejectsInvalid()

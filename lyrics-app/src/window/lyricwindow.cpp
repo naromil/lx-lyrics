@@ -533,27 +533,25 @@ void LyricWindow::enterEvent(QEnterEvent* event)
 {
   // Reference #container.hide:not(.lock):hover — hovering the fainted window
   // while unlocked restores full content opacity; leaving fades it back.
-  // NOTE: this window no longer drives the control bar's reveal from
-  // enter/leave events — the unlocked bar is persistently visible (deliberate
-  // deviation from lx-music's hover-fade, see ControlBar), so a leave must
-  // not hide it.
   if (m_shouldBeFaint && !m_config.isLock()) {
     m_hoverOverride = true;
     animateFadeTo(1.0);
   }
+  // Reference #main:hover .control-bar — hovering the window reveals the
+  // control bar when unlocked (see ControlBar::setHovered).
+  m_controlBar->setHovered(true);
   QWidget::enterEvent(event);
 }
 
 void LyricWindow::leaveEvent(QEvent* event)
 {
   // Only fade back if this window was brightened by hover; a plain leave
-  // while playing (m_shouldBeFaint false) must not dim the window. The
-  // control bar is untouched: its persistence is governed by the lock state
-  // alone (deliberate deviation, see ControlBar).
+  // while playing (m_shouldBeFaint false) must not dim the window.
   if (m_hoverOverride) {
     m_hoverOverride = false;
     animateFadeTo(kFaintFactor);
   }
+  m_controlBar->setHovered(false);
   QWidget::leaveEvent(event);
 }
 
@@ -573,11 +571,6 @@ void LyricWindow::showEvent(QShowEvent* event)
             << "config x/y:" << m_config.get(QStringLiteral("desktopLyric.x"))
             << m_config.get(QStringLiteral("desktopLyric.y"));
   }
-  // Seed the control bar hovered unconditionally — never from the pointer
-  // position: the unlocked bar is persistently visible (DELIBERATE
-  // DEVIATION from lx-music's hover-fade, product requirement), so every
-  // window show animates the 300 ms fade-in to the reveal ceiling.
-  m_controlBar->setHovered(true);
   updateAlwaysOnTopLoop();
   updateHoverHidePolling(); // (Re)start the hover-hide cursor poll on show.
 }

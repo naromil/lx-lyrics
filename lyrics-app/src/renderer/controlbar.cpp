@@ -6,7 +6,7 @@
  */
 #include "renderer/controlbar.h"
 
-#include <QGraphicsOpacityEffect>
+#include <QCursor>
 #include <QHBoxLayout>
 #include <QPainter>
 #include <QPainterPath>
@@ -60,7 +60,8 @@ const QString kKeyOpacity = QStringLiteral("desktopLyric.style.opacity");
 // and then the requested glyph with QPainter. Checkable buttons pick between
 // two glyphs so the icon mirrors the reference ControlBar.vue (e.g. the "zoom
 // off" glyph shows while zoom is active). Hovering dims the glyph to 0.7
-// opacity (reference .btn:hover { opacity: .7 }).
+// opacity (reference .btn:hover { opacity: .7 }). The bar's hover opacity
+// (m_opacity) is multiplied in so the whole button fades with the bar.
 class ControlBar::IconButton : public QToolButton {
 public:
   IconButton(Icon iconOn, Icon iconOff, ControlBar* bar)
@@ -93,13 +94,17 @@ protected:
     if (isChecked()) {
       painter.setPen(Qt::NoPen);
       painter.setBrush(kCheckedFill);
+      // The halo also fades with the bar - apply bar opacity.
+      painter.setOpacity(m_bar->currentOpacity());
       painter.drawEllipse(iconRect.adjusted(-4.0, -4.0, 4.0, 4.0));
     }
 
     // Reference .btn:hover { opacity: .7 } — the glyph dims; the bar's own
-    // opacity factor (hover reveal) compounds through the painter stack.
+    // opacity factor (hover reveal) compounds.
+    qreal baseOpacity = m_bar->currentOpacity();
     if (underMouse())
-      painter.setOpacity(0.7);
+      baseOpacity *= 0.7;
+    painter.setOpacity(baseOpacity);
 
     m_bar->paintIcon(painter, isChecked() ? m_iconOn : m_iconOff, iconRect);
   }
@@ -119,25 +124,21 @@ ControlBar::ControlBar(DesktopLyricConfig& config, TranslationManager& i18n, QWi
   setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
   setAttribute(Qt::WA_TranslucentBackground); // the rounded-top strip shows through
 
-  // Reveal animation (reference .control-bar opacity 0 / #main:hover opacity
-  // 1): a graphics effect fades the whole strip — background and buttons — as
-  // one unit, exactly like the CSS opacity transition. DELIBERATE DEVIATION
-  // from the reference hover-fade: the unlocked bar is kept persistently
-  // visible (product requirement), so updateVisibility() seeds setHovered(true)
-  // and the factor fades in to m_revealMaxOpacity once and stays there; the
-  // pointer no longer drives it. The reveal ceiling is m_revealMaxOpacity
-  // (default 1.0 undimmed; LyricWindow pushes its body dimming kBodyOpacity
-  // into the bar, since the window's container effect now applies only the
-  // fade). The window's container fade (LyricWindow) still compounds with
-  // this multiplier.
-  m_hoverEffect = new QGraphicsOpacityEffect(this);
-  m_hoverEffect->setOpacity(0.0);
-  setGraphicsEffect(m_hoverEffect);
-
+  // Hover reveal (reference .control-bar opacity 0 / #main:hover opacity 1):
+  // a plain opacity value is animated and used in paintEvent so the bar does
+  // not need a QGraphicsOpacityEffect — that effect nested with the window's
+  // container effect (LyricWindow::m_contentEffect) caused painter conflicts
+  // on X11 (QPainter::begin: Painter not active). The window's container fade
+  // and the bar's hover fade now use disjoint mechanisms.
   m_hoverAnim = new QVariantAnimation(this);
   connect(m_hoverAnim, &QVariantAnimation::valueChanged, this, [this](const QVariant& value) {
-    m_hoverFactor = value.toDouble();
-    m_hoverEffect->setOpacity(m_hoverFactor);
+    m_opacity = value.toDouble();
+    update(); // repaint bar background with new opacity
+    // Buttons are child widgets with their own paint; they query
+    // currentOpacity() on each repaint, so trigger theirs too.
+    for (auto& binding : m_tooltipBindings)
+      if (binding.button)
+        binding.button->update();
   });
 
   // Full-width strip: no margins, no gaps — each button carries its own
@@ -242,6 +243,10 @@ void ControlBar::paintEvent(QPaintEvent*)
 {
   QPainter painter(this);
   painter.setRenderHint(QPainter::Antialiasing, true);
+  // The bar's hover opacity is applied here; the window's container fade
+  // (LyricWindow) compounds on top via its own effect, but this bar no
+  // longer has an effect of its own.
+  painter.setOpacity(m_opacity);
 
   // Full-width rgba(0, 0, 0, .7) strip; only the top corners follow the
   // window's 4px radius (reference .control-bar border-top-left/right-radius:
@@ -266,11 +271,11 @@ void ControlBar::showEvent(QShowEvent* event)
   QWidget::showEvent(event);
   raise(); // Stay above future siblings (the lyric renderer) inside the container.
 
-  // Seed the hover factor unconditionally: the unlocked bar is persistently
-  // visible (DELIBERATE DEVIATION from lx-music's pointer-driven hover-fade),
-  // so a show always animates the fade-in to m_revealMaxOpacity — never from
-  // the pointer position. setHovered's at-target guard makes repeats cheap.
-  setHovered(true);
+  // The window's enter/leave events only fire on boundary crossings; a
+  // lock->unlock flip while the pointer sits inside emits no new enter, so
+  // seed the hover factor from the pointer position (reference #main:hover
+  // is a position-based CSS evaluation too).
+  setHovered(isPointerInsideWindow());
 }
 
 void ControlBar::setRevealMaxOpacity(qreal max)
@@ -281,22 +286,29 @@ void ControlBar::setRevealMaxOpacity(qreal max)
 void ControlBar::setHovered(bool hovered)
 {
   const double target = hovered ? m_revealMaxOpacity : 0.0;
-  if (qAbs(m_hoverFactor - target) < 1e-6) {
+  if (qAbs(m_opacity - target) < 1e-6) {
     m_hoverAnim->stop();
     return;
   }
   // Retarget smoothly: a running fade is stopped and restarted from the last
-  // delivered frame (m_hoverFactor stays live via valueChanged), so a rapid
+  // delivered frame (m_opacity stays live via valueChanged), so a rapid
   // enter/leave never jumps. Durations follow reference animate.less: fadeIn
   // .3s on enter, fadeOut .5s on leave.
   m_hoverAnim->stop();
   m_hoverAnim->setDuration(hovered ? kBarFadeInMs : kBarFadeOutMs);
   m_hoverAnim->setEasingCurve(QEasingCurve::OutCubic); // CSS 'ease' mapping
-  m_hoverAnim->setStartValue(m_hoverFactor);
+  m_hoverAnim->setStartValue(m_opacity);
   m_hoverAnim->setEndValue(target);
   m_hoverAnim->start();
 }
 
+bool ControlBar::isPointerInsideWindow() const
+{
+  const QWidget* top = window();
+  if (!top || !top->isVisible())
+    return false;
+  return top->frameGeometry().contains(QCursor::pos());
+}
 void ControlBar::syncCheckableStates()
 {
   const bool zoom = m_config.get(kKeyZoomActive).toBool();
@@ -324,16 +336,7 @@ void ControlBar::retranslate()
 
 void ControlBar::updateVisibility()
 {
-  const bool unlocked = !m_config.isLock();
-  setVisible(unlocked);
-  if (unlocked) {
-    // DELIBERATE DEVIATION from lx-music's hover-only reveal: the unlocked
-    // controls stay persistently visible/discoverable (product requirement).
-    // Seed the hover factor so the 300 ms fade-in reaches m_revealMaxOpacity;
-    // setHovered's at-target guard keeps repeats (lock flips, re-shows) from
-    // restarting the animation. A locked bar stays hidden, hover or not.
-    setHovered(true);
-  }
+  setVisible(!m_config.isLock());
 }
 
 void ControlBar::onSettingChanged(const QString& key, const QVariant&)
