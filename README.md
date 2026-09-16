@@ -6,8 +6,8 @@ A standalone desktop lyrics feature extracted from [lx-music-desktop](https://gi
 
 Both components are complete and verified:
 
-- **`lyrics-app/`** — standalone Qt6 / C++23 desktop lyrics window with synchronized scrolling and active-line rendering. Builds clean and passes its full test suite (4 suites, 63 QTest slots). Ready to run on its own (`--demo` or host-driven over the WebSocket protocol).
-- **`fooyin-plugin/`** — Fooyin plugin that drives the app: watches playback, reads lyrics (embedded tags + local `.lrc`), and streams track/state/lyrics/spectrum data over a loopback WebSocket. Loads into Fooyin 0.11.1.
+- **`lyrics-app/`** — standalone Qt6 / C++23 desktop lyrics window with synchronized scrolling and active-line rendering. Builds clean and passes its full test suite (6 suites, 151 QTest slots). Ready to run on its own (`--demo` or host-driven over the WebSocket protocol).
+- **`fooyin-plugin/`** — Fooyin plugin that drives the app: watches playback, reads lyrics (embedded tags + local `.lrc`), and streams track/state/lyrics/spectrum data over a loopback WebSocket. Targets Fooyin >= 0.11.1; plugin metadata and the `Plugin`/`CorePlugin`/`GuiPlugin` interfaces load-verified against the installed Fooyin 0.12.6.
 
 ## Goal
 
@@ -24,7 +24,7 @@ The two components share no source code; `docs/protocol.md` is their only contra
 | `fooyin-plugin/` | Fooyin plugin — see `fooyin-plugin/README.md` |
 | `docs/` | architecture, protocol, and research summaries |
 | `references/` | lx-music-desktop v2.12.2 source (gitignored; read-only reference) |
-| `tools/` | build/install helpers — `tools/install.sh` builds and installs both components |
+| `tools/` | build/install helpers — `tools/install.sh` builds and installs both components; `tools/lint.sh` runs the clang-format + clang-tidy gate |
 
 ## Documentation
 

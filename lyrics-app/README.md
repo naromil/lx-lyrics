@@ -29,7 +29,7 @@ parsing, line selection, and rendering.
   font size (10–80), window opacity (6–100%), line gap (0–25 px), text align, scroll align,
   ellipsis on overflow, active-line zoom, font-weight toggles, window flags (lock, always-on-top,
   show in taskbar, hover-hide, fullscreen-hide), and a reset-to-defaults action.
-- **Control bar**: close, lock, font size ±, opacity ±, zoom, always-on-top.
+- **Control bar**: close, lock, font size ±, opacity ±, zoom, always-on-top, and a settings gear.
 - **i18n**: zh-cn, zh-tw, en-us.
 - **Spectrum visualizer**: 128 bars, host-fed over the protocol.
 - **Pause-hide**: the window hides while playback is paused.
@@ -89,7 +89,7 @@ so the shortcut is the way back). Every change writes through the config and re-
 
 ## Tests
 
-Four QTest suites (63 slots total), run with CTest:
+Six QTest suites (151 slots total), run with CTest:
 
 ```sh
 ctest --test-dir build
@@ -97,10 +97,12 @@ ctest --test-dir build
 
 | Suite | Binary | Slots |
 |---|---|---|
-| engine | `lyrics-app-tests` | 31 |
-| lyricplayer | `lyrics-app-lyricplayer-tests` | 13 |
-| protocol | `lyrics-app-protocol-tests` | 11 |
+| engine | `lyrics-app-tests` | 44 |
+| lyricplayer | `lyrics-app-lyricplayer-tests` | 33 |
+| protocol | `lyrics-app-protocol-tests` | 16 |
 | config | `lyrics-app-config-tests` | 8 |
+| renderer | `lyrics-app-renderer-tests` | 21 |
+| controller | `lyrics-app-controller-tests` | 29 |
 
 **Test fixtures**: `tests/fixtures/sample.lrc` (UTF-8) and `tests/fixtures/sample-gbk.lrc` (the
 same lyrics encoded as GBK bytes) are rerunnable e2e fixtures for the encoding path:

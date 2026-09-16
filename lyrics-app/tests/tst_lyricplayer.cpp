@@ -759,6 +759,7 @@ void TestLyricPlayer::selectorReselectionRawReanchorKeepsPosition()
   // total offset), never the offset-inclusive clock position.
   const std::optional<qint64> raw = player.rawLivePositionMs();
   QVERIFY(raw.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access) -- guarded by QVERIFY above.
   QVERIFY(qAbs(*raw - 2000) < 100);
 
   // The controller's re-apply: a different lyric with a different total
@@ -770,6 +771,7 @@ void TestLyricPlayer::selectorReselectionRawReanchorKeepsPosition()
   // Resume with the RAW position: the NEW offset applies exactly once. The
   // buggy double-application anchored at old clock (3560) + new offset
   // (1000) = 4560 — a 1560 ms jump.
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access) -- guarded by QVERIFY above.
   player.play(*raw);
   QVERIFY(player.isPlaying());
   QCOMPARE(player.currentLine(), 1);
@@ -937,6 +939,7 @@ void TestLyricPlayer::negativeSaturatedOffsetLiveReanchorKeepsRawPosition()
   // old subtractive reconstruction (min - (min + 60) = -60).
   const std::optional<qint64> raw = player.rawLivePositionMs();
   QVERIFY(raw.has_value());
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access) -- guarded by QVERIFY above.
   QVERIFY(qAbs(*raw - (-5000)) < 100);
 
   // A live setPlaybackRate re-anchors the TRUE raw position: the clock

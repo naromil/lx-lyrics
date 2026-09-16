@@ -35,7 +35,6 @@ public:
   /// conversion can be unit-tested without a live Fooyin engine.
   static QByteArray scaleToBytes(const QVector<float>& bins);
 
-
   /// Pull one fresh spectrum frame and push it to the connected app.
   void onAnalyserDataRequested();
 

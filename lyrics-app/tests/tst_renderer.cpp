@@ -20,6 +20,9 @@
 #include "renderer/lyricrenderer.h"
 #include "testbootstrap.h"
 
+// Forces the offscreen platform for this suite (see testbootstrap.h).
+static const bool s_offscreenBootstrap = kForceOffscreen;
+
 namespace {
 
 QVector<RenderLine> makeLines(int count)

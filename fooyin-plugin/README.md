@@ -23,7 +23,8 @@ Analyser (VisualisationService)     ─┘   (JSON frames + 128-byte binary)    
 - **PlayerBridge** watches playback and turns track/state changes into `set_*` frames.
 - **LyricSources** reads embedded tags then the sidecar `.lrc`, decoding encoding exactly once.
 - **SpectrumSource** pulls analyser magnitudes, log-scales them into 128 bytes per request.
-- **HostServer** owns the loopback socket and strictly parses the three app→host requests.
+- **HostServer** owns the loopback socket and strictly parses the four app→host requests
+  (`get_info`, `get_status`, `get_analyser_data_array`, `close_requested`).
 - **AppSpawner** starts the lyrics app (`QProcess::startDetached`) with `--ws` + `--exit-on-disconnect`.
 
 The app-side pipeline (parsing, line selection, rendering, settings) is entirely the
@@ -32,7 +33,9 @@ The app-side pipeline (parsing, line selection, rendering, settings) is entirely
 ## Requirements
 
 - Fooyin >= 0.11.1, **built with `INSTALL_HEADERS=ON`** so `FooyinConfig.cmake` and the Fooyin
-  headers (`/usr/include/fooyin`) are installed.
+  headers (`/usr/include/fooyin`) are installed. This tree is load-verified against the installed
+  Fooyin 0.12.6 (plugin metadata + `Plugin`/`CorePlugin`/`GuiPlugin` interfaces resolve via
+  `QPluginLoader`); rebuild against the Fooyin release you run, since compatibility is by ABI.
 - Qt 6 >= 6.4 — Widgets, WebSockets (FooyinConfig does not propagate WebSockets; declared here).
 - ICU (`libicuuc`) — for lyric encoding conversion (GB18030 / BIG5).
 - A C++23 compiler, CMake >= 3.19, Ninja.

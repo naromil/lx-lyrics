@@ -41,7 +41,12 @@
 #include "renderer/controlbar.h"
 #include "renderer/lyricrenderer.h"
 #include "settings/settingsdialog.h"
+#include "testbootstrap.h"
 #include "window/lyricwindow.h"
+
+// Forces the offscreen platform for this widget suite (see testbootstrap.h):
+// the window tests must run without a display server, like the renderer suite.
+static const bool s_offscreenBootstrap = kForceOffscreen;
 
 // Config isolation (never touch the developer's real tuned config): test mode
 // redirects QStandardPaths::ConfigLocation under the temp dir, and
@@ -463,6 +468,7 @@ void TestLyricController::settingsDialogSurvivesWindowHide()
   window.openSettingsDialog();
   auto* dialog = window.findChild<SettingsDialog*>();
   QVERIFY(dialog != nullptr);
+  // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage) -- guarded by QVERIFY above.
   QVERIFY(dialog->isVisible());
 
   QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.enable"), false));
@@ -525,6 +531,7 @@ void TestLyricController::unlockedControlBarStaysVisible()
 
   // Unlocked: widget is visible. Force a known non-hover state first so the
   // test does not depend on where the real cursor sits at startup.
+  // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage) -- guarded by QVERIFY above.
   QVERIFY(bar->isVisible());
   QEvent leave0(QEvent::Leave);
   window.leaveEvent(&leave0);

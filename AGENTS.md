@@ -3,19 +3,21 @@
 ## Repository shape
 Two independent CMake/C++23 projects with **zero shared source**; the WebSocket JSON protocol in `docs/protocol.md` is their only contract. Change it whenever messages change.
 
-- `lyrics-app/` — standalone Qt6 desktop-lyrics display (port of lx-music-desktop's `renderer-lyric`). Owns ALL parsing (LRC, lxlrc, tlrc/rlrc, the `[awlrc:…]` container), line selection, karaoke rendering, and settings. The app is host-agnostic; it does not know Fooyin exists.
+- `lyrics-app/` — standalone Qt6 desktop-lyrics display (port of lx-music-desktop's `renderer-lyric`). Owns ALL parsing (LRC, lxlrc, tlrc/rlrc, the `[awlrc:…]` container), line selection (including karaoke word-tag parsing that drives line timing), line-by-line rendering (word tags are stripped; no per-word fill), and settings. The app is host-agnostic; it does not know Fooyin exists.
 - `fooyin-plugin/` — Fooyin (>= 0.11.1) plugin. Raw data + transport only — acquires lyrics, converts them to UTF-8, watches playback events, samples the analyser, and streams JSON frames over a loopback WebSocket; never parses LRC or renders anything.
 - `references/` — gitignored, read-only copy of lx-music-desktop 2.12.2 source. The parity reference: keep `desktopLyric.*` key names and lx-music semantics verbatim. Never edit.
 - `docs/` — `architecture.md` (design), `protocol.md` (the shared contract), `research/` (engineering research notes).
 
-## Build & verify (no CI, no lint config)
+## Build & verify (no CI)
 ```sh
 cd lyrics-app && cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug && cmake --build build
-ctest --test-dir build                 # 6 suites: engine(39) lyricplayer(16) protocol(11) config(8) renderer(16) controller(14)
+ctest --test-dir build                 # 6 suites: engine(44) lyricplayer(33) protocol(16) config(8) renderer(21) controller(29)
 ctest --test-dir build -R engine       # single suite
 timeout 3 ./build/lx-lyrics-app --demo # expect exit code 124 (timeout kill = no crash)
 ```
+- `./tools/lint.sh [--fix] [--format-only] [--tidy-only]` is the style/static-analysis gate: clang-format check over all sources plus clang-tidy via `run-clang-tidy` over both projects' build dirs (it strips Qt's GCC-only `-mno-direct-extern-access`, which the clang driver behind clang-tidy otherwise rejects). Findings fail the run.
 - Suites are separate binaries built from the subset of sources each exercises: `build/lyrics-app-tests` (engine), `lyrics-app-lyricplayer-tests`, `-protocol-`, `-config-`, `-renderer-`, `-controller-`; run one directly to bypass ctest.
+- `tests/testbootstrap.h` pins `QT_QPA_PLATFORM=offscreen` for the widget suites (renderer, controller) by odr-using `kForceOffscreen`; they must keep passing with no display server (`env -u DISPLAY -u WAYLAND_DISPLAY XDG_RUNTIME_DIR=$(mktemp -d)` is the check).
 - App run modes: `--demo` (self-fed, exercises the full parse/render pipeline), `--ws=ws://127.0.0.1:PORT` (host-driven), plus `--exit-on-disconnect` when spawned as a child of a host.
 - fooyin-plugin needs Fooyin built with `INSTALL_HEADERS=ON` and ICU; artifact is `build/fyplugin_lxlyrics.so`.
 - `build/` dirs are gitignored and shared across tasks; a concurrent LSP reconfiguration can transiently remove outputs — rebuild once before diagnosing.
