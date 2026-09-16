@@ -31,7 +31,9 @@ parsing, line selection, and rendering.
   show in taskbar, hover-hide, fullscreen-hide), and a reset-to-defaults action.
 - **Control bar**: close, lock, font size ±, opacity ±, zoom, always-on-top, and a settings gear.
 - **i18n**: zh-cn, zh-tw, en-us.
-- **Spectrum visualizer**: 128 bars, host-fed over the protocol.
+- **Spectrum visualizer**: a full-window backdrop of 128 faint white bars behind the lyric
+  lines (the reference `common-audio-visualizer` placement), host-fed over the protocol at 25 fps.
+  It pulls frames only while playback is running, the setting is on, and the window is visible.
 - **Pause-hide**: the window hides while playback is paused.
 - Drag to move, resize, lock, always-on-top.
 
@@ -60,7 +62,9 @@ Or use the project's `tools/install.sh` to build and install both components aut
 ```
 
 - `--demo` — no host. The app self-feeds a fake track through the **same** pipeline as a host
-  `set_info` message, so the full parse/render path is exercised.
+  `set_info` message, so the full parse/render path is exercised. The visualizer is self-fed too
+  (a synthetic transport answers the same pull requests a host answers), so `--demo` with
+  `desktopLyric.audioVisualization` on renders animated bars with no host attached.
 - `--ws=ws://127.0.0.1:PORT` — connect to a host implementing `docs/protocol.md`. With
   `--exit-on-disconnect` the app quits when the host closes the socket (used when a host spawns
   it as a child process).
@@ -89,7 +93,7 @@ so the shortcut is the way back). Every change writes through the config and re-
 
 ## Tests
 
-Six QTest suites (151 slots total), run with CTest:
+Six QTest suites (154 slots total), run with CTest:
 
 ```sh
 ctest --test-dir build
@@ -102,7 +106,7 @@ ctest --test-dir build
 | protocol | `lyrics-app-protocol-tests` | 16 |
 | config | `lyrics-app-config-tests` | 8 |
 | renderer | `lyrics-app-renderer-tests` | 21 |
-| controller | `lyrics-app-controller-tests` | 29 |
+| controller | `lyrics-app-controller-tests` | 32 |
 
 **Test fixtures**: `tests/fixtures/sample.lrc` (UTF-8) and `tests/fixtures/sample-gbk.lrc` (the
 same lyrics encoded as GBK bytes) are rerunnable e2e fixtures for the encoding path:

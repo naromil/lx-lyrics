@@ -37,7 +37,7 @@ namespace {
 // Reference App.vue look: #main has border-radius 4px and a static
 // rgba(0,0,0,.2) background with NO border. The reference body { opacity:
 // .8 } dimming is applied per component — the renderer's per-line blit,
-// the pane paint, the spectrum and control-bar effects (kBodyOpacity) —
+// the pane paint, the spectrum backdrop and the control bar (kBodyOpacity) —
 // while the container effect applies only the fade.
 constexpr int kRadiusBorder = 4;
 constexpr int kAlwaysOnTopReassertMs = 500;
@@ -220,24 +220,28 @@ LyricWindow::LyricWindow(DesktopLyricConfig& config, TranslationManager& i18n)
   m_contentContainer->setAttribute(Qt::WA_TranslucentBackground);
   m_contentContainer->setGeometry(rect());
 
-  // The container holds every child (control bar, lyric renderer, spectrum);
-  // a graphics effect over it reproduces the reference #container { opacity }
-  // rule — the FADE only. The reference body { opacity: .8 } dimming
-  // (kBodyOpacity) now lives in the renderer's per-line blit, so the active
-  // line reaches the full configured color while non-active lines keep the
-  // reference dimming; the pane paint, the spectrum and the control bar
-  // apply the same dimming themselves. NOTE: QGraphicsOpacityEffect can
-  // glitch on translucent top-levels on some platforms; if Wayland ever
-  // misrenders the fade, the fallback is per-widget painter opacity driven
-  // by the same fadeFactor() (children paint through the effect today).
+  // The container holds every child (control bar, lyric renderer, spectrum
+  // backdrop); a graphics effect over it reproduces the reference
+  // #container { opacity } rule — the FADE only. The reference body
+  // { opacity: .8 } dimming (kBodyOpacity) now lives in the renderer's
+  // per-line blit, so the active line reaches the full configured color while
+  // non-active lines keep the reference dimming; the pane paint, the spectrum
+  // and the control bar apply the same dimming themselves, by painting with
+  // it — never through a second QGraphicsOpacityEffect, which Qt drops
+  // entirely while this effect sits at opacity 1.0 (see the backdrop note
+  // below and ControlBar's). NOTE: QGraphicsOpacityEffect can glitch on
+  // translucent top-levels on some platforms; if Wayland ever misrenders the
+  // fade, the fallback is per-widget painter opacity driven by the same
+  // fadeFactor() (children paint through the effect today).
   m_contentEffect = new QGraphicsOpacityEffect(m_contentContainer);
   m_contentEffect->setOpacity(m_fadeFactor);
   m_contentContainer->setGraphicsEffect(m_contentEffect);
 
-  // Control bar floats at the top; the spectrum visualizer sits below it and
-  // the stretch reserves the area for the lyric renderer (attached in a later
-  // task). The visualizer is hidden unless desktopLyric.audioVisualization is
-  // on; the SpectrumBridge gates its render loop off (isPlay && setting).
+  // Control bar floats at the top (reference .control-bar: absolute, top 0);
+  // the lyric renderer takes the rest of the layout (inserted by
+  // LyricController). The visualizer is NOT a layout item: the reference
+  // mounts it as a full-window backdrop behind the lyric lines, so a strip of
+  // its own would both deviate from that and steal height from the lyrics.
   m_controlBar = new ControlBar(m_config, m_i18n, m_contentContainer);
   // The bar's hover-reveal ceiling is the reference body dimming; the window
   // owns that value, the bar just consumes it (no renderer->window include).
@@ -246,20 +250,26 @@ LyricWindow::LyricWindow(DesktopLyricConfig& config, TranslationManager& i18n)
   // animates the content fade to 0.0 and then emits closeAnimationFinished
   // (main.cpp quits the app on it).
   connect(m_controlBar, &ControlBar::closeRequested, this, &LyricWindow::animateClose);
-  m_spectrumWidget = new SpectrumWidget(m_config, m_contentContainer);
-  // Parity: the container effect now applies only the fade (the reference
-  // body opacity moved into the renderer's per-line blit), so the spectrum
-  // keeps the reference body 0.8 dimming through its own static effect.
-  auto* spectrumEffect = new QGraphicsOpacityEffect(m_spectrumWidget);
-  spectrumEffect->setOpacity(kBodyOpacity);
-  m_spectrumWidget->setGraphicsEffect(spectrumEffect);
+
+  // Spectrum backdrop (reference common-audio-visualizer: an absolute canvas
+  // at inset 0 with `pointer-events: none; z-index: -1` inside #main). It is a
+  // child of the content container with the container's whole rect, lowered
+  // below the control bar and below the lyric renderer (created later, by
+  // LyricController), and it never takes mouse input. Its static body dimming
+  // is painted by the widget itself (SpectrumWidget::setBodyOpacity): a second
+  // QGraphicsOpacityEffect nested inside the container fade effect makes Qt
+  // drop every paint the widget makes — the same conflict ControlBar already
+  // avoids.
+  m_spectrumWidget = new SpectrumWidget(m_contentContainer);
+  m_spectrumWidget->setBodyOpacity(kBodyOpacity);
+  m_spectrumWidget->setGeometry(m_contentContainer->rect());
+  m_spectrumWidget->lower();
   m_spectrumWidget->setVisible(
     m_config.get(QStringLiteral("desktopLyric.audioVisualization")).toBool());
   auto* containerLayout = new QVBoxLayout(m_contentContainer);
   containerLayout->setContentsMargins(0, 0, 0, 0);
   containerLayout->setSpacing(0);
   containerLayout->addWidget(m_controlBar, 0, Qt::AlignTop);
-  containerLayout->addWidget(m_spectrumWidget, 0, Qt::AlignTop);
   containerLayout->addStretch(1);
 
   // Order matches relayoutResizeHandles().
@@ -579,6 +589,8 @@ void LyricWindow::resizeEvent(QResizeEvent* event)
 {
   QWidget::resizeEvent(event);
   m_contentContainer->setGeometry(rect());
+  // The visualizer backdrop tracks the container (reference .content inset 0).
+  m_spectrumWidget->setGeometry(m_contentContainer->rect());
   relayoutResizeHandles();
 
   // A compositor-native resize delivers a stream of resize events; re-arm

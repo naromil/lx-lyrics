@@ -11,21 +11,22 @@ Two independent CMake/C++23 projects with **zero shared source**; the WebSocket 
 ## Build & verify (no CI)
 ```sh
 cd lyrics-app && cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug && cmake --build build
-ctest --test-dir build                 # 6 suites: engine(44) lyricplayer(33) protocol(16) config(8) renderer(21) controller(29)
+ctest --test-dir build                 # 6 suites: engine(44) lyricplayer(33) protocol(16) config(8) renderer(21) controller(32)
 ctest --test-dir build -R engine       # single suite
-timeout 3 ./build/lx-lyrics-app --demo # expect exit code 124 (timeout kill = no crash)
+QT_QPA_PLATFORM=offscreen timeout 3 ./build/lx-lyrics-app --demo # expect exit code 124 (timeout kill = no crash)
 ```
+- The headless demo check MUST set `QT_QPA_PLATFORM=offscreen`: `main.cpp` forces `xcb`, so on a box with no display server a bare `env -u DISPLAY … --demo` aborts (exit 134, Qt xcb "could not connect to display"). Use `xvfb-run -a … --demo` when the check must run on the user's real platform (xcb).
 - `./tools/lint.sh [--fix] [--format-only] [--tidy-only]` is the style/static-analysis gate: clang-format check over all sources plus clang-tidy via `run-clang-tidy` over both projects' build dirs (it strips Qt's GCC-only `-mno-direct-extern-access`, which the clang driver behind clang-tidy otherwise rejects). Findings fail the run.
 - Suites are separate binaries built from the subset of sources each exercises: `build/lyrics-app-tests` (engine), `lyrics-app-lyricplayer-tests`, `-protocol-`, `-config-`, `-renderer-`, `-controller-`; run one directly to bypass ctest.
 - `tests/testbootstrap.h` pins `QT_QPA_PLATFORM=offscreen` for the widget suites (renderer, controller) by odr-using `kForceOffscreen`; they must keep passing with no display server (`env -u DISPLAY -u WAYLAND_DISPLAY XDG_RUNTIME_DIR=$(mktemp -d)` is the check).
-- App run modes: `--demo` (self-fed, exercises the full parse/render pipeline), `--ws=ws://127.0.0.1:PORT` (host-driven), plus `--exit-on-disconnect` when spawned as a child of a host.
+- App run modes: `--demo` (self-fed — fake track AND a synthetic spectrum transport, so the visualizer renders with no host), `--ws=ws://127.0.0.1:PORT` (host-driven), plus `--exit-on-disconnect` when spawned as a child of a host.
 - fooyin-plugin needs Fooyin built with `INSTALL_HEADERS=ON` and ICU; artifact is `build/fyplugin_lxlyrics.so`.
 - `build/` dirs are gitignored and shared across tasks; a concurrent LSP reconfiguration can transiently remove outputs — rebuild once before diagnosing.
 - The LSP diagnostic "tst_config.moc not found" is pre-existing (AUTOMOC generates it at build time); ignore it.
 - Always rebuild after any code modification — never report a change as done until `cmake --build build` succeeds.
 
 ## lyrics-app layout
-`src/` is layered as: `engine/` (LRC/word parsers, `LyricPlayer` timed engine, `LyricSelector` lxlrc-vs-lrc choice + extended lyrics), `renderer/` (`LyricRenderer` widget, `ControlBar`, `SpectrumWidget`), `bridge/` (`WsClient`, pause-hide), `app/` (controller, spectrum bridge, CLI options), plus `config/`, `settings/`, `window/`, `i18n/`. Tests live in `tests/` as six QTest binaries.
+`src/` is layered as: `engine/` (LRC/word parsers, `LyricPlayer` timed engine, `LyricSelector` lxlrc-vs-lrc choice + extended lyrics), `renderer/` (`LyricRenderer` widget, `ControlBar`, `SpectrumWidget`), `bridge/` (`WsClient`, pause-hide), `app/` (controller, spectrum bridge + transport, CLI options), plus `config/`, `settings/`, `window/`, `i18n/`. Tests live in `tests/` as six QTest binaries.
 
 ## App quirks
 - `main.cpp` forces `QT_QPA_PLATFORM=xcb` before QApplication unless the env var is already set — client-side `move()`/position restore only works under X11. Set `QT_QPA_PLATFORM` beforehand to override. Always-on-top/click-through remain compositor best-effort on Wayland (KDE window rules: `tools/lx-lyrics.kwinrule`).

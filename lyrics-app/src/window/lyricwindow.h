@@ -47,7 +47,7 @@ public:
 
   // Reference body { opacity: .8 } dimming (App.vue). Applied per component:
   // the renderer's per-line blit dims non-active lines while the active line
-  // reaches the full configured color; the pane paint, the spectrum effect
+  // reaches the full configured color; the pane paint, the spectrum backdrop
   // and the control bar's hover ceiling use it directly. The container
   // effect applies only the fade.
   static constexpr qreal kBodyOpacity = 0.8;
@@ -56,8 +56,10 @@ public:
   // attach here in later tasks.
   QWidget* contentContainer() const { return m_contentContainer; }
 
-  // Spectrum visualizer below the control bar (hidden unless
-  // desktopLyric.audioVisualization is on). Wired to the host via the
+  // Spectrum visualizer: a full-window backdrop behind the lyric lines
+  // (reference .content inset 0 / z-index -1; hidden unless
+  // desktopLyric.audioVisualization is on). Wired to a transport — the host
+  // plugin over the WebSocket, or the --demo self-feed — via the
   // SpectrumBridge in app/.
   SpectrumWidget* spectrumWidget() const { return m_spectrumWidget; }
 

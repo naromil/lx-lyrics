@@ -27,6 +27,8 @@ add_executable(lx-lyrics-app
     src/app/lyriccontroller.h
     src/app/spectrumbridge.cpp
     src/app/spectrumbridge.h
+    src/app/spectrumtransport.cpp
+    src/app/spectrumtransport.h
     src/bridge/pausehide.cpp
     src/bridge/pausehide.h
     src/bridge/wsclient.cpp
@@ -165,7 +167,10 @@ add_executable(lyrics-app-controller-tests
     tests/tst_controller.cpp
     src/app/appcontext.h
     src/app/lyriccontroller.cpp
+    src/app/spectrumbridge.cpp
+    src/app/spectrumtransport.cpp
     src/bridge/pausehide.cpp
+    src/bridge/wsclient.cpp
     src/window/lyricwindow.cpp
     src/renderer/lyricrenderer.cpp
     src/renderer/controlbar.cpp

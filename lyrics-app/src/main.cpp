@@ -15,6 +15,7 @@
 #include "app/clioptions.h"
 #include "app/lyriccontroller.h"
 #include "app/spectrumbridge.h"
+#include "app/spectrumtransport.h"
 #include "bridge/wsclient.h"
 #include "i18n/translationmanager.h"
 #include "window/lyricwindow.h"
@@ -176,11 +177,14 @@ int main(int argc, char* argv[])
       ws->sendCloseRequested();
     });
 
-    // Spectrum visualizer wiring (task 2.11, unchanged): the bridge owns
-    // all spectrum-only couplings (frames -> widget, requests -> host, the
-    // (isPlay && audioVisualization) gate). The controller does NOT own it.
-    appContext.spectrumBridge = std::make_unique<SpectrumBridge>(window->spectrumWidget(), ws,
-                                                                 appContext.config, &appContext);
+    // Spectrum visualizer wiring: the bridge owns every spectrum-only
+    // coupling (frames -> widget, requests -> host, the (playing &&
+    // audioVisualization) gate); the controller does NOT own it. The
+    // transport seam keeps the host path and the --demo self-feed on one
+    // gate and one request loop.
+    appContext.spectrumTransport = std::make_unique<WsSpectrumTransport>(ws, &appContext);
+    appContext.spectrumBridge = std::make_unique<SpectrumBridge>(
+      window->spectrumWidget(), appContext.spectrumTransport.get(), appContext.config, &appContext);
 
     ws->connectToHost(QUrl(cli.wsUrl));
   }
@@ -188,14 +192,22 @@ int main(int argc, char* argv[])
   // Standalone self-feed (task 2.13): the fake track goes through the SAME
   // pipeline as a host set_info. play(0) starts the player's own clock and
   // the player's lineChanged signal moves the renderer's active line — no
-  // WsClient and no SpectrumBridge are constructed, so audioVisualization
-  // stays off.
+  // WsClient is constructed. The visualizer is fed by the synthetic
+  // transport below (a hostless demo has no host to ask), through the same
+  // bridge and gate a host drives.
   if (cli.demo) {
     const TrackSnapshot demo = makeDemoTrack();
     lyricController->setTrack(demo);
     lyricController->play(0);
     appContext.pauseHide->setPlayState(true); // The demo plays: keep it bright.
     window->setWindowTitle(QStringLiteral("DEMO: %1 - %2").arg(demo.name, demo.singer));
+
+    if (appContext.wsClient == nullptr) { // --ws wins when both flags are given
+      appContext.spectrumTransport = std::make_unique<DemoSpectrumTransport>(&appContext);
+      appContext.spectrumBridge = std::make_unique<SpectrumBridge>(
+        window->spectrumWidget(), appContext.spectrumTransport.get(), appContext.config,
+        &appContext);
+    }
   }
 
   // Show path split (host-visibility): the DEMO always displays — it must

@@ -10,27 +10,28 @@
 #include <QVariant>
 
 class DesktopLyricConfig;
+class SpectrumTransport;
 class SpectrumWidget;
-class WsClient;
 
-// Spectrum-only wiring for the lyric window's visualizer (task 2.11). The full
-// music-state machine arrives in task 2.13; this stays deliberately tiny.
+// Spectrum-only wiring for the lyric window's visualizer (task 2.11).
 //
 // Owns the three couplings the visualizer needs:
-//   - WsClient::analyserDataReceived  -> SpectrumWidget::setAnalyserData
-//   - SpectrumWidget::analyserDataRequested -> WsClient::sendGetAnalyserData
-//   - the active gate: the render loop runs only while the host reports
-//     playing (isPlay via set_info/set_status, implied true by set_play, false
-//     by set_pause/set_stop) AND `desktopLyric.audioVisualization` is on.
+//   - transport frameReceived            -> SpectrumWidget::setAnalyserData
+//   - SpectrumWidget::analyserDataRequested -> transport requestFrame
+//   - the active gate: the render loop runs only while the transport reports
+//     playing AND `desktopLyric.audioVisualization` is on.
+// The transport says WHERE frames come from (the host plugin over the
+// WebSocket, or the synthetic `--demo` feed), so both modes share this one
+// gate and loop.
 class SpectrumBridge : public QObject {
   Q_OBJECT
 
 public:
-  explicit SpectrumBridge(SpectrumWidget* spectrum, WsClient* ws, DesktopLyricConfig& config,
-                          QObject* parent = nullptr);
+  explicit SpectrumBridge(SpectrumWidget* spectrum, SpectrumTransport* transport,
+                          DesktopLyricConfig& config, QObject* parent = nullptr);
 
-  // Feeds the current play boolean, mirroring PauseHide::setPlayState: any
-  // state message that conveys the play boolean calls this.
+  // Feeds the current play boolean, mirroring PauseHide::setPlayState. The
+  // transport's playStateChanged drives it; callers may also push it directly.
   void setPlaying(bool playing);
 
 private:
@@ -38,7 +39,7 @@ private:
   void onSettingChanged(const QString& key, const QVariant& value);
 
   SpectrumWidget* m_spectrum;
-  WsClient* m_ws;
+  SpectrumTransport* m_transport;
   DesktopLyricConfig& m_config;
   bool m_playing = false;
   bool m_visualizationEnabled = false;

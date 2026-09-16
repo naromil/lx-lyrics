@@ -24,6 +24,7 @@
 #include <QElapsedTimer>
 #include <QEnterEvent>
 #include <QGraphicsOpacityEffect>
+#include <QImage>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTest>
@@ -34,12 +35,15 @@
 #include "app/appcontext.h"
 #include "app/clioptions.h"
 #include "app/lyriccontroller.h"
+#include "app/spectrumbridge.h"
+#include "app/spectrumtransport.h"
 #include "bridge/pausehide.h"
 #include "config/desktoplyricconfig.h"
 #include "engine/lyricplayer.h"
 #include "i18n/translationmanager.h"
 #include "renderer/controlbar.h"
 #include "renderer/lyricrenderer.h"
+#include "renderer/spectrumwidget.h"
 #include "settings/settingsdialog.h"
 #include "testbootstrap.h"
 #include "window/lyricwindow.h"
@@ -70,6 +74,37 @@ public:
   using LyricWindow::leaveEvent; // Expose for control-bar persistence testing.
   using LyricWindow::LyricWindow;
   using LyricWindow::pollHoverHide; // Expose for hover-poll testing.
+};
+
+// Minimal spectrum transport for the gate tests: answers every request with one
+// fixed 128-byte frame and lets a test push the play boolean, so the bridge's
+// (playing && audioVisualization) gate can be driven without a socket.
+class TestSpectrumTransport : public SpectrumTransport {
+public:
+  explicit TestSpectrumTransport(QObject* parent = nullptr)
+    : SpectrumTransport(parent)
+  {
+  }
+
+  void requestFrame() override
+  {
+    ++m_requests;
+    emit frameReceived(QByteArray(128, char(255)));
+  }
+
+  bool isPlaying() const override { return m_playing; }
+
+  void setPlaying(bool playing)
+  {
+    m_playing = playing;
+    emit playStateChanged(playing);
+  }
+
+  int requests() const { return m_requests; }
+
+private:
+  int m_requests = 0;
+  bool m_playing = false;
 };
 
 class TestLyricController : public QObject {
@@ -103,6 +138,9 @@ private slots:
   void pauseHideStartupFaintCancelledByPlay();
   void pauseHideEnableMidSessionFaintsWhenPaused();
   void pauseHideEnableMidSessionStaysBrightWhenPlaying();
+  void spectrumBackdropCoversWindowAndPaintsFrames();
+  void spectrumRequestsStopWhileHidden();
+  void spectrumGateFollowsPlayAndSetting();
 };
 
 void TestLyricController::invalidTimestampsRenderAsStaticLines()
@@ -893,6 +931,132 @@ void TestLyricController::pauseHideEnableMidSessionStaysBrightWhenPlaying()
   QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.pauseHide"), true));
   QTest::qWait(400);              // Past the 200 ms delay.
   QVERIFY(faintSpy.count() == 0); // Enabling while playing must NOT faint.
+}
+
+void TestLyricController::spectrumBackdropCoversWindowAndPaintsFrames()
+{
+  // Regression (the reported bug: "the audio visualization is empty"): the
+  // window draws the analyser as a full-window backdrop behind the lyric
+  // lines, and it actually paints. The removed design gave the spectrum its
+  // own QGraphicsOpacityEffect nested inside the content container's fade
+  // effect, and Qt silently drops every paint a nested-effect child makes —
+  // the backdrop stayed empty while frames kept arriving (measured: ~25 fps of
+  // frames, zero painted pixels, X11 and offscreen).
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults();
+  // The backdrop is hidden unless desktopLyric.audioVisualization is on, and
+  // the window reads that key when it is constructed.
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.audioVisualization"), true));
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  auto* spectrum = window.spectrumWidget();
+  auto* renderer = window.contentContainer()->findChild<LyricRenderer*>();
+  QVERIFY(spectrum != nullptr);
+  QVERIFY(renderer != nullptr);
+
+  // Reference .content { inset: 0 } on the #main backdrop: the visualizer
+  // covers the whole content area instead of taking a strip out of the lyric
+  // layout, which used to squeeze the renderer to nothing at small heights.
+  QCOMPARE(spectrum->geometry(), window.contentContainer()->rect());
+  QVERIFY(spectrum->geometry().contains(renderer->geometry()));
+  QVERIFY(spectrum->testAttribute(Qt::WA_TransparentForMouseEvents));
+
+  window.show();
+  const QImage before = window.grab().toImage();
+  spectrum->setAnalyserData(QByteArray(128, char(220))); // One plausible frame.
+  spectrum->setActive(true);
+  const QImage after = window.grab().toImage();
+  QVERIFY(spectrum->isVisible());
+
+  // The bars are bottom-anchored, so the bottom fifth of the window must gain
+  // painted pixels. Nothing else is drawn there (no track is set).
+  int painted = 0;
+  const int firstRow = after.height() * 4 / 5;
+  for (int y = firstRow; y < after.height(); ++y) {
+    for (int x = 0; x < after.width(); ++x) {
+      if (qAlpha(after.pixel(x, y)) > qAlpha(before.pixel(x, y)) + 4)
+        ++painted;
+    }
+  }
+  QVERIFY(painted > 200);
+}
+
+void TestLyricController::spectrumRequestsStopWhileHidden()
+{
+  // A hidden lyric window must not keep pulling analyser frames: every request
+  // costs the host an FFT, and the hidden window cannot show the result. The
+  // loop runs only while the widget is active AND visible; showing it again
+  // resumes the pull.
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults();
+  // The backdrop (and therefore the loop) is off unless the setting is on.
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.audioVisualization"), true));
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  auto* spectrum = window.spectrumWidget();
+  QVERIFY(spectrum != nullptr);
+  QSignalSpy requested(spectrum, &SpectrumWidget::analyserDataRequested);
+
+  window.show();
+  spectrum->setActive(true);
+  QCOMPARE(requested.count(), 1);                        // First request is immediate.
+  QTRY_VERIFY_WITH_TIMEOUT(requested.count() >= 2, 500); // 40 ms cadence.
+
+  window.hide();
+  const int whileHidden = requested.count();
+  QTest::qWait(250); // Several ticks' worth.
+  QCOMPARE(requested.count(), whileHidden);
+
+  window.show();
+  QTRY_VERIFY_WITH_TIMEOUT(requested.count() > whileHidden, 500);
+}
+
+void TestLyricController::spectrumGateFollowsPlayAndSetting()
+{
+  // One gate drives the request loop for every transport: the visualizer pulls
+  // only while the source reports playing AND
+  // desktopLyric.audioVisualization is on.
+  const QString kVisualization = QStringLiteral("desktopLyric.audioVisualization");
+
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults();
+  QVERIFY(ctx.config.set(kVisualization, true));
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  auto* spectrum = window.spectrumWidget();
+  QVERIFY(spectrum != nullptr);
+  QSignalSpy requested(spectrum, &SpectrumWidget::analyserDataRequested);
+
+  TestSpectrumTransport transport;
+  SpectrumBridge bridge(spectrum, &transport, ctx.config);
+  window.show();
+  QTest::qWait(150);
+  QCOMPARE(requested.count(), 0); // Enabled but not playing: still idle.
+
+  transport.setPlaying(true);
+  QTRY_VERIFY_WITH_TIMEOUT(requested.count() >= 1, 500); // Playing and enabled.
+  QVERIFY(transport.requests() >= 1);                    // Requests reach the source.
+
+  transport.setPlaying(false); // Pause stops the loop (the widget stays visible).
+  QTest::qWait(150);
+  const int paused = requested.count();
+  QTest::qWait(200);
+  QCOMPARE(requested.count(), paused);
+
+  transport.setPlaying(true);
+  QTRY_VERIFY_WITH_TIMEOUT(requested.count() > paused, 500);
+
+  ctx.config.set(kVisualization, false); // Turning the setting off stops it too.
+  QTest::qWait(150);
+  const int disabled = requested.count();
+  QTest::qWait(200);
+  QCOMPARE(requested.count(), disabled);
 }
 
 QTEST_MAIN(TestLyricController)

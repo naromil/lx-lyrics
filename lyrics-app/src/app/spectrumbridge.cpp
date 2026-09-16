@@ -6,7 +6,7 @@
  */
 #include "app/spectrumbridge.h"
 
-#include "bridge/wsclient.h"
+#include "app/spectrumtransport.h"
 #include "config/desktoplyricconfig.h"
 #include "renderer/spectrumwidget.h"
 
@@ -16,35 +16,20 @@ const QString kKeyVisualization = QStringLiteral("desktopLyric.audioVisualizatio
 
 } // namespace
 
-SpectrumBridge::SpectrumBridge(SpectrumWidget* spectrum, WsClient* ws, DesktopLyricConfig& config,
-                               QObject* parent)
+SpectrumBridge::SpectrumBridge(SpectrumWidget* spectrum, SpectrumTransport* transport,
+                               DesktopLyricConfig& config, QObject* parent)
   : QObject(parent)
   , m_spectrum(spectrum)
-  , m_ws(ws)
+  , m_transport(transport)
   , m_config(config)
+  , m_playing(m_transport->isPlaying())
   , m_visualizationEnabled(m_config.get(kKeyVisualization).toBool())
 {
-  connect(m_ws, &WsClient::analyserDataReceived, m_spectrum, &SpectrumWidget::setAnalyserData);
-  connect(m_spectrum, &SpectrumWidget::analyserDataRequested, m_ws, &WsClient::sendGetAnalyserData);
-
-  // The play gate, mirroring PauseHide: set_info/set_status carry isPlay;
-  // set_play implies true; set_pause/set_stop imply false.
-  connect(m_ws, &WsClient::infoReceived, this, [this](const TrackSnapshot& info) {
-    setPlaying(info.isPlay);
-  });
-  connect(m_ws, &WsClient::statusReceived, this, [this](const PlaybackSnapshot& status) {
-    setPlaying(status.isPlay);
-  });
-  connect(m_ws, &WsClient::playReceived, this, [this](qint64) {
-    setPlaying(true);
-  });
-  connect(m_ws, &WsClient::pauseReceived, this, [this] {
-    setPlaying(false);
-  });
-  connect(m_ws, &WsClient::stopReceived, this, [this] {
-    setPlaying(false);
-  });
-
+  connect(m_transport, &SpectrumTransport::frameReceived, m_spectrum,
+          &SpectrumWidget::setAnalyserData);
+  connect(m_spectrum, &SpectrumWidget::analyserDataRequested, m_transport,
+          &SpectrumTransport::requestFrame);
+  connect(m_transport, &SpectrumTransport::playStateChanged, this, &SpectrumBridge::setPlaying);
   connect(&m_config, &DesktopLyricConfig::settingChanged, this, &SpectrumBridge::onSettingChanged);
 
   updateActive();

@@ -106,9 +106,10 @@ LyricController::LyricController(AppContext& ctx, LyricWindow& window, QObject* 
   m_selector = std::make_unique<LyricSelector>();
   m_renderer = new LyricRenderer(window.contentContainer());
 
-  // contentContainer's QVBoxLayout is [control bar, spectrum, trailing
-  // stretch]. Insert the renderer between the spectrum and the stretch so it
-  // expands into the lyric area; the trailing stretch then collapses to zero.
+  // contentContainer's QVBoxLayout is [control bar, trailing stretch] (the
+  // spectrum backdrop is NOT a layout item — it paints behind the renderer).
+  // Insert the renderer before the stretch so it expands into the rest of the
+  // lyric area; the trailing stretch then collapses to zero.
   auto* layout = qobject_cast<QVBoxLayout*>(window.contentContainer()->layout());
   layout->insertWidget(layout->count() - 1, m_renderer, 1);
   layout->setStretch(layout->count() - 1, 0);

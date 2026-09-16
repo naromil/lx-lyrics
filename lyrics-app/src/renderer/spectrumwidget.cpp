@@ -7,10 +7,11 @@
 #include "renderer/spectrumwidget.h"
 
 #include <QPainter>
+#include <QPainterPath>
 #include <QResizeEvent>
-#include <QVariant>
+#include <QtGlobal>
 
-#include "config/desktoplyricconfig.h"
+#include <cstring>
 
 namespace {
 
@@ -18,31 +19,27 @@ constexpr int kFrameBytes = 128;     // protocol §5: exactly 128 bytes per fram
 constexpr int kMaxNum = 255;         // reference maxNum: triangle-wave period
 constexpr int kBandLimit = 90;       // reference: bins above 90 are skipped
 constexpr int kBandSkip = 20;        // reference: band-average starts at bin 20
-constexpr int kFrameIntervalMs = 40; // ~25 fps; requestAnimationFrame replacement
-
-const QString kKeyPlayedColor = QStringLiteral("desktopLyric.style.lyricPlayedColor");
+constexpr int kFrameIntervalMs = 40; // 25 fps; the reference's rAF replacement
+// Reference canvas colour: `let themeColor = 'rgba(255, 255, 255, .12)'`
+// (AudioVisualizer.vue:66). Always opaque-white-tinted: the visualizer is a
+// backdrop, not a themed element.
+constexpr int kBarAlpha = 31; // round(0.12 * 255)
+// Reference `#main { overflow: hidden; border-radius: 4px }` clips the canvas
+// to the pane's rounded corners; the pane itself is painted by LyricWindow
+// (kRadiusBorder there), so the backdrop clips where the pane does.
+constexpr int kCornerRadius = 4;
 
 } // namespace
 
-SpectrumWidget::SpectrumWidget(DesktopLyricConfig& config, QWidget* parent)
+SpectrumWidget::SpectrumWidget(QWidget* parent)
   : QWidget(parent)
-  , m_config(config)
-  , m_barColor(m_config.playedColor())
 {
-  setAttribute(Qt::WA_TranslucentBackground); // the window pane shows through
-  setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+  setAttribute(Qt::WA_TranslucentBackground);     // the window pane shows through
+  setAttribute(Qt::WA_TransparentForMouseEvents); // reference pointer-events: none
+  m_spectrum.resize(kFrameBytes);                 // fixed-size buffer: the hot path never allocates
 
   m_frameTimer.setInterval(kFrameIntervalMs);
   connect(&m_frameTimer, &QTimer::timeout, this, &SpectrumWidget::onFrameTick);
-
-  // Default bar color follows the config live; an explicit setBarColor()
-  // overrides it (ControlBar-style re-sync, like its checkable buttons).
-  connect(&m_config, &DesktopLyricConfig::settingChanged, this, &SpectrumWidget::onSettingChanged);
-}
-
-QSize SpectrumWidget::sizeHint() const
-{
-  return QSize(100, 60);
 }
 
 void SpectrumWidget::setAnalyserData(const QByteArray& bytes)
@@ -52,9 +49,10 @@ void SpectrumWidget::setAnalyserData(const QByteArray& bytes)
                << kFrameBytes << ")";
     return;
   }
-  m_spectrum = bytes;
+  std::memcpy(m_spectrum.data(), bytes.constData(), kFrameBytes);
   m_hasFrame = true;
-  update(); // Paint now if active; the paint guard idles it otherwise.
+  if (m_active)
+    update(); // Paint now; idle frames are stored but not drawn.
 }
 
 void SpectrumWidget::setActive(bool active)
@@ -62,22 +60,15 @@ void SpectrumWidget::setActive(bool active)
   if (m_active == active)
     return;
   m_active = active;
-
-  if (active) {
-    m_frameTimer.start();
-    onFrameTick(); // First request immediately; the timer keeps it flowing.
-  } else {
-    m_frameTimer.stop();
-    m_spectrum.clear();
-    m_hasFrame = false;
-  }
+  if (!active)
+    m_hasFrame = false; // Idle renders nothing (see the pause note in the header).
+  updateRunning();
   update();
 }
 
-void SpectrumWidget::setBarColor(const QColor& color)
+void SpectrumWidget::setBodyOpacity(qreal opacity)
 {
-  m_barColor = color;
-  m_barColorCustomized = true;
+  m_bodyOpacity = qBound(0.0, opacity, 1.0);
   update();
 }
 
@@ -89,10 +80,18 @@ void SpectrumWidget::onFrameTick()
   emit analyserDataRequested(); // ...then schedule the next snapshot.
 }
 
-void SpectrumWidget::onSettingChanged(const QString& key, const QVariant&)
+void SpectrumWidget::updateRunning()
 {
-  if (key == kKeyPlayedColor && !m_barColorCustomized)
-    setBarColor(m_config.playedColor());
+  const bool run = m_active && isVisible();
+  if (run == m_frameTimer.isActive())
+    return;
+
+  if (run) {
+    m_frameTimer.start();
+    onFrameTick(); // First request immediately; the timer keeps it flowing.
+  } else {
+    m_frameTimer.stop();
+  }
 }
 
 void SpectrumWidget::paintEvent(QPaintEvent* event)
@@ -105,7 +104,7 @@ void SpectrumWidget::paintEvent(QPaintEvent* event)
 
   // Reference renderFrame(): band-average first, then draw the bars.
   double frequencyAvg = 0.0;
-  for (int i = 0; i < m_spectrum.size(); ++i) {
+  for (int i = 0; i < kFrameBytes; ++i) {
     // Reference num mapping is a triangle wave over maxNum. Every input
     // index is < 255, so num == i here; kept general to match the .vue.
     const int mult = i / kMaxNum;
@@ -113,20 +112,27 @@ void SpectrumWidget::paintEvent(QPaintEvent* event)
     const int spectrum = num > kBandLimit ? 0 : quint8(m_spectrum.at(num + kBandSkip));
     frequencyAvg += spectrum * 1.4;
   }
-  frequencyAvg /= m_spectrum.size(); // dataArray.length
+  frequencyAvg /= kFrameBytes; // dataArray.length
   frequencyAvg *= 1.6;
   frequencyAvg /= kMaxNum;
 
   QPainter painter(this);
   painter.setPen(Qt::NoPen);
+  // The reference compounds the canvas colour with the window body dimming
+  // (`body { opacity: .8 }`).
+  painter.setOpacity(m_bodyOpacity);
+  QPainterPath clip;
+  clip.addRoundedRect(QRectF(rect()), kCornerRadius, kCornerRadius);
+  painter.setClipPath(clip);
 
+  const QColor barColor(255, 255, 255, kBarAlpha);
   double x = 0.0;
-  for (int i = 0; i < m_spectrum.size(); ++i) {
+  for (int i = 0; i < kFrameBytes; ++i) {
     if (x > m_width)
       break; // Reference: stop once the bars run past the canvas.
     const int byte = quint8(m_spectrum.at(i));
     const double barHeight = (byte * frequencyAvg + byte * 0.42) * m_maxHeightPerUnit;
-    painter.fillRect(QRectF(x, m_height - barHeight, m_barWidth, barHeight), m_barColor);
+    painter.fillRect(QRectF(x, m_height - barHeight, m_barWidth, barHeight), barColor);
     x += m_barWidth;
   }
 }
@@ -141,6 +147,18 @@ void SpectrumWidget::resizeEvent(QResizeEvent* event)
   m_maxHeightPerUnit = qRound(m_height * 0.46 / kMaxNum * 10000.0) / 10000.0;
   m_barWidth = barWidthFor(m_width);
   update();
+}
+
+void SpectrumWidget::showEvent(QShowEvent* event)
+{
+  QWidget::showEvent(event);
+  updateRunning();
+}
+
+void SpectrumWidget::hideEvent(QHideEvent* event)
+{
+  QWidget::hideEvent(event);
+  updateRunning();
 }
 
 double SpectrumWidget::barWidthFor(int widgetWidth)

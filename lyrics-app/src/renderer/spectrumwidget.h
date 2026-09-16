@@ -7,17 +7,30 @@
 #pragma once
 
 #include <QByteArray>
-#include <QColor>
 #include <QTimer>
 #include <QWidget>
 
 class QPaintEvent;
 class QResizeEvent;
-class DesktopLyricConfig;
 
 // Spectrum visualizer for the lyric window (port of the reference
-// renderer-lyric AudioVisualizer.vue). Draws the 128-byte log-scaled analyser
-// frame (protocol §5) as a band of bars across the widget.
+// renderer-lyric AudioVisualizer.vue).
+//
+// PLACEMENT — the reference mounts a full-window <canvas> as the #main
+// backdrop (`.content { position: absolute; inset: 0; pointer-events: none;
+// z-index: -1 }`, AudioVisualizer.vue:181-189) so the bars sit BEHIND the
+// lyric lines across the whole window. This widget is that backdrop:
+// LyricWindow gives it the content container's whole rect and keeps it at the
+// bottom of the child stack (below the lyric renderer and the control bar) and
+// mouse-transparent.
+//
+// DIMMING — the reference colour is the hardcoded rgba(255,255,255,.12)
+// compounded by the lyric window's `body { opacity: .8 }`. The widget paints
+// that dim itself (painter opacity, setBodyOpacity) rather than carrying a
+// QGraphicsOpacityEffect: a second effect nested inside the content
+// container's fade effect makes Qt drop every paint the widget makes, so the
+// window showed an empty backdrop while frames were arriving. ControlBar
+// avoids the same conflict the same way (see lyricwindow.cpp).
 //
 // The VISUAL LOGIC is a faithful port of the .vue renderFrame():
 //   1. A band-average frequencyAvg is computed from source bins `num + 20`
@@ -28,56 +41,59 @@ class DesktopLyricConfig;
 //      MAX_HEIGHT = round(height * 0.46 / 255 * 10000) / 10000, and bars are
 //      spaced with the reference getBarWidth() (2.5x slots at normal widths,
 //      tighter on very wide widgets so more of the 128 bars fit).
-// The reference schedules each next snapshot with requestAnimationFrame; this
-// widget replaces that with a QTimer paced at kFrameIntervalMs (~25 fps): each
-// tick renders the current frame and emits analyserDataRequested() so the glue
-// asks the host for the next snapshot.
+//
+// CADENCE — the reference schedules each next snapshot with
+// requestAnimationFrame (~60 fps). This widget deliberately runs a QTimer at
+// kFrameIntervalMs (40 ms = 25 fps): 2.4x cheaper for an effect that is
+// already smoothed by the host's log-scaled frame, and it keeps the pull loop
+// off the render path. Each tick renders the current frame and asks the
+// transport for the next snapshot. The loop additionally stops whenever the
+// widget is not visible: a hidden lyric window must not keep pulling frames
+// (and making the host compute FFTs).
 class SpectrumWidget : public QWidget {
   Q_OBJECT
 
 public:
-  // The frame is exactly 128 bytes per protocol §5. Default bar color reads
-  // from config `desktopLyric.style.lyricPlayedColor` and follows it live
-  // unless setBarColor() overrides it explicitly.
-  explicit SpectrumWidget(DesktopLyricConfig& config, QWidget* parent = nullptr);
+  explicit SpectrumWidget(QWidget* parent = nullptr);
 
   // Stores one 128-byte spectrum snapshot and repaints. Any other size is
   // dropped loudly (parse at the boundary) — the frame must never enter the
   // render math half-valid.
   void setAnalyserData(const QByteArray& bytes);
 
-  // Gates the render/request loop: true renders frames and requests new
+  // Gates the render/request loop: true renders frames and asks for new
   // snapshots, false idles (loop stopped, nothing painted). The glue feeds
   // this from (isPlay && desktopLyric.audioVisualization).
   void setActive(bool active);
 
-  // Overrides the default config-driven bar color.
-  void setBarColor(const QColor& color);
-
-  QSize sizeHint() const override;
+  // The lyric window's body dimming (LyricWindow::kBodyOpacity), compounded
+  // with the reference canvas colour — the value ControlBar receives through
+  // setRevealMaxOpacity. Default 1.0 (undimmed).
+  void setBodyOpacity(qreal opacity);
 
 signals:
-  // Emitted once per frame while active: asks the host for the next
+  // Emitted once per frame while running: asks the transport for the next
   // analyser snapshot (reference: requestAnimationFrame(getAnalyserDataArray)).
   void analyserDataRequested();
 
 protected:
   void paintEvent(QPaintEvent* event) override;
   void resizeEvent(QResizeEvent* event) override;
+  void showEvent(QShowEvent* event) override;
+  void hideEvent(QHideEvent* event) override;
 
 private:
   void onFrameTick();
-  void onSettingChanged(const QString& key, const QVariant& value);
+  // Starts/stops the frame timer to match (active && visible).
+  void updateRunning();
   // Reference getBarWidth(): the bar slot width for a given widget width.
   static double barWidthFor(int widgetWidth);
 
-  DesktopLyricConfig& m_config;
   QTimer m_frameTimer;
-  QColor m_barColor;
-  bool m_barColorCustomized = false; // setBarColor() won the default override
-  QByteArray m_spectrum;             // trusted 128-byte frame, or empty (none yet)
+  QByteArray m_spectrum; // 128-byte frame buffer, allocated once (no per-frame alloc)
   bool m_hasFrame = false;
   bool m_active = false;
+  qreal m_bodyOpacity = 1.0;
 
   // Geometry constants recomputed on resize (reference handleResize()).
   int m_width = 0;
