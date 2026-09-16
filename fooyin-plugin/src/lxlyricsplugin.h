@@ -47,6 +47,12 @@ public:
 
 private:
   void toggleDesktopLyrics(bool checked);
+  /// Records `enabled` under the plugin-persisted LxLyrics/Enabled key so the
+  /// next session can restore the desktop-lyrics state (see
+  /// GuiPlugin::initialise). Single write point for that key: called from
+  /// toggleDesktopLyrics() on every state flip and from onCloseRequested()'s
+  /// signal-blocked path.
+  void rememberState(bool enabled);
   void startDesktopLyrics();
   void stopDesktopLyrics();
   void onClientDisconnected();
@@ -54,7 +60,8 @@ private:
   /// (HostServer::closeRequested, protocol.md §4): end the desktop-lyrics
   /// session like a toggle-off so the disconnect never enters the
   /// crash-recovery respawn path. Unchecks the toggle IMMEDIATELY
-  /// (signal-blocked, so no synchronous teardown) and defers the actual
+  /// (signal-blocked, so no synchronous teardown and no toggled() signal —
+  /// the remembered state is updated here explicitly) and defers the actual
   /// server teardown one event-loop turn — this slot runs inside the
   /// emitting HostServer's message handler, which must survive its own
   /// signal. Idempotent; only ever invoked with a connected client.
@@ -63,8 +70,8 @@ private:
   /// (HostServer::protocolErrorClosed): clear stale spawner bookkeeping
   /// only — no respawn, no toggle change, server keeps listening.
   void onProtocolErrorClosed();
-  /// Push the plugin-side settings (app path / auto-spawn) into the spawner
-  /// before every launch; called again on setting change via subscribe().
+  /// Push the plugin-side settings (app path) into the spawner before every
+  /// launch; called again on setting change via subscribe().
   void applySpawnerSettings();
   [[nodiscard]] QUrl serverWsUrl() const;
   /// Recomputes whether any Fooyin window is fullscreen and pushes it to the

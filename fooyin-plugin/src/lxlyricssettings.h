@@ -22,18 +22,21 @@ class QPushButton;
 
 namespace LxLyrics {
 
-// Registered settings keys (Fooyin::SettingsManager::createSetting). Shared by
-// the page (read/write via value/set) and the plugin (subscribe + apply on
-// spawn). Empty app path means AppSpawner auto-detects (PATH / bin dir).
+// Registered settings keys (Fooyin::SettingsManager::createSetting).
+// User-editable, read/written by the page: AppPath (empty means AppSpawner
+// auto-detects via PATH / the bin dir) and RememberState (restore the last
+// desktop-lyrics state across sessions). Enabled is the plugin-written
+// remembered state — never shown on the page.
 inline const QString appPathKey = QStringLiteral("LxLyrics/AppPath");
-inline const QString autoSpawnKey = QStringLiteral("LxLyrics/AutoSpawn");
+inline const QString rememberStateKey = QStringLiteral("LxLyrics/RememberState");
+inline const QString enabledKey = QStringLiteral("LxLyrics/Enabled");
 
 } // namespace LxLyrics
 
-/// The settings page widget: app-path edit + auto-spawn checkbox + a button
+/// The settings page widget: app-path edit + remember-state checkbox + a button
 /// that opens the running lyrics app's own config dialog. Pure form read/write
-/// over the SettingsManager; the plugin owns applying the values to the
-/// AppSpawner (via setting subscriptions).
+/// over the SettingsManager; the plugin owns acting on the values (app path
+/// push on spawn, state restore/remember).
 class LxLyricsSettingsPageWidget : public Fooyin::SettingsPageWidget {
   Q_OBJECT
 
@@ -53,7 +56,7 @@ public:
 private:
   Fooyin::SettingsManager* m_settings;
   QLineEdit* m_appPathEdit;
-  QCheckBox* m_autoSpawnCheck;
+  QCheckBox* m_rememberStateCheck;
   QPushButton* m_openSettingsButton;
   std::function<void()> m_openSettingsCallback;
 };

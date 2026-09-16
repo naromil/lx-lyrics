@@ -19,7 +19,8 @@ LxLyricsSettingsPageWidget::LxLyricsSettingsPageWidget(Fooyin::SettingsManager* 
   : Fooyin::SettingsPageWidget()
   , m_settings(settings)
   , m_appPathEdit(new QLineEdit(this))
-  , m_autoSpawnCheck(new QCheckBox(tr("Start desktop lyrics when fooyin starts"), this))
+  , m_rememberStateCheck(
+      new QCheckBox(tr("Remember the desktop lyrics state from the last session"), this))
   , m_openSettingsButton(new QPushButton(tr("Open lyrics settings"), this))
 {
   if (parent != nullptr) {
@@ -30,7 +31,7 @@ LxLyricsSettingsPageWidget::LxLyricsSettingsPageWidget(Fooyin::SettingsManager* 
 
   auto* layout = new QFormLayout(this);
   layout->addRow(tr("Lyrics app path:"), m_appPathEdit);
-  layout->addRow(m_autoSpawnCheck);
+  layout->addRow(m_rememberStateCheck);
   layout->addRow(m_openSettingsButton);
 
   connect(m_openSettingsButton, &QPushButton::clicked, this, [this] {
@@ -50,19 +51,19 @@ void LxLyricsSettingsPageWidget::setOpenSettingsCallback(std::function<void()> c
 void LxLyricsSettingsPageWidget::load()
 {
   m_appPathEdit->setText(m_settings->value(LxLyrics::appPathKey).toString());
-  m_autoSpawnCheck->setChecked(m_settings->value(LxLyrics::autoSpawnKey).toBool());
+  m_rememberStateCheck->setChecked(m_settings->value(LxLyrics::rememberStateKey).toBool());
 }
 
 void LxLyricsSettingsPageWidget::apply()
 {
   m_settings->set(LxLyrics::appPathKey, m_appPathEdit->text().trimmed());
-  m_settings->set(LxLyrics::autoSpawnKey, m_autoSpawnCheck->isChecked());
+  m_settings->set(LxLyrics::rememberStateKey, m_rememberStateCheck->isChecked());
 }
 
 void LxLyricsSettingsPageWidget::reset()
 {
   m_appPathEdit->clear();
-  m_autoSpawnCheck->setChecked(false);
+  m_rememberStateCheck->setChecked(true); // Default: remember the state.
 }
 
 LxLyricsSettingsPage::LxLyricsSettingsPage(Fooyin::SettingsManager* settings, QObject* parent)

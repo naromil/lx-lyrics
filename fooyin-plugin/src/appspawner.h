@@ -25,18 +25,11 @@ public:
   void setAppPath(const QString& appPath);
   [[nodiscard]] const QString& appPath() const;
 
-  /// Whether the init-time auto-spawn may launch the app. Default false,
-  /// matching the LxLyrics/AutoSpawn setting key. Manual (forced) spawns
-  /// ignore this flag.
-  void setAutoSpawn(bool autoSpawn);
-  [[nodiscard]] bool autoSpawn() const;
-
   /// Launches the app with --ws=<url> --exit-on-disconnect. Returns false
   /// (without launching) when an instance is already running or the binary
-  /// cannot be located/started. AutoSpawn gates only the init-time
-  /// auto-spawn; manual (menu toggle) spawn always allowed.
-  /// With force=false, auto-spawn off also blocks the launch.
-  bool spawn(const QUrl& wsUrl, bool force = false);
+  /// cannot be located/started. Callers only spawn while the desktop lyrics
+  /// are wanted, so there is no separate enable gate.
+  bool spawn(const QUrl& wsUrl);
 
   /// True between a successful spawn() and the next stop()/failed relaunch.
   /// The app is detached, so its exit is not observed directly; stop()
@@ -52,6 +45,5 @@ private:
   [[nodiscard]] QString resolveAppPath() const;
 
   QString m_appPath;
-  bool m_autoSpawn = false;
   bool m_running = false;
 };

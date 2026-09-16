@@ -33,9 +33,12 @@ void LxLyricsPlugin::initialise(const Fooyin::CorePluginContext& context)
 
   // Plugin-side preferences (transport only; the standalone app owns its own
   // settings). Registered settings persist via the SettingsManager and let
-  // the plugin subscribe to changes (see GuiPlugin::initialise).
+  // the plugin subscribe to changes (see GuiPlugin::initialise). Enabled is
+  // plugin-written state, not a user preference: rememberState() records the
+  // last desktop-lyrics on/off state there so startup can restore it.
   m_settingsManager->createSetting(LxLyrics::appPathKey, QString());
-  m_settingsManager->createSetting(LxLyrics::autoSpawnKey, false);
+  m_settingsManager->createSetting(LxLyrics::rememberStateKey, true);
+  m_settingsManager->createSetting(LxLyrics::enabledKey, false);
 
   const bool spectrumAvailable = m_engineController && m_engineController->visualisationService();
 
@@ -83,16 +86,15 @@ void LxLyricsPlugin::initialise(const Fooyin::GuiPluginContext& context)
       m_appSpawner->setAppPath(appPath.toString());
     }
   });
-  m_settingsManager->subscribe(LxLyrics::autoSpawnKey, this, [this](const QVariant& autoSpawn) {
-    if (m_appSpawner != nullptr) {
-      m_appSpawner->setAutoSpawn(autoSpawn.toBool());
-    }
-  });
 
-  // Auto-spawn on startup when enabled. setChecked(true) flows through the
-  // normal toggle path (startDesktopLyrics); deferred one event-loop turn so
-  // plugin initialisation finishes first and the action reflects the state.
-  if (m_settingsManager->value(LxLyrics::autoSpawnKey).toBool()) {
+  // Restore the remembered desktop-lyrics state unless remembering is off.
+  // setChecked(true) flows through the normal toggle path
+  // (startDesktopLyrics), so the app spawns exactly like a manual toggle;
+  // deferred one event-loop turn so plugin initialisation finishes first and
+  // the action reflects the state. RememberState=false always starts off,
+  // regardless of the persisted Enabled value.
+  if (m_settingsManager->value(LxLyrics::rememberStateKey).toBool() &&
+      m_settingsManager->value(LxLyrics::enabledKey).toBool()) {
     QTimer::singleShot(0, this, [this] {
       m_toggleAction->setChecked(true);
     });
@@ -155,11 +157,23 @@ void LxLyricsPlugin::shutdown()
 
 void LxLyricsPlugin::toggleDesktopLyrics(bool checked)
 {
+  // Record the state first — on both flips — so the next session can restore
+  // it. RememberState only gates the startup restore, never this write.
+  rememberState(checked);
+
   if (checked) {
     startDesktopLyrics();
   } else {
     stopDesktopLyrics();
   }
+}
+
+void LxLyricsPlugin::rememberState(bool enabled)
+{
+  if (m_settingsManager == nullptr) {
+    return;
+  }
+  m_settingsManager->set(LxLyrics::enabledKey, enabled);
 }
 
 void LxLyricsPlugin::startDesktopLyrics()
@@ -227,10 +241,10 @@ void LxLyricsPlugin::startDesktopLyrics()
   if (m_appSpawner == nullptr) {
     m_appSpawner = std::make_unique<AppSpawner>();
   }
-  applySpawnerSettings(); // path + auto-spawn from settings before every launch
+  applySpawnerSettings(); // app path from settings before every launch
 
-  // Idempotency guard: the app may already be running (e.g. the init-time
-  // auto-spawn followed by a manual toggle click, or a double invocation).
+  // Idempotency guard: the app may already be running (e.g. the startup
+  // restore followed by a manual toggle click, or a double invocation).
   // Skipping the early return would spawn a SECOND detached lyrics-app.
   // When the app has exited on its own (crashed / socket closed) isRunning()
   // is false and the spawn below proceeds normally.
@@ -239,10 +253,9 @@ void LxLyricsPlugin::startDesktopLyrics()
     return;
   }
 
-  // Forced spawn: both callers (manual View-menu toggle and the init-time
-  // auto-spawn) only run when the user wants the app up; the AutoSpawn
-  // setting key already gates whether the auto path fires at all.
-  if (!m_appSpawner->spawn(serverWsUrl(), true)) {
+  // Every caller (manual View-menu toggle / startup restore, and the
+  // disconnect respawn) only runs when the desktop lyrics are wanted.
+  if (!m_appSpawner->spawn(serverWsUrl())) {
     qWarning() << "[LX Lyrics] failed to start lyrics app; disabling desktop lyrics";
     m_toggleAction->setChecked(false);
   }
@@ -286,6 +299,10 @@ void LxLyricsPlugin::onCloseRequested()
     const QSignalBlocker blocker(m_toggleAction);
     m_toggleAction->setChecked(false);
   }
+  // The blocker above suppresses toggled(), so toggleDesktopLyrics() never
+  // runs to record the off state; the remembered state must not survive this
+  // intentional close as "on".
+  rememberState(false);
 
   // Capture the emitting server: the queued teardown must only destroy the
   // server that actually closed. If the user manually toggled the action
@@ -347,9 +364,9 @@ void LxLyricsPlugin::onClientDisconnected()
       return;
     }
     m_appSpawner->stop();
-    // Respawn is a manual path too: it only fires while the toggle is
-    // checked, so the AutoSpawn key must not block it.
-    m_appSpawner->spawn(url, true);
+    // Respawn only fires while the toggle is checked, so the desktop lyrics
+    // are wanted; spawn unconditionally.
+    m_appSpawner->spawn(url);
   });
 }
 
@@ -368,7 +385,6 @@ void LxLyricsPlugin::applySpawnerSettings()
     return;
   }
   m_appSpawner->setAppPath(m_settingsManager->value(LxLyrics::appPathKey).toString());
-  m_appSpawner->setAutoSpawn(m_settingsManager->value(LxLyrics::autoSpawnKey).toBool());
 }
 
 void LxLyricsPlugin::watchAllWindows()

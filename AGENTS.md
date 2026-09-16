@@ -42,5 +42,5 @@ timeout 3 ./build/lx-lyrics-app --demo # expect exit code 124 (timeout kill = no
 
 ## Conventions
 - License split is intentional: `lyrics-app/` Apache-2.0 (ported logic), `fooyin-plugin/` GPL-3.0-only (links Fooyin). SPDX header at the top of every source file.
-- `./tools/install.sh [--prefix DIR] [--no-autospawn]` builds both in Release, installs the app to `<prefix>/bin` and the plugin to `<prefix>/lib/fooyin/plugins` (default `~/.local`), and patches `fooyin.conf` `[LxLyrics] AppPath`/`AutoSpawn` in place (idempotent).
+- `./tools/install.sh [--prefix DIR] [--no-autospawn]` builds both in Release, installs the app to `<prefix>/bin` and the plugin to `<prefix>/lib/fooyin/plugins` (default `~/.local`), and patches `fooyin.conf` `[LxLyrics]` `AppPath`/`RememberState` in place (idempotent; `--no-autospawn` writes `RememberState=false`, and a stale `AutoSpawn=` line is deleted).
 - The repo owner handles pushes (often with tags); do not push unless explicitly asked.

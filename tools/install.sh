@@ -11,10 +11,12 @@
 #   3. Installs the app binary to <prefix>/bin
 #   4. Installs the plugin to <data>/lib/fooyin/plugins
 #   5. Patches the Fooyin settings file so [LxLyrics] AppPath points at the
-#      installed binary (and optionally AutoSpawn=true).
+#      installed binary and the plugin remembers the desktop-lyrics state
+#      across sessions (RememberState=true; --no-autospawn writes false).
 #
 # Re-running the script is safe: cmake rebuilds incrementally and the config
-# patch updates the existing [LxLyrics] keys in place.
+# patch updates the existing [LxLyrics] keys in place (a stale AutoSpawn= line
+# from the old plugin option is removed).
 set -euo pipefail
 
 # --- Configuration -----------------------------------------------------------
@@ -28,10 +30,14 @@ PLUGIN_BINARY_NAME="fyplugin_lxlyrics.so"
 
 CONF_SECTION="[LxLyrics]"
 CONF_KEY_NAME="AppPath"
+CONF_KEY_REMEMBER="RememberState"
+# Setting key of the old AutoSpawn option: removed from [LxLyrics] so an
+# existing fooyin.conf migrates cleanly.
+CONF_KEY_OBSOLETE="AutoSpawn"
 
 prefix="$HOME/.local"
 prefix_given=0
-want_autospawn=1
+want_remember_state=1
 
 # --- Helpers -----------------------------------------------------------------
 
@@ -50,8 +56,9 @@ usage: ./tools/install.sh [--prefix DIR] [--no-autospawn] [--help]
 
   --prefix DIR    install the app under DIR/bin and the plugin under
                   DIR/lib/fooyin/plugins (default: $HOME/.local)
-  --no-autospawn  do not set the plugin's AutoSpawn option (an existing
-                  AutoSpawn setting is left untouched)
+  --no-autospawn  write RememberState=false instead of =true (the flag name
+                  is kept from the old AutoSpawn option): desktop lyrics
+                  always start off and the last state is not restored
   --help          show this help and exit
 EOF
 }
@@ -79,7 +86,7 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         --no-autospawn)
-            want_autospawn=0
+            want_remember_state=0
             shift
             ;;
         --help|-h)
@@ -165,13 +172,18 @@ install_artifact "$PLUGIN_BINARY_NAME" "$FOOYIN_PLUGIN_DIR/build/$PLUGIN_BINARY_
 
 # --- Patch the Fooyin settings file ----------------------------------------------
 
-step "Configuring Fooyin setting $CONF_SECTION $CONF_KEY_NAME = $app_path"
+remember_value=false
+if [ "$want_remember_state" -eq 1 ]; then
+    remember_value=true
+fi
+
+step "Configuring Fooyin settings $CONF_SECTION: $CONF_KEY_NAME = $app_path, $CONF_KEY_REMEMBER = $remember_value"
 mkdir -p "$conf_dir" || die "cannot create config directory: $conf_dir"
 [ -w "$conf_dir" ] || die "config directory is not writable: $conf_dir"
 
 patch_fooyin_config() {
     local value="$1"
-    local enable_autospawn="$2"
+    local remember="$2"
     local tmp_file="$conf_dir/.fooyin.conf.tmp.$$"
 
     if [ ! -f "$conf_file" ] || [ ! -s "$conf_file" ]; then
@@ -179,36 +191,37 @@ patch_fooyin_config() {
         {
             printf '%s\n' "$CONF_SECTION"
             printf '%s=%s\n' "$CONF_KEY_NAME" "$value"
-            if [ "$enable_autospawn" -eq 1 ]; then
-                printf '%s=true\n' "AutoSpawn"
-            fi
+            printf '%s=%s\n' "$CONF_KEY_REMEMBER" "$remember"
         } > "$conf_file" || die "failed to write $conf_file"
         return
     fi
 
     awk -v value="$value" \
-        -v enable_autospawn="$enable_autospawn" \
+        -v remember="$remember" \
         -v section="$CONF_SECTION" \
-        -v key_name="$CONF_KEY_NAME" '
-        BEGIN { in_section = 0; section_seen = 0; key_seen = 0; autospawn_seen = 0 }
+        -v key_name="$CONF_KEY_NAME" \
+        -v remember_key="$CONF_KEY_REMEMBER" \
+        -v obsolete_key="$CONF_KEY_OBSOLETE" '
+        BEGIN { in_section = 0; section_seen = 0; key_seen = 0; remember_seen = 0 }
         /^\[/ {
             if (in_section) {
                 in_section = 0
                 if (!key_seen) print key_name "=" value
-                if (enable_autospawn && !autospawn_seen) print "AutoSpawn=true"
+                if (!remember_seen) print remember_key "=" remember
             }
             if ($0 == section) {
                 section_seen = 1
                 in_section = 1
                 key_seen = 0
-                autospawn_seen = 0
+                remember_seen = 0
             }
             print
             next
         }
         in_section {
             if ($0 ~ ("^" key_name "=")) { key_seen = 1; print key_name "=" value; next }
-            if (enable_autospawn && $0 ~ /^AutoSpawn=/) { autospawn_seen = 1; print "AutoSpawn=true"; next }
+            if ($0 ~ ("^" remember_key "=")) { remember_seen = 1; print remember_key "=" remember; next }
+            if ($0 ~ ("^" obsolete_key "=")) { next }  # stale AutoSpawn=...: drop it
             print
             next
         }
@@ -216,12 +229,12 @@ patch_fooyin_config() {
         END {
             if (in_section) {
                 if (!key_seen) print key_name "=" value
-                if (enable_autospawn && !autospawn_seen) print "AutoSpawn=true"
+                if (!remember_seen) print remember_key "=" remember
             } else if (!section_seen) {
                 print ""
                 print section
                 print key_name "=" value
-                if (enable_autospawn) print "AutoSpawn=true"
+                print remember_key "=" remember
             }
         }
     ' "$conf_file" > "$tmp_file" || die "failed to patch $conf_file"
@@ -240,8 +253,29 @@ verify_single_app_path() {
     [ "$count" -eq 1 ] || die "[$CONF_SECTION] in $conf_file must contain exactly one $CONF_KEY_NAME= line, found $count"
 }
 
-patch_fooyin_config "$app_path" "$want_autospawn"
+# The plugin keys the startup restore on the single [LxLyrics] RememberState
+# line; a stale AutoSpawn= line must not survive the migration.
+verify_remember_state() {
+    local expected="$1"
+    local summary count obsolete_count value
+    summary="$(awk -v section="$CONF_SECTION" -v key="$CONF_KEY_REMEMBER" -v obsolete="$CONF_KEY_OBSOLETE" '
+        /^\[/ { in_section = ($0 == section); next }
+        in_section && $0 ~ ("^" key "=") { count++; value = substr($0, length(key) + 2) }
+        in_section && $0 ~ ("^" obsolete "=") { obsolete_count++ }
+        END { printf "%d %d %s\n", count + 0, obsolete_count + 0, value }
+    ' "$conf_file")"
+    read -r count obsolete_count value <<< "$summary"
+    [ "$count" -eq 1 ] \
+        || die "[$CONF_SECTION] in $conf_file must contain exactly one $CONF_KEY_REMEMBER= line, found $count"
+    [ "$value" = "$expected" ] \
+        || die "[$CONF_SECTION] $CONF_KEY_REMEMBER must be $expected, found '$value'"
+    [ "$obsolete_count" -eq 0 ] \
+        || die "[$CONF_SECTION] in $conf_file still contains the obsolete $CONF_KEY_OBSOLETE= key"
+}
+
+patch_fooyin_config "$app_path" "$remember_value"
 verify_single_app_path
+verify_remember_state "$remember_value"
 
 # --- Summary --------------------------------------------------------------------
 
@@ -250,13 +284,16 @@ printf '\n'
 printf '  Lyrics app binary : %s\n' "$app_path"
 printf '  Fooyin plugin      : %s\n' "$plugin_dir/$PLUGIN_BINARY_NAME"
 printf '  Plugin setting     : %s\n' "$CONF_SECTION $CONF_KEY_NAME=$app_path"
-if [ "$want_autospawn" -eq 1 ]; then
-    printf '  AutoSpawn          : true (skip with --no-autospawn)\n'
+if [ "$want_remember_state" -eq 1 ]; then
+    printf '  RememberState      : true (desktop lyrics state is restored; skip with --no-autospawn)\n'
 else
-    printf '  AutoSpawn          : left untouched (--no-autospawn)\n'
+    printf '  RememberState      : false (--no-autospawn; desktop lyrics always start off)\n'
 fi
 printf '\n'
 printf 'Next steps:\n'
 printf '  1. Restart Fooyin (or reload its plugins).\n'
 printf '  2. Open View -> Desktop Lyrics to show the lyrics window.\n'
+if [ "$want_remember_state" -eq 1 ]; then
+    printf '     A fresh install stays OFF until that first toggle; later sessions restore it.\n'
+fi
 printf '  3. Tune options in Settings -> Lyrics -> LX Lyrics; the app path is already set.\n'

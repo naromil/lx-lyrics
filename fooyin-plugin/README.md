@@ -71,7 +71,10 @@ After restart the plugin appears as **LX Lyrics** (Category: Lyrics) in Fooyin's
 - **Settings → Lyrics → LX Lyrics**:
   - **AppPath** — path to the `lx-lyrics-app` binary. Empty = auto-detect: `PATH` lookup, then the
     plugin's app directory.
-  - **AutoSpawn** — start desktop lyrics when Fooyin starts.
+  - **RememberState** — remember the desktop lyrics state from the last session (kept under
+    `LxLyrics/Enabled`). When on, startup restores the state the previous session ended with;
+    when off, desktop lyrics always start off. A fresh install stays off until the user toggles
+    **View → Desktop Lyrics** once.
 - **Lyric sources** (priority order):
   1. Embedded tags: `LYRICS`, `SYNCEDLYRICS`, `UNSYNCEDLYRICS`, `UNSYNCED LYRICS`.
   2. Sidecar file `<trackdir>/<basename>.lrc` (e.g. `song.mp3` → `song.lrc`).

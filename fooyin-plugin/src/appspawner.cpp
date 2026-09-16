@@ -28,23 +28,8 @@ const QString& AppSpawner::appPath() const
   return m_appPath;
 }
 
-void AppSpawner::setAutoSpawn(bool autoSpawn)
+bool AppSpawner::spawn(const QUrl& wsUrl)
 {
-  m_autoSpawn = autoSpawn;
-}
-
-bool AppSpawner::autoSpawn() const
-{
-  return m_autoSpawn;
-}
-
-bool AppSpawner::spawn(const QUrl& wsUrl, bool force)
-{
-  // AutoSpawn gates only the init-time auto-spawn; manual (menu toggle)
-  // spawn always allowed.
-  if (!m_autoSpawn && !force) {
-    return false;
-  }
   if (m_running) {
     qWarning() << "[LX Lyrics] lyrics-app already spawned; skipping duplicate launch";
     return false;
