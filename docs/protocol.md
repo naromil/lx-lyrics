@@ -4,7 +4,7 @@
 
 This document is the **only** contract between two independently built components:
 
-- **the player-side adapter** — an in-process extension of a music player (`fooyin-plugin/`, `deadbeef-plugin/`, `rhythmbox-plugin/`, …) that observes playback through the player's native API.
+- **the player-side adapter** — an in-process extension of a music player (`plugins/fooyin/`, `plugins/deadbeef/`, `plugins/rhythmbox/`, `plugins/audacious/`, `plugins/quodlibet/`, `plugins/vlc/`, …) that observes playback through the player's native API.
 - **`lyrics-app/`** — a standalone, always-on-top desktop lyrics display application (Qt6/C++).
 
 The two sides share **no source code**. Each side is implemented from this document alone.
@@ -93,7 +93,7 @@ All host→app messages are JSON lines. The **first** one MUST be `hello` (§7).
 
 | action | Payload fields | Trigger / semantics |
 |--------|----------------|---------------------|
-| `hello` | `host, spectrum` | **First line, always.** `host` is a display/log name for the adapter (`"fooyin"`, `"deadbeef"`, `"rhythmbox"`); `spectrum` (boolean) declares whether the host can answer analyser requests. |
+| `hello` | `host, spectrum` | **First line, always.** `host` is a display/log name for the adapter (`"fooyin"`, `"deadbeef"`, `"rhythmbox"`, `"audacious"`, `"quodlibet"`, `"vlc"`); `spectrum` (boolean) declares whether the host can answer analyser requests. |
 | `set_info` | `path, singer, name, album, lrc, tlrc, rlrc, lxlrc, isPlay, played_time` | Full snapshot. Sent right after the handshake, on track change, and after metadata edits. `played_time` is in **ms**. |
 | `set_lyric` | `lrc, tlrc, rlrc, lxlrc` | Lyric-only update, no metadata/state. Sent when the host has lyric text of its own (an edit, an external source) while the same track plays. |
 | `set_status` | `isPlay, played_time` | Playback state sync (start/pause/seek/finish). Periodic while playing; the app recomputes the active line from `played_time`. |

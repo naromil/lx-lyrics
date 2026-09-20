@@ -13,7 +13,7 @@ session, and the app quits when its stdin closes.
 
 ```sh
 mkdir -p ~/.local/share/rhythmbox/plugins
-cp -r rhythmbox-plugin ~/.local/share/rhythmbox/plugins/lxlyrics
+cp -r plugins/rhythmbox ~/.local/share/rhythmbox/plugins/lxlyrics
 ```
 
 Rhythmbox scans `$XDG_DATA_HOME/rhythmbox/plugins/<name>/` (`~/.local/share` by default)
@@ -90,7 +90,7 @@ the exact JSON lines emitted for scripted player events (handshake, track change
 lifecycle and the key-file round-trip.
 
 ```sh
-python3 -m unittest discover -s rhythmbox-plugin/tests -v
+python3 -m unittest discover -s plugins/rhythmbox/tests -v
 ```
 
 (From inside this directory, `python3 -m unittest discover -s tests -v` is equivalent.)

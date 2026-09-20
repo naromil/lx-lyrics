@@ -125,7 +125,7 @@ ctest --test-dir build
 | controller | `lyrics-app-controller-tests` | 32 |
 
 The `feed` suite compiles **both halves** of the wire contract — the app's `FeedReader` and the
-Fooyin adapter's Fooyin-free `FeedWriter` (`../fooyin-plugin/src/feedwriter.cpp`) — and asserts
+Fooyin adapter's Fooyin-free `FeedWriter` (`../plugins/fooyin/src/feedwriter.cpp`) — and asserts
 the strict v2 parse rules (including the integer-ms rule for `played_time`/`time`/`tempOffset`),
 `set_info` lyric precedence, the encoding fixtures, the 128-byte spectrum rule, `close_requested`,
 the stdin-EOF path, line reassembly across `readyRead` bursts (LF and CRLF), the 1 MiB cap on a

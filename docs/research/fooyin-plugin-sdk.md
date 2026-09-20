@@ -1,6 +1,6 @@
 # Fooyin Plugin SDK — Reference
 
-Condensed from the research delegation `content-coffee-reindeer` (2026-08-02), compiled from `fooyin/fooyin` (master, v0.12.1), `fooyin/fooyin-plugin-examples`, and `docs.fooyin.org`. Cross-checked in the review delegation `unpleasant-blush-spider` against installed Fooyin headers and CMake config. This is the reference for `fooyin-plugin/`.
+Condensed from the research delegation `content-coffee-reindeer` (2026-08-02), compiled from `fooyin/fooyin` (master, v0.12.1), `fooyin/fooyin-plugin-examples`, and `docs.fooyin.org`. Cross-checked in the review delegation `unpleasant-blush-spider` against installed Fooyin headers and CMake config. This is the reference for `plugins/fooyin/`.
 
 ## 1. Plugin model and registration
 

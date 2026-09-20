@@ -5,7 +5,7 @@
 A plugin for [Fooyin Music Player](https://github.com/ludicrousDevelopment/Fooyin) (>= 0.11.1)
 that drives the standalone `lyrics-app` display project.
 
-Per `../docs/protocol.md` (v2) the plugin is an **in-process adapter**:
+Per `../../docs/protocol.md` (v2) the plugin is an **in-process adapter**:
 
 - It observes playback through Fooyin's API and spawns `lx-lyrics-app --player-feed` as its
   **direct child** (pipes, never detached).
@@ -32,7 +32,7 @@ Analyser (VisualisationService) ────► SpectrumSource ──┘        
   quits when its stdin closes (Fooyin exit or toggle off).
 
 The app-side pipeline (acquisition, parsing, line selection, rendering, settings) is entirely the
-`lyrics-app` project's job — see `../lyrics-app/README.md`.
+`lyrics-app` project's job — see `../../lyrics-app/README.md`.
 
 ## Requirements
 
@@ -50,7 +50,7 @@ private pipe pair.
 ## Build
 
 ```sh
-cd fooyin-plugin
+cd plugins/fooyin
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
 cmake --build build
 ```

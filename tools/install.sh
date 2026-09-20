@@ -7,7 +7,7 @@
 #
 # What it does:
 #   1. Builds lyrics-app    -> lyrics-app/build/lx-lyrics-app
-#   2. Builds fooyin-plugin -> fooyin-plugin/build/fyplugin_lxlyrics.so
+#   2. Builds plugins/fooyin -> plugins/fooyin/build/fyplugin_lxlyrics.so
 #   3. Installs the app binary to <prefix>/bin
 #   4. Installs the plugin to <data>/lib/fooyin/plugins
 #   5. Patches the Fooyin settings file so [LxLyrics] AppPath points at the
@@ -23,7 +23,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LYRICS_APP_DIR="$REPO_ROOT/lyrics-app"
-FOOYIN_PLUGIN_DIR="$REPO_ROOT/fooyin-plugin"
+FOOYIN_PLUGIN_DIR="$REPO_ROOT/plugins/fooyin"
 
 APP_BINARY_NAME="lx-lyrics-app"
 PLUGIN_BINARY_NAME="fyplugin_lxlyrics.so"
@@ -119,7 +119,7 @@ require_command cmake
 require_command ninja
 
 [ -d "$LYRICS_APP_DIR" ] || die "lyrics-app source directory not found: $LYRICS_APP_DIR"
-[ -d "$FOOYIN_PLUGIN_DIR" ] || die "fooyin-plugin source directory not found: $FOOYIN_PLUGIN_DIR"
+[ -d "$FOOYIN_PLUGIN_DIR" ] || die "plugins/fooyin source directory not found: $FOOYIN_PLUGIN_DIR"
 
 # --- Build + install --------------------------------------------------------------
 
@@ -167,7 +167,7 @@ install_artifact() {
 build_project "lyrics-app" "$LYRICS_APP_DIR" "$APP_BINARY_NAME"
 install_artifact "$APP_BINARY_NAME" "$LYRICS_APP_DIR/build/$APP_BINARY_NAME" "$app_path"
 
-build_project "fooyin-plugin" "$FOOYIN_PLUGIN_DIR" "$PLUGIN_BINARY_NAME"
+build_project "plugins/fooyin" "$FOOYIN_PLUGIN_DIR" "$PLUGIN_BINARY_NAME"
 install_artifact "$PLUGIN_BINARY_NAME" "$FOOYIN_PLUGIN_DIR/build/$PLUGIN_BINARY_NAME" "$plugin_dir/$PLUGIN_BINARY_NAME"
 
 # --- Patch the Fooyin settings file ----------------------------------------------

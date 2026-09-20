@@ -141,11 +141,11 @@ add_executable(lyrics-app-feed-tests
     src/host/pipeio.h
     src/host/tracklyrics.cpp
     src/host/tracklyrics.h
-    ../fooyin-plugin/src/feedwriter.cpp
-    ../fooyin-plugin/src/feedwriter.h
+    ../plugins/fooyin/src/feedwriter.cpp
+    ../plugins/fooyin/src/feedwriter.h
 )
 
-target_include_directories(lyrics-app-feed-tests PRIVATE src/ ../fooyin-plugin/src)
+target_include_directories(lyrics-app-feed-tests PRIVATE src/ ../plugins/fooyin/src)
 
 target_compile_definitions(lyrics-app-feed-tests PRIVATE
     LX_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"

@@ -3,7 +3,7 @@
 A [DeaDBeeF](https://deadbeef.sourceforge.net/) plugin (`ddb_lxlyrics.so`) that owns the
 desktop-lyrics session: it spawns the standalone **lx-lyrics** display as its direct child and
 feeds it the player state over the **protocol v2 stdin/stdout player feed**
-(`../docs/protocol.md`). The plugin never reads lyrics — the app owns acquisition (sidecar `.lrc`
+(`../../docs/protocol.md`). The plugin never reads lyrics — the app owns acquisition (sidecar `.lrc`
 + embedded tags), parsing and rendering.
 
 Closing the lyric window sends `close_requested`; the adapter ends the session, the app exits on
@@ -28,7 +28,7 @@ stdin EOF, and the toggle clears itself.
   git clone --depth 1 --branch 1.10.1 https://github.com/DeaDBeeF-Player/deadbeef
   ```
   (its `include/deadbeef/deadbeef.h` is API 1.19 and contains everything 1.16 needs).
-- `lx-lyrics-app` installed (e.g. by `../tools/install.sh`), findable on `$PATH`.
+- `lx-lyrics-app` installed (e.g. by `../../tools/install.sh`), findable on `$PATH`.
 
 ## Build
 

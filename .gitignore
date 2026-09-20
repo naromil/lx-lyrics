@@ -80,6 +80,6 @@ references/
 .ruff_cache/
 .opencode/
 
-# Python bytecode caches (rhythmbox-plugin)
+# Python bytecode caches (plugins/rhythmbox)
 __pycache__/
 *.pyc

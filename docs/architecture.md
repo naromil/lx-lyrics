@@ -2,16 +2,16 @@
 
 ## Overview
 
-The desktop-lyrics feature is extracted from lx-music-desktop into four independent projects with **zero shared C++ source**; the only contract between them is `docs/protocol.md` **v2** — a stdin/stdout player feed:
+The desktop-lyrics feature is extracted from lx-music-desktop into seven independent projects with **zero shared C++ source**; the only contract between them is `docs/protocol.md` **v2** — a stdin/stdout player feed:
 
 - **`lyrics-app/`** — a standalone Qt6 / C++23 desktop lyrics display with karaoke rendering (the port of lx-music's `renderer-lyric` + `lyric-font-player`). It owns lyric acquisition, parsing, selection, and rendering.
-- **`fooyin-plugin/`**, **`deadbeef-plugin/`**, **`rhythmbox-plugin/`** — in-process adapters for their players. Each observes playback through the player's native API and supplies playing context to the app.
+- **`plugins/fooyin/`**, **`plugins/deadbeef/`**, **`plugins/rhythmbox/`**, **`plugins/audacious/`**, **`plugins/quodlibet/`**, **`plugins/vlc/`** — in-process adapters for their players. Each observes playback through the player's native API and supplies playing context to the app.
 
 The app does not know which player drives it; an adapter contains no acquisition, parsing, or display code.
 
 ## Ownership and lifetime
 
-The adapter lives **inside the player's process** (a Fooyin Qt plugin, a DeaDBeeF `DB_misc_t` module, a Rhythmbox libpeas plugin — never a separate process and never a service) and spawns `lx-lyrics-app --player-feed` as its **direct child** (never detached), with the child's stdin and stdout as the protocol pipes: stdin carries host→app JSON lines, stdout carries app→host JSON lines. Stderr carries only free-form logs and an adapter may leave it inherited from the player rather than piping it (Rhythmbox and DeaDBeeF do; a piped stderr would have to be drained, since a full pipe blocks the app's logger).
+The adapter lives **inside the player's process** (a Fooyin Qt plugin, a DeaDBeeF `DB_misc_t` module, a Rhythmbox libpeas plugin, an Audacious general plugin, a Quod Libet event plugin, a VLC interface module — never a separate process and never a service) and spawns `lx-lyrics-app --player-feed` as its **direct child** (never detached), with the child's stdin and stdout as the protocol pipes: stdin carries host→app JSON lines, stdout carries app→host JSON lines. Stderr carries only free-form logs and an adapter may leave it inherited from the player rather than piping it (Rhythmbox, DeaDBeeF, Audacious, Quod Libet and VLC do; Fooyin pipes the child's stderr and forwards it into the player's log — a piped stderr would have to be drained, since a full pipe blocks the app's logger).
 
 Consequences:
 
@@ -30,7 +30,7 @@ Consequences:
 - Owns the full settings surface ported from `desktopLyric.*`, persisted in its own config store.
 - Run modes: `--player-feed` (host-driven), `--demo` (self-fed fake track + synthetic spectrum), or an inert window when no flag is given.
 
-### fooyin-plugin / deadbeef-plugin / rhythmbox-plugin
+### plugins/fooyin / plugins/deadbeef / plugins/rhythmbox
 
 Each adapter:
 
@@ -39,6 +39,18 @@ Each adapter:
 - Spawns the app as its direct child and strictly parses the two app→host actions (`get_analyser_data_array`, `close_requested`).
 - Samples the player's analyser where one exists (Fooyin `VisualisationService`, DeaDBeeF `vis_spectrum_listen2`) and answers `spectrum` requests; Rhythmbox has no analyser API and declares `spectrum: false`.
 - Contains **no** acquisition, lyric parsing, or display logic — it treats lyric strings as opaque and normally sends none at all.
+
+### plugins/audacious
+
+An Audacious **general plugin** (a `GeneralPlugin`, C++17 glue over a pure POSIX C transport) with no UI of its own — Audacious' Plugins page is the toggle, and there is no per-user plugin directory. `spectrum: true` is real public API, not a guess: a general plugin subclasses the public `Visualizer` class and registers it with `aud_visualizer_add()`, so the host hands it 256 FFT frequencies on its 30 Hz vis timer — and registering it also switches the host's vis runner on for the whole session. Because `aud_drct_*` is documented as not thread-safe, every host call happens on the main thread: the hooks plus a 250 ms `TimerRate::Hz4` timer refresh a mutex-guarded snapshot that the feed's reader thread consumes.
+
+### plugins/quodlibet
+
+A single-module Quod Libet **event plugin** (`EventPlugin`). It spawns the child with `Gio.Subprocess` (stdin/stdout pipes, stdin made non-blocking) and runs entirely on Quod Libet's GTK main loop: the child's stdout is read with one armed async line read at a time, and the pending write queue is capped at `MAX_PENDING_LINES`. Quod Libet exposes no analyser to plugins, so the handshake declares `spectrum: false`; it does have a queryable fullscreen state, so `set_fullscreen` follows every main-window transition. On `close_requested` the adapter turns itself off through the plugin manager (`PluginManager.enable(plugin, False)` + `save()`), so the Plugins-window toggle reads off and nothing respawns.
+
+### plugins/vlc
+
+A VLC **interface module** (`set_capability("interface", …)`) loaded as a background interface via `--extraintf=lxlyrics`. VLC 3.0 has no playback event a plugin can subscribe to from its own thread without holding an input object across callbacks, so the sampler is a 500 ms poll — `pl_CurrentInput()` → state/position/metadata → `vlc_object_release()` — and no VLC pointer survives a tick, so no VLC lock is held while the feed writes. The state/track/seek diffing lives in a VLC-free `mapper.c` that is unit-tested on its own; the handshake declares `spectrum: false` because no analyser API is reachable from a plugin.
 
 ## Decoupling boundary
 
@@ -65,4 +77,4 @@ Pushing selection logic (e.g. lxlrc-vs-lrc) or container decoding into an adapte
 
 ## Status
 
-Active extraction from lx-music-desktop (Apache-2.0) with attribution. The ported app logic keeps Apache-2.0; the adapters are GPL-3.0-only, which their hosts permit (Fooyin is GPL-3.0; Rhythmbox is GPL-2.0-or-later, whose "or later" clause allows a GPL-3.0 plugin; DeaDBeeF's plugin API header is zlib-licensed). Research reports live in `docs/research/`.
+Active extraction from lx-music-desktop (Apache-2.0) with attribution. The ported app logic keeps Apache-2.0; the adapters are GPL-3.0-only, which their hosts permit (Fooyin is GPL-3.0; Rhythmbox, Quod Libet and VLC are GPL-2.0-or-later, whose "or later" clause allows a GPL-3.0 plugin; DeaDBeeF's plugin API header is zlib-licensed; Audacious' libaudcore is BSD-2-Clause). Research reports live in `docs/research/`.

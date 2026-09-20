@@ -63,7 +63,7 @@ run_format() {
 
     local -a files
     mapfile -t files < <(
-        find "$REPO_ROOT/lyrics-app/src" "$REPO_ROOT/lyrics-app/tests" "$REPO_ROOT/fooyin-plugin/src" \
+        find "$REPO_ROOT/lyrics-app/src" "$REPO_ROOT/lyrics-app/tests" "$REPO_ROOT/plugins/fooyin/src" \
             \( -name '*.cpp' -o -name '*.h' \) | sort
     )
     [ "${#files[@]}" -gt 0 ] || die "no C++ sources found"
@@ -84,7 +84,7 @@ run_tidy() {
     require_command run-clang-tidy
 
     local project_dir db
-    for project_dir in "$REPO_ROOT/lyrics-app" "$REPO_ROOT/fooyin-plugin"; do
+    for project_dir in "$REPO_ROOT/lyrics-app" "$REPO_ROOT/plugins/fooyin"; do
         db="$project_dir/build/compile_commands.json"
         [ -f "$db" ] \
             || die "$db not found; configure the project first (cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug)"
