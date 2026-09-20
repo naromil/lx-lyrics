@@ -7,7 +7,7 @@
 #include <QByteArray>
 #include <QObject>
 
-class WsClient;
+class FeedReader;
 
 // Where the spectrum frames come from. SpectrumBridge owns the single
 // (playing && audioVisualization) gate and the request loop; a transport only
@@ -40,19 +40,20 @@ signals:
   void playStateChanged(bool playing);
 };
 
-// Host-driven transport: forwards the WsClient spectrum messages and the
-// analyser request, and tracks the play boolean carried by the state messages.
-class WsSpectrumTransport : public SpectrumTransport {
+// Player-feed transport: forwards the FeedReader's spectrum messages and the
+// analyser request (which the reader suppresses while the host declared no
+// analyser), and tracks the play boolean carried by the state messages.
+class FeedSpectrumTransport : public SpectrumTransport {
   Q_OBJECT
 
 public:
-  explicit WsSpectrumTransport(WsClient* ws, QObject* parent = nullptr);
+  explicit FeedSpectrumTransport(FeedReader* feed, QObject* parent = nullptr);
 
   void requestFrame() override;
   bool isPlaying() const override { return m_playing; }
 
 private:
-  WsClient* m_ws;
+  FeedReader* m_feed;
   bool m_playing = false;
 };
 

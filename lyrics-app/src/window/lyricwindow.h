@@ -58,9 +58,8 @@ public:
 
   // Spectrum visualizer: a full-window backdrop behind the lyric lines
   // (reference .content inset 0 / z-index -1; hidden unless
-  // desktopLyric.audioVisualization is on). Wired to a transport — the host
-  // plugin over the WebSocket, or the --demo self-feed — via the
-  // SpectrumBridge in app/.
+  // desktopLyric.audioVisualization is on). Wired to a transport — the player
+  // feed, or the --demo self-feed — via the SpectrumBridge in app/.
   SpectrumWidget* spectrumWidget() const { return m_spectrumWidget; }
 
   // Current content fade factor (1.0 = full, 0.05 = pause- or hover-faint).
@@ -101,16 +100,16 @@ public:
 signals:
   // Emitted when the fade-out close animation completes (the content has
   // reached opacity 0.0); main.cpp quits the app in response. WM/session
-  // closes and --exit-on-disconnect stay instant and never emit it.
+  // closes and a host EOF stay instant and never emit it.
   void closeAnimationFinished();
 
   // The user/application initiated a window close: the control-bar X button
   // (through animateClose) or a WM close / Alt+F4 (through closeEvent).
   // Emitted at most once per session (m_closeInitiatedReported guard);
-  // main.cpp forwards it to the host as §4 close_requested so the host ends
-  // its session WITHOUT respawning the app. Not emitted by quit-time
-  // boundaries that never pass a user close (--exit-on-disconnect, app
-  // shutdown).
+  // main.cpp forwards it to the player as §4 close_requested so the player
+  // ends its session WITHOUT respawning the app, unless the player itself
+  // already ended the session (stdin EOF). Not emitted by quit-time
+  // boundaries that never pass a user close (host shutdown, app shutdown).
   void closeInitiated();
 
 public slots:

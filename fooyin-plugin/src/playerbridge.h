@@ -14,32 +14,32 @@
 #include <QString>
 #include <QVariantMap>
 
-#include <functional>
+class FeedWriter;
 
-class HostServer;
-
+/// Translates Fooyin playback events into protocol v2 feed frames
+/// (docs/protocol.md §5). The plugin never acquires lyrics: the app reads them
+/// from the file at `set_info.path`, so this bridge supplies playing context
+/// (path, metadata, state, position) and nothing else.
 class PlayerBridge : public QObject {
   Q_OBJECT
 
 public:
-  using LyricProvider = std::function<void(const Fooyin::Track&, QString& lrc, QString& tlrc,
-                                           QString& rlrc, QString& lxlrc)>;
-
-  explicit PlayerBridge(Fooyin::PlayerController* playerController, HostServer* host,
+  explicit PlayerBridge(Fooyin::PlayerController* playerController, FeedWriter* writer,
                         QObject* parent = nullptr);
 
-  /// Seam for lyric acquisition (wired in task 3.4). Unset provider -> empty lyrics.
-  void setLyricProvider(LyricProvider provider);
   void setPlaybackRate(double rate);
 
-  void onClientConnected();
-  void handleRequestInfo();
-  void handleRequestStatus();
+  /// The child is up and `hello` has been written (FeedWriter::appStarted):
+  /// start pushing and send the initial snapshot — v2 removed `get_info`, so
+  /// the host pushes the snapshot right after spawn (pipe buffers make the
+  /// spawn race-free).
+  void onAppStarted();
   void handleRequestAnalyserData();
   void stopPush();
 
 signals:
-  /// The app asked for one spectrum snapshot; task 3.5 pushes the 128-byte frame.
+  /// The app asked for one spectrum snapshot; SpectrumSource replies with the
+  /// 128-byte frame through the feed.
   void analyserDataRequested();
 
 private slots:
@@ -56,18 +56,10 @@ private:
   [[nodiscard]] Fooyin::Track currentTrack() const;
   [[nodiscard]] bool isPlaying() const;
   [[nodiscard]] qint64 playedTime() const;
-  void currentLyrics(const Fooyin::Track& track, QString& lrc, QString& tlrc, QString& rlrc,
-                     QString& lxlrc) const;
-  [[nodiscard]] QVariantMap setInfoFields(const Fooyin::Track& track, bool isPlay,
-                                          qint64 playedTime, const QString& lrc,
-                                          const QString& tlrc, const QString& rlrc,
-                                          const QString& lxlrc) const;
-  [[nodiscard]] QVariantMap emptySetInfoFields() const;
   void pushTrack(const Fooyin::Track& track);
 
   Fooyin::PlayerController* m_playerController = nullptr;
-  HostServer* m_host = nullptr;
-  LyricProvider m_lyricProvider;
+  FeedWriter* m_writer = nullptr;
   Fooyin::Track m_currentTrack;
   double m_playbackRate = 1.0;
   bool m_pushing = false;

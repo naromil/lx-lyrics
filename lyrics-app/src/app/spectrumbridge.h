@@ -20,9 +20,8 @@ class SpectrumWidget;
 //   - SpectrumWidget::analyserDataRequested -> transport requestFrame
 //   - the active gate: the render loop runs only while the transport reports
 //     playing AND `desktopLyric.audioVisualization` is on.
-// The transport says WHERE frames come from (the host plugin over the
-// WebSocket, or the synthetic `--demo` feed), so both modes share this one
-// gate and loop.
+// The transport says WHERE frames come from (the player feed, or the
+// synthetic `--demo` feed), so both modes share this one gate and loop.
 class SpectrumBridge : public QObject {
   Q_OBJECT
 

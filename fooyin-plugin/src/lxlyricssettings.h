@@ -23,10 +23,10 @@ class QPushButton;
 namespace LxLyrics {
 
 // Registered settings keys (Fooyin::SettingsManager::createSetting).
-// User-editable, read/written by the page: AppPath (empty means AppSpawner
-// auto-detects via PATH / the bin dir) and RememberState (restore the last
-// desktop-lyrics state across sessions). Enabled is the plugin-written
-// remembered state — never shown on the page.
+// User-editable, read/written by the page: AppPath (empty means the feed
+// writer auto-detects via PATH / the app's own directory) and RememberState
+// (restore the last desktop-lyrics state across sessions). Enabled is the
+// plugin-written remembered state — never shown on the page.
 inline const QString appPathKey = QStringLiteral("LxLyrics/AppPath");
 inline const QString rememberStateKey = QStringLiteral("LxLyrics/RememberState");
 inline const QString enabledKey = QStringLiteral("LxLyrics/Enabled");

@@ -7,7 +7,7 @@
 
 #include "spectrumsource.h"
 
-#include "hostserver.h"
+#include "feedwriter.h"
 
 #include <core/engine/enginecontroller.h>
 #include <core/engine/visualisationservice.h>
@@ -38,10 +38,11 @@ unsigned char logScaleMagnitude(float magnitude)
 }
 } // namespace
 
-SpectrumSource::SpectrumSource(Fooyin::EngineController* engine, HostServer* host, QObject* parent)
+SpectrumSource::SpectrumSource(Fooyin::EngineController* engine, FeedWriter* writer,
+                               QObject* parent)
   : QObject(parent)
   , m_engine(engine)
-  , m_host(host)
+  , m_writer(writer)
 {
 }
 
@@ -57,7 +58,7 @@ QByteArray SpectrumSource::scaleToBytes(const QVector<float>& bins)
 
 void SpectrumSource::onAnalyserDataRequested()
 {
-  if (m_host == nullptr) {
+  if (m_writer == nullptr) {
     return;
   }
 
@@ -75,7 +76,7 @@ void SpectrumSource::onAnalyserDataRequested()
   // No data (engine not playing / session not yet warm) -> a deterministic
   // zero frame: the app's widget stays alive and the protocol never sees a
   // wrong-size payload.
-  m_host->sendAnalyserData(scaleToBytes(bins));
+  m_writer->sendAnalyserData(scaleToBytes(bins));
 }
 
 std::shared_ptr<Fooyin::VisualisationSession> SpectrumSource::ensureSession()

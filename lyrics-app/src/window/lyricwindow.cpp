@@ -197,8 +197,8 @@ LyricWindow::LyricWindow(DesktopLyricConfig& config, TranslationManager& i18n)
     saveBounds();
   });
 
-  // Quit-time bounds persistence: the host plugin exits this app with
-  // QCoreApplication::quit() (--exit-on-disconnect) when its socket drops,
+  // Quit-time bounds persistence: the player quits this app with
+  // QCoreApplication::quit() when it closes the feed pipe (protocol §2 EOF),
   // and that path never delivers a closeEvent to the window — the final
   // position would be lost if the last native move happened < 200 ms before
   // the quit (the debounce timer above never fires). aboutToQuit covers every

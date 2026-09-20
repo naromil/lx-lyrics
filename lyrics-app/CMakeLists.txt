@@ -13,11 +13,26 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS Debug Release)
 endif()
 
+# Widgets only: the feed is stdin/stdout pipes to the parent process, so the
+# WebSocket transport (and Qt Network with it) is gone.
 find_package(Qt6 6.4 REQUIRED COMPONENTS
     Widgets
-    Network
-    WebSockets
 )
+
+# Lyric acquisition happens in the app now (the host sends the file path), so
+# the app decodes legacy encodings with ICU and reads embedded tags with TagLib.
+find_package(ICU REQUIRED COMPONENTS uc)
+
+# TagLib: prefer the CONFIG package (target TagLib::tag), fall back to
+# pkg-config (target PkgConfig::TagLib) on installs that ship no CMake files.
+find_package(TagLib CONFIG QUIET)
+if(NOT TARGET TagLib::tag)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(TagLib REQUIRED IMPORTED_TARGET taglib)
+    set(LX_TAGLIB_TARGET PkgConfig::TagLib)
+else()
+    set(LX_TAGLIB_TARGET TagLib::tag)
+endif()
 
 add_executable(lx-lyrics-app
     src/main.cpp
@@ -31,8 +46,6 @@ add_executable(lx-lyrics-app
     src/app/spectrumtransport.h
     src/bridge/pausehide.cpp
     src/bridge/pausehide.h
-    src/bridge/wsclient.cpp
-    src/bridge/wsclient.h
     src/config/desktoplyricconfig.cpp
     src/config/desktoplyricconfig.h
     src/engine/lrcparser.cpp
@@ -45,6 +58,13 @@ add_executable(lx-lyrics-app
     src/engine/lyricclock.h
     src/engine/lyricselector.cpp
     src/engine/lyricselector.h
+    src/host/feedreader.cpp
+    src/host/feedreader.h
+    src/host/feedtypes.h
+    src/host/pipeio.cpp
+    src/host/pipeio.h
+    src/host/tracklyrics.cpp
+    src/host/tracklyrics.h
     src/i18n/translationmanager.cpp
     src/i18n/translationmanager.h
     src/renderer/controlbar.cpp
@@ -66,8 +86,8 @@ target_include_directories(lx-lyrics-app PRIVATE src/)
 
 target_link_libraries(lx-lyrics-app PRIVATE
     Qt6::Widgets
-    Qt6::Network
-    Qt6::WebSockets
+    ICU::uc
+    ${LX_TAGLIB_TARGET}
 )
 
 # Tests for the pure lyric parsing engine.
@@ -107,25 +127,37 @@ target_link_libraries(lyrics-app-lyricplayer-tests PRIVATE
 
 add_test(NAME lyricplayer COMMAND lyrics-app-lyricplayer-tests)
 
-# Tests for the WebSocket bridge protocol round-trip (docs/protocol.md).
-# The plugin's HostServer is compiled in too: it has zero Fooyin dependencies
-# and is the OTHER side of the wire contract, so its frames are asserted here.
-add_executable(lyrics-app-protocol-tests
-    tests/tst_protocol.cpp
-    src/bridge/wsclient.cpp
-    src/bridge/wsclient.h
-    ../fooyin-plugin/src/hostserver.cpp
-    ../fooyin-plugin/src/hostserver.h
+# Tests for the player feed (docs/protocol.md v2): the app's FeedReader and the
+# plugin's FeedWriter are BOTH compiled in — they are the two halves of the
+# wire contract, and FeedWriter is Fooyin-header-free precisely so it can be
+# (the same cross-project pattern the deleted protocol suite used). pipeio.cpp
+# is here so the EOF path runs against a real pipe.
+add_executable(lyrics-app-feed-tests
+    tests/tst_feed.cpp
+    src/host/feedreader.cpp
+    src/host/feedreader.h
+    src/host/feedtypes.h
+    src/host/pipeio.cpp
+    src/host/pipeio.h
+    src/host/tracklyrics.cpp
+    src/host/tracklyrics.h
+    ../fooyin-plugin/src/feedwriter.cpp
+    ../fooyin-plugin/src/feedwriter.h
 )
 
-target_include_directories(lyrics-app-protocol-tests PRIVATE src/ ../fooyin-plugin/src)
+target_include_directories(lyrics-app-feed-tests PRIVATE src/ ../fooyin-plugin/src)
 
-target_link_libraries(lyrics-app-protocol-tests PRIVATE
+target_compile_definitions(lyrics-app-feed-tests PRIVATE
+    LX_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
+)
+
+target_link_libraries(lyrics-app-feed-tests PRIVATE
     Qt6::Test
-    Qt6::WebSockets
+    ICU::uc
+    ${LX_TAGLIB_TARGET}
 )
 
-add_test(NAME protocol COMMAND lyrics-app-protocol-tests)
+add_test(NAME feed COMMAND lyrics-app-feed-tests)
 
 # Tests for the DesktopLyricConfig persistence store.
 add_executable(lyrics-app-config-tests
@@ -170,7 +202,11 @@ add_executable(lyrics-app-controller-tests
     src/app/spectrumbridge.cpp
     src/app/spectrumtransport.cpp
     src/bridge/pausehide.cpp
-    src/bridge/wsclient.cpp
+    src/host/feedreader.cpp
+    src/host/feedreader.h
+    src/host/feedtypes.h
+    src/host/tracklyrics.cpp
+    src/host/tracklyrics.h
     src/window/lyricwindow.cpp
     src/renderer/lyricrenderer.cpp
     src/renderer/controlbar.cpp
@@ -192,8 +228,8 @@ target_include_directories(lyrics-app-controller-tests PRIVATE src/)
 target_link_libraries(lyrics-app-controller-tests PRIVATE
     Qt6::Test
     Qt6::Widgets
-    Qt6::Network
-    Qt6::WebSockets
+    ICU::uc
+    ${LX_TAGLIB_TARGET}
 )
 
 add_test(NAME controller COMMAND lyrics-app-controller-tests)

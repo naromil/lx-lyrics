@@ -11,21 +11,22 @@
 
 // Command-line contract defined in docs/protocol.md §3.
 struct CliOptions {
-  QString wsUrl;                 // --ws=ws://127.0.0.1:PORT (host WebSocket URL)
-  bool exitOnDisconnect = false; // --exit-on-disconnect
-  bool demo = false;             // --demo (standalone self-fed mode)
+  // --player-feed: the app was spawned as the direct child of a player-side
+  // adapter and speaks protocol v2 over stdin/stdout.
+  bool playerFeed = false;
+  // --demo: standalone self-fed mode (fake track + synthetic spectrum), no host.
+  bool demo = false;
 };
 
 // Parses the app's command-line arguments. Unknown arguments are ignored.
+// Precedence: --player-feed > --demo > inert window.
 inline CliOptions parseCliOptions(const QStringList& args)
 {
   CliOptions options;
 
   for (const QString& arg : args) {
-    if (arg.startsWith(QStringLiteral("--ws="))) {
-      options.wsUrl = arg.sliced(5);
-    } else if (arg == QStringLiteral("--exit-on-disconnect")) {
-      options.exitOnDisconnect = true;
+    if (arg == QStringLiteral("--player-feed")) {
+      options.playerFeed = true;
     } else if (arg == QStringLiteral("--demo")) {
       options.demo = true;
     }

@@ -6,9 +6,9 @@ A standalone desktop lyrics display for Linux, written in Qt6 / C++23. It is the
 feature of [lx-music-desktop](https://github.com/lyswhut/lx-music-desktop) (`renderer-lyric` /
 `lyric-font-player`) extracted into a self-contained widget application.
 
-The app is **host-agnostic**: it knows nothing about Fooyin or any specific player. A host drives
-it over the WebSocket JSON protocol documented in `../docs/protocol.md`; the app owns **all**
-parsing, line selection, and rendering.
+The app is **host-agnostic**: it knows nothing about Fooyin or any specific player. A player-side
+adapter drives it over the stdin/stdout player feed documented in `../docs/protocol.md` (v2); the
+app owns **all** lyric acquisition, parsing, line selection, and rendering.
 
 ## Features
 
@@ -32,8 +32,9 @@ parsing, line selection, and rendering.
 - **Control bar**: close, lock, font size ±, opacity ±, zoom, always-on-top, and a settings gear.
 - **i18n**: zh-cn, zh-tw, en-us.
 - **Spectrum visualizer**: a full-window backdrop of 128 faint white bars behind the lyric
-  lines (the reference `common-audio-visualizer` placement), host-fed over the protocol at 25 fps.
-  It pulls frames only while playback is running, the setting is on, and the window is visible.
+  lines (the reference `common-audio-visualizer` placement), host-fed over the feed at 25 fps.
+  It pulls frames only while playback is running, the setting is on, the window is visible, and
+  the host declared `spectrum: true`.
 - **Pause-hide**: the window hides while playback is paused.
 - Drag to move, resize, lock, always-on-top.
 
@@ -41,7 +42,9 @@ parsing, line selection, and rendering.
 
 Prerequisites:
 
-- Qt 6 >= 6.4 — Widgets, Network, WebSockets
+- Qt 6 >= 6.4 — Widgets
+- TagLib (2.x) — embedded lyric tags
+- ICU (`libicuuc`) — GB18030 / BIG5 decoding
 - CMake >= 3.21 (as declared in `CMakeLists.txt`), Ninja
 - A C++23 compiler
 
@@ -51,25 +54,36 @@ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
 cmake --build build
 ```
 
-Or use the project's `tools/install.sh` to build and install both components automatically.
+Or use the project's `tools/install.sh` to build and install the app and the Fooyin adapter
+automatically.
 
 ## Run modes
 
 ```sh
-./build/lx-lyrics-app --demo                                    # self-fed demo
-./build/lx-lyrics-app --ws=ws://127.0.0.1:PORT                  # host-driven
-./build/lx-lyrics-app --ws=ws://127.0.0.1:PORT --exit-on-disconnect
+./build/lx-lyrics-app --demo             # self-fed demo
+./build/lx-lyrics-app --player-feed      # host-driven; an adapter spawns the app this way
+./build/lx-lyrics-app                    # inert window (no host, no self-feed)
 ```
 
+- `--player-feed` — speak protocol v2 over stdin/stdout. The adapter spawns the app as its
+  **direct child**; **EOF on stdin means the player is gone and the app quits immediately** —
+  and it is the *only* quit trigger: a host that stops draining (or closes) the app's stdout
+  gets one warning and its app→host lines dropped, not a dead app.
+  Playing context (path, metadata, state, position, optional spectrum) arrives as
+  `hello`/`set_*` JSON lines; the app reads the lyrics for `set_info.path` itself.
 - `--demo` — no host. The app self-feeds a fake track through the **same** pipeline as a host
   `set_info` message, so the full parse/render path is exercised. The visualizer is self-fed too
   (a synthetic transport answers the same pull requests a host answers), so `--demo` with
   `desktopLyric.audioVisualization` on renders animated bars with no host attached.
-- `--ws=ws://127.0.0.1:PORT` — connect to a host implementing `docs/protocol.md`. With
-  `--exit-on-disconnect` the app quits when the host closes the socket (used when a host spawns
-  it as a child process).
-- Without `--ws` the app runs standalone with its empty (demo-ish) window — there is no host to
-  feed it, so the lyric area stays blank.
+- With no flag the app opens an inert window — there is no host to feed it, so the lyric area
+  stays blank.
+
+`--player-feed` wins over `--demo` when both are given. The pre-v2 `--ws` / `--exit-on-disconnect`
+flags are gone; the feed replaced the socket transport.
+
+The app forces the xcb platform and `QT_FORCE_STDERR_LOGGING=1` at startup — Qt ≥ 6.11 silences
+`qInfo`/`qWarning` when stderr is a pipe, which is exactly the feed setup. Set either environment
+variable beforehand to override.
 
 ## Config
 
@@ -90,10 +104,12 @@ Writes are debounced (500 ms) so rapid settings changes do not thrash the disk.
 
 Press **`Ctrl+,`** to open the settings dialog (the control bar hides when the window is locked,
 so the shortcut is the way back). Every change writes through the config and re-renders live.
+A host can also ask for the dialog over the feed (`open_settings`), e.g. from the Fooyin
+plugin's settings page.
 
 ## Tests
 
-Six QTest suites (154 slots total), run with CTest:
+Six QTest suites (171 slots total), run with CTest:
 
 ```sh
 ctest --test-dir build
@@ -103,14 +119,24 @@ ctest --test-dir build
 |---|---|---|
 | engine | `lyrics-app-tests` | 44 |
 | lyricplayer | `lyrics-app-lyricplayer-tests` | 33 |
-| protocol | `lyrics-app-protocol-tests` | 16 |
+| feed | `lyrics-app-feed-tests` | 33 |
 | config | `lyrics-app-config-tests` | 8 |
 | renderer | `lyrics-app-renderer-tests` | 21 |
 | controller | `lyrics-app-controller-tests` | 32 |
 
+The `feed` suite compiles **both halves** of the wire contract — the app's `FeedReader` and the
+Fooyin adapter's Fooyin-free `FeedWriter` (`../fooyin-plugin/src/feedwriter.cpp`) — and asserts
+the strict v2 parse rules (including the integer-ms rule for `played_time`/`time`/`tempOffset`),
+`set_info` lyric precedence, the encoding fixtures, the 128-byte spectrum rule, `close_requested`,
+the stdin-EOF path, line reassembly across `readyRead` bursts (LF and CRLF), the 1 MiB cap on a
+line that never terminates, and that a sink which stops accepting lines (closed stdout pipe)
+degrades to dropped app→host lines instead of killing the app.
+
 **Test fixtures**: `tests/fixtures/sample.lrc` (UTF-8) and `tests/fixtures/sample-gbk.lrc` (the
 same lyrics encoded as GBK bytes) are rerunnable e2e fixtures for the encoding path:
-`iconv -f GBK -t UTF-8 tests/fixtures/sample-gbk.lrc` must equal `tests/fixtures/sample.lrc`.
+`iconv -f GBK -t UTF-8 tests/fixtures/sample-gbk.lrc` must equal `tests/fixtures/sample.lrc`
+(the `feed` suite asserts exactly this). `tests/fixtures/embedded-lyrics.flac` carries
+`LYRICS=[00:00.00]Embedded line one\n[00:01.00]Embedded line two` for the embedded-tag path.
 
 ## Wayland note
 

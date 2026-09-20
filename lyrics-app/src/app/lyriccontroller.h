@@ -36,7 +36,7 @@ public:
   explicit LyricController(AppContext& ctx, LyricWindow& window, QObject* parent = nullptr);
   ~LyricController() override;
 
-  // --- music-state entry points (WsClient signals and --demo self-feed) ---
+  // --- music-state entry points (FeedReader signals and --demo self-feed) ---
   void setTrack(const TrackSnapshot& track);
   void setLyric(const LyricSnapshot& lyric);
   void setStatus(const PlaybackSnapshot& status);

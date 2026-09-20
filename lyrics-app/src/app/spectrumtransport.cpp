@@ -4,7 +4,7 @@
  */
 #include "app/spectrumtransport.h"
 
-#include "bridge/wsclient.h"
+#include "host/feedreader.h"
 
 #include <QtGlobal>
 
@@ -17,36 +17,36 @@ constexpr double kPhaseStep = 0.05; // 25 fps -> ~1.25 cycles/second
 
 } // namespace
 
-WsSpectrumTransport::WsSpectrumTransport(WsClient* ws, QObject* parent)
+FeedSpectrumTransport::FeedSpectrumTransport(FeedReader* feed, QObject* parent)
   : SpectrumTransport(parent)
-  , m_ws(ws)
+  , m_feed(feed)
 {
-  connect(m_ws, &WsClient::analyserDataReceived, this, &SpectrumTransport::frameReceived);
-  connect(m_ws, &WsClient::infoReceived, this, [this](const TrackSnapshot& info) {
+  connect(m_feed, &FeedReader::analyserDataReceived, this, &SpectrumTransport::frameReceived);
+  connect(m_feed, &FeedReader::infoReceived, this, [this](const TrackSnapshot& info) {
     if (m_playing != info.isPlay) {
       m_playing = info.isPlay;
       emit playStateChanged(m_playing);
     }
   });
-  connect(m_ws, &WsClient::statusReceived, this, [this](const PlaybackSnapshot& status) {
+  connect(m_feed, &FeedReader::statusReceived, this, [this](const PlaybackSnapshot& status) {
     if (m_playing != status.isPlay) {
       m_playing = status.isPlay;
       emit playStateChanged(m_playing);
     }
   });
-  connect(m_ws, &WsClient::playReceived, this, [this](qint64) {
+  connect(m_feed, &FeedReader::playReceived, this, [this](qint64) {
     if (!m_playing) {
       m_playing = true;
       emit playStateChanged(true);
     }
   });
-  connect(m_ws, &WsClient::pauseReceived, this, [this] {
+  connect(m_feed, &FeedReader::pauseReceived, this, [this] {
     if (m_playing) {
       m_playing = false;
       emit playStateChanged(false);
     }
   });
-  connect(m_ws, &WsClient::stopReceived, this, [this] {
+  connect(m_feed, &FeedReader::stopReceived, this, [this] {
     if (m_playing) {
       m_playing = false;
       emit playStateChanged(false);
@@ -54,9 +54,11 @@ WsSpectrumTransport::WsSpectrumTransport(WsClient* ws, QObject* parent)
   });
 }
 
-void WsSpectrumTransport::requestFrame()
+void FeedSpectrumTransport::requestFrame()
 {
-  m_ws->sendGetAnalyserData();
+  // Suppressed by the reader until the host's hello declared an analyser
+  // (protocol §5), so a host without one never sees the request.
+  m_feed->requestAnalyserData();
 }
 
 DemoSpectrumTransport::DemoSpectrumTransport(QObject* parent)

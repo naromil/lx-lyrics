@@ -13,7 +13,7 @@
 
 #include <memory>
 
-class HostServer;
+class FeedWriter;
 
 namespace Fooyin {
 class EngineController;
@@ -24,7 +24,7 @@ class SpectrumSource : public QObject {
   Q_OBJECT
 
 public:
-  explicit SpectrumSource(Fooyin::EngineController* engine, HostServer* host,
+  explicit SpectrumSource(Fooyin::EngineController* engine, FeedWriter* writer,
                           QObject* parent = nullptr);
 
   /// Pure helper (no engine/host state): compress float spectrum bins into the
@@ -35,7 +35,8 @@ public:
   /// conversion can be unit-tested without a live Fooyin engine.
   static QByteArray scaleToBytes(const QVector<float>& bins);
 
-  /// Pull one fresh spectrum frame and push it to the connected app.
+  /// Pull one fresh spectrum frame and push it to the child app as a
+  /// {"v":2,"action":"spectrum"} line (a no-op while no child is running).
   void onAnalyserDataRequested();
 
 private:
@@ -44,6 +45,6 @@ private:
   [[nodiscard]] std::shared_ptr<Fooyin::VisualisationSession> ensureSession();
 
   Fooyin::EngineController* m_engine = nullptr;
-  HostServer* m_host = nullptr;
+  FeedWriter* m_writer = nullptr;
   std::shared_ptr<Fooyin::VisualisationSession> m_session;
 };

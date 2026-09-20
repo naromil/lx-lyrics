@@ -8,7 +8,6 @@
 #include "lxlyricsplugin.h"
 
 #include "lxlyricssettings.h"
-#include "lyricsources.h"
 
 #include <core/engine/enginecontroller.h>
 #include <core/player/playercontroller.h>
@@ -21,8 +20,8 @@
 #include <QDebug>
 #include <QGuiApplication>
 #include <QPointer>
+#include <QSignalBlocker>
 #include <QTimer>
-#include <QUrl>
 #include <QWindow>
 
 void LxLyricsPlugin::initialise(const Fooyin::CorePluginContext& context)
@@ -68,22 +67,22 @@ void LxLyricsPlugin::initialise(const Fooyin::GuiPluginContext& context)
   // "Open lyrics settings" button on that page: clicking it asks the running
   // lyrics app to open its own configuration dialog (protocol.md §5
   // open_settings) — so the user can reconfigure even when the lyric window
-  // is locked. sendOpenSettings() is a safe no-op when the app is not
-  // running; the callback dereferences m_hostServer at click time, which is
-  // safe because startDesktopLyrics() creates it before the app exists and
-  // stopDesktopLyrics() resets it before the app is gone.
+  // is locked. sendOpenSettings() is a safe no-op when no child is running;
+  // the callback dereferences m_feedWriter at click time, which is safe
+  // because startDesktopLyrics() creates the writer before any app exists and
+  // it outlives every child (stopDesktopLyrics() only stops the child).
   m_settingsPage->setOpenSettingsCallback([this] {
-    if (m_hostServer != nullptr) {
-      m_hostServer->sendOpenSettings();
+    if (m_feedWriter != nullptr) {
+      m_feedWriter->sendOpenSettings();
     }
   });
 
-  // Feed the AppSpawner on setting change (the page's apply() writes through
-  // SettingsManager::set, which notifies these subscribers). The spawner is
+  // Feed the FeedWriter on setting change (the page's apply() writes through
+  // SettingsManager::set, which notifies these subscribers). The writer is
   // also fed inside startDesktopLyrics() before every launch.
   m_settingsManager->subscribe(LxLyrics::appPathKey, this, [this](const QVariant& appPath) {
-    if (m_appSpawner != nullptr) {
-      m_appSpawner->setAppPath(appPath.toString());
+    if (m_feedWriter != nullptr) {
+      m_feedWriter->setAppPath(appPath.toString());
     }
   });
 
@@ -122,9 +121,9 @@ void LxLyricsPlugin::initialise(const Fooyin::GuiPluginContext& context)
   // close this — an unwired window emits no focus signal by definition —
   // and practical impact is low: fullscreen is normally a focused-window
   // action (which re-scans first), and focusWindowChanged plus the forced
-  // state send on client connect self-heal.
+  // state send on app start self-heal.
   if (auto* guiApp = qobject_cast<QGuiApplication*>(QCoreApplication::instance())) {
-    watchAllWindows(); // Seeds the tracked state before any client connects.
+    watchAllWindows(); // Seeds the tracked state before any app starts.
     // Belt-and-braces: a focus move re-scans (a new focused window gets
     // wired) and re-checks the current state.
     connect(guiApp, &QGuiApplication::focusWindowChanged, this, [this](QWindow*) {
@@ -140,19 +139,18 @@ void LxLyricsPlugin::shutdown()
 {
   qInfo() << "[LX Lyrics] shutdown";
 
-  // Closing the server closes the client socket; an app spawned with
-  // --exit-on-disconnect quits on its own. The spectrum source is destroyed
-  // first so no analyser callbacks fire after teardown.
+  // Stopping the feed terminates the child lyrics-app: the lyric window lives
+  // and dies with the session, never as an orphan. The spectrum source is
+  // destroyed first so no analyser callbacks fire after teardown.
   if (m_playerBridge != nullptr) {
     m_playerBridge->stopPush();
   }
   m_spectrumSource.reset();
   m_playerBridge.reset();
-  m_hostServer.reset();
-  if (m_appSpawner != nullptr) {
-    m_appSpawner->stop();
+  if (m_feedWriter != nullptr) {
+    m_feedWriter->stop();
   }
-  m_appSpawner.reset();
+  m_feedWriter.reset();
 }
 
 void LxLyricsPlugin::toggleDesktopLyrics(bool checked)
@@ -178,84 +176,68 @@ void LxLyricsPlugin::rememberState(bool enabled)
 
 void LxLyricsPlugin::startDesktopLyrics()
 {
-  if (m_hostServer == nullptr) {
-    m_hostServer = std::make_unique<HostServer>();
-    connect(m_hostServer.get(), &HostServer::clientConnected, this, [this] {
-      qInfo() << "[LX Lyrics] lyrics app connected";
-      // Force the current fullscreen state on connect: a freshly spawned app
-      // must start correctly hidden when Fooyin is already fullscreen (the
-      // changed-only watcher would otherwise never send anything).
+  if (m_feedWriter == nullptr) {
+    m_feedWriter = std::make_unique<FeedWriter>();
+    // The child is up and its hello line has been written: force the current
+    // fullscreen state on start — a freshly spawned app must start correctly
+    // hidden when Fooyin is already fullscreen (the changed-only watcher
+    // would otherwise never send anything) — and push the initial snapshot
+    // (v2 has no get_info; the pipe buffers make this race-free).
+    connect(m_feedWriter.get(), &FeedWriter::appStarted, this, [this] {
+      qInfo() << "[LX Lyrics] lyrics app started";
       updateFullscreen(true);
+      if (m_playerBridge != nullptr) {
+        m_playerBridge->onAppStarted();
+      }
     });
-    connect(m_hostServer.get(), &HostServer::clientDisconnected, this,
-            &LxLyricsPlugin::onClientDisconnected);
-    // A protocol-error close is NOT a crash: clear stale spawner
-    // bookkeeping only (the app exits on the socket close via
-    // --exit-on-disconnect), keep the server listening for a corrected
-    // client, and never schedule the respawn loop.
-    connect(m_hostServer.get(), &HostServer::protocolErrorClosed, this,
-            &LxLyricsPlugin::onProtocolErrorClosed);
+    // The child ended: a clean exit without a close request is a crash to
+    // recover from, a non-zero status is a protocol abort that ends the
+    // session (see onAppExited).
+    connect(m_feedWriter.get(), &FeedWriter::appExited, this, &LxLyricsPlugin::onAppExited);
     // The user closed the lyric window in the app: end the session without
-    // respawning (the disconnect that follows must not look like a crash).
-    connect(m_hostServer.get(), &HostServer::closeRequested, this,
+    // respawning (the exit that follows must not look like a crash).
+    connect(m_feedWriter.get(), &FeedWriter::closeRequested, this,
             &LxLyricsPlugin::onCloseRequested);
 
-    m_playerBridge = std::make_unique<PlayerBridge>(m_playerController, m_hostServer.get(), this);
-    // Lyric acquisition: raw embedded tags / local .lrc files only. The
-    // display app owns all parsing/selection (docs/protocol.md §1); the
-    // plugin never sees beyond these four opaque strings.
-    m_playerBridge->setLyricProvider(
-      [](const Fooyin::Track& track, QString& lrc, QString& tlrc, QString& rlrc, QString& lxlrc) {
-        const LxLyrics::LyricsResult result = LxLyrics::LyricSource::fetch(track);
-        lrc = result.lrc;
-        tlrc = result.tlrc;
-        rlrc = result.rlrc;
-        lxlrc = result.lxlrc;
-      });
-    connect(m_hostServer.get(), &HostServer::clientConnected, m_playerBridge.get(),
-            &PlayerBridge::onClientConnected);
-    connect(m_hostServer.get(), &HostServer::clientDisconnected, m_playerBridge.get(),
-            &PlayerBridge::stopPush);
-    connect(m_hostServer.get(), &HostServer::requestInfo, m_playerBridge.get(),
-            &PlayerBridge::handleRequestInfo);
-    connect(m_hostServer.get(), &HostServer::requestStatus, m_playerBridge.get(),
-            &PlayerBridge::handleRequestStatus);
-    connect(m_hostServer.get(), &HostServer::requestAnalyserData, m_playerBridge.get(),
+    // Playback mapping only: the app owns lyric acquisition in v2, so the
+    // bridge sends playing context (path, metadata, state, position).
+    m_playerBridge = std::make_unique<PlayerBridge>(m_playerController, m_feedWriter.get(), this);
+    // The child's analyser request is gated by the bridge's pushing state
+    // (nothing is pushed to a dead or absent child).
+    connect(m_feedWriter.get(), &FeedWriter::analyserDataRequested, m_playerBridge.get(),
             &PlayerBridge::handleRequestAnalyserData);
 
     // Spectrum: PlayerBridge forwards each analyser request as
     // analyserDataRequested (it gates on the pushing state); SpectrumSource
-    // pulls a fresh frame and replies over the same HostServer.
+    // pulls a fresh frame and replies through the same feed.
     m_spectrumSource =
-      std::make_unique<SpectrumSource>(m_engineController, m_hostServer.get(), this);
+      std::make_unique<SpectrumSource>(m_engineController, m_feedWriter.get(), this);
     connect(m_playerBridge.get(), &PlayerBridge::analyserDataRequested, m_spectrumSource.get(),
             &SpectrumSource::onAnalyserDataRequested);
   }
 
-  if (!m_hostServer->isListening()) {
-    qWarning() << "[LX Lyrics] desktop lyrics server not listening; cannot start app";
-    m_toggleAction->setChecked(false);
-    return;
-  }
+  applyFeedWriterSettings(); // app path from settings before every launch
 
-  if (m_appSpawner == nullptr) {
-    m_appSpawner = std::make_unique<AppSpawner>();
-  }
-  applySpawnerSettings(); // app path from settings before every launch
+  // The hello line declares analyser availability (protocol.md §5): the app
+  // only requests frames when it is true, so tie it to the engine's
+  // visualisation service before every spawn.
+  const bool spectrumAvailable =
+    m_engineController != nullptr && m_engineController->visualisationService() != nullptr;
+  m_feedWriter->setSpectrumAvailable(spectrumAvailable);
 
   // Idempotency guard: the app may already be running (e.g. the startup
   // restore followed by a manual toggle click, or a double invocation).
-  // Skipping the early return would spawn a SECOND detached lyrics-app.
-  // When the app has exited on its own (crashed / socket closed) isRunning()
-  // is false and the spawn below proceeds normally.
-  if (m_appSpawner->isRunning()) {
+  // Skipping the early return would spawn a SECOND lyrics-app. When the app
+  // has exited on its own (crash) isRunning() is false and the spawn below
+  // proceeds normally.
+  if (m_feedWriter->isRunning()) {
     qInfo() << "[LX Lyrics] lyrics-app already running, skipping duplicate spawn";
     return;
   }
 
   // Every caller (manual View-menu toggle / startup restore, and the
-  // disconnect respawn) only runs when the desktop lyrics are wanted.
-  if (!m_appSpawner->spawn(serverWsUrl())) {
+  // crash-recovery respawn) only runs when the desktop lyrics are wanted.
+  if (!m_feedWriter->spawn()) {
     qWarning() << "[LX Lyrics] failed to start lyrics app; disabling desktop lyrics";
     m_toggleAction->setChecked(false);
   }
@@ -270,31 +252,31 @@ void LxLyricsPlugin::stopDesktopLyrics()
   m_spectrumSource.reset();
   m_playerBridge.reset();
 
-  if (m_hostServer == nullptr) {
+  if (m_feedWriter == nullptr) {
     return;
   }
 
-  qInfo() << "[LX Lyrics] desktop lyrics disabled; closing server (app exits on socket close)";
-  m_hostServer.reset();
-  if (m_appSpawner != nullptr) {
-    m_appSpawner->stop();
-  }
+  qInfo() << "[LX Lyrics] desktop lyrics disabled; stopping the lyrics app";
+  // Terminates the child and waits for it, then clears the running state.
+  // The writer itself stays alive (only the child is session-scoped) so the
+  // AppPath subscription and the next spawn keep working.
+  m_feedWriter->stop();
 }
 
 void LxLyricsPlugin::onCloseRequested()
 {
   // protocol.md §4: the user intentionally closed the lyric window. End the
   // desktop-lyrics session like a View-menu toggle-off — the action must read
-  // unchecked IMMEDIATELY so the disconnect that follows early-exits
-  // onClientDisconnected (its toggle check) and can never enter the
-  // crash-recovery respawn path. The teardown itself is DEFERRED one event
-  // loop turn: this slot runs synchronously inside the emitting
-  // HostServer::onTextMessageReceived, and the normal toggle path would
-  // destroy m_hostServer — the signal's own sender — mid-emission.
-  // QSignalBlocker suppresses the synchronous toggleDesktopLyrics teardown;
-  // the queued callback below performs it once the emission has fully
-  // returned. Idempotent: a duplicate frame schedules a second callback that
-  // early-exits on the identity guard (the server is already gone).
+  // unchecked IMMEDIATELY so the exit that follows early-exits onAppExited
+  // (its toggle check) and can never enter the crash-recovery respawn path.
+  // The teardown itself is DEFERRED one event loop turn: this slot runs
+  // synchronously inside the emitting FeedWriter's stdout handler, and the
+  // normal toggle path would stop — and wait for — the child whose signal
+  // emission we are inside. QSignalBlocker suppresses the synchronous
+  // toggleDesktopLyrics teardown; the queued callback below performs it once
+  // the emission has fully returned. Idempotent: a duplicate frame schedules
+  // a second callback that early-exits on the identity guard (the writer is
+  // the same, but the session teardown already ran).
   if (m_toggleAction != nullptr) {
     const QSignalBlocker blocker(m_toggleAction);
     m_toggleAction->setChecked(false);
@@ -304,87 +286,96 @@ void LxLyricsPlugin::onCloseRequested()
   // intentional close as "on".
   rememberState(false);
 
-  // Capture the emitting server: the queued teardown must only destroy the
-  // server that actually closed. If the user manually toggled the action
-  // back ON while we waited (reusing the still-alive server) or the
-  // lifecycle replaced the server (toggle off/on), the session is no longer
-  // the one that closed and must be left alone.
-  QPointer<HostServer> closingHost = m_hostServer.get();
-  QTimer::singleShot(0, this, [this, closingHost] {
+  // Capture the emitting writer: the queued teardown must only stop the
+  // session that actually closed. If the user manually toggled the action
+  // back ON while we waited (starting a new child through the same writer),
+  // the session is no longer the one that closed and must be left alone.
+  QPointer<FeedWriter> closingWriter = m_feedWriter.get();
+  QTimer::singleShot(0, this, [this, closingWriter] {
     if (m_toggleAction != nullptr && m_toggleAction->isChecked())
       return; // The user re-enabled desktop lyrics while we waited.
-    if (m_hostServer.get() != closingHost)
+    if (m_feedWriter.get() != closingWriter)
       return; // Replaced (or already torn down): the new session owns its lifecycle.
     stopDesktopLyrics();
   });
 }
 
-void LxLyricsPlugin::onProtocolErrorClosed()
+void LxLyricsPlugin::onAppExited(int status, bool closeRequested)
 {
-  // A connected client was closed for a protocol violation (hostserver.cpp):
-  // this is a malformed-client event, NOT a crash. Keep the server listening
-  // so a corrected client may reconnect; only clear the spawner's stale
-  // running flag — the detached app exits on its own when the socket closes
-  // (--exit-on-disconnect) and must not block a later manual spawn with
-  // "already running". No respawn loop, no toggle change. Null-safe and
-  // idempotent.
-  qWarning() << "[LX Lyrics] client closed for protocol error; keeping server listening";
-  if (m_appSpawner != nullptr) {
-    m_appSpawner->stop();
+  // The child process is gone; FeedWriter has already cleared its own process
+  // bookkeeping before emitting this, so every path below only decides what
+  // the SESSION does next.
+  if (closeRequested) {
+    // The user closed the lyric window: onCloseRequested() already unchecked
+    // the toggle and scheduled the teardown. The exit is expected, never a
+    // crash; the deferred teardown is idempotent when it finds the writer
+    // already stopped.
+    return;
   }
-}
 
-void LxLyricsPlugin::onClientDisconnected()
-{
+  if (status != 0) {
+    // protocol.md §7: a protocol violation aborts the app with a non-zero
+    // exit status. This is NOT a crash to respawn — a respawn would loop on
+    // the same malformed input. Log loudly, clear the pushing state, drop the
+    // dead child's bookkeeping and end the session: the toggle is unchecked
+    // signal-blocked (no synchronous teardown from inside the emitting
+    // writer) and the remembered state is written here explicitly, because
+    // the blocker suppresses toggleDesktopLyrics().
+    qWarning() << "[LX Lyrics] lyrics app aborted (protocol error), exit status" << status
+               << "; disabling desktop lyrics";
+    if (m_playerBridge != nullptr) {
+      m_playerBridge->stopPush();
+    }
+    if (m_toggleAction != nullptr) {
+      const QSignalBlocker blocker(m_toggleAction);
+      m_toggleAction->setChecked(false);
+    }
+    rememberState(false);
+    if (m_feedWriter != nullptr) {
+      m_feedWriter->stop();
+    }
+    return;
+  }
+
   if (m_toggleAction == nullptr || !m_toggleAction->isChecked()) {
     return;
   }
-  if (m_hostServer == nullptr || m_appSpawner == nullptr) {
+  if (m_feedWriter == nullptr) {
     return;
   }
 
-  // protocol.md §2: the host may respawn the app after a disconnect. The
-  // server keeps listening on the same port, so the URL is unchanged.
-  // Guard against stale servers (task D): the user may toggle off/on during
-  // the 1500 ms delay, replacing m_hostServer with a NEW server on a NEW
-  // port; the old timer must never spawn against it. Capture the emitting
-  // instance and the URL at schedule time, and require the current server to
-  // still BE that instance before acting.
-  QPointer<HostServer> disconnectedHost = m_hostServer.get();
-  const QUrl url = serverWsUrl();
-
-  qInfo() << "[LX Lyrics] app disconnected; respawning in 1500 ms";
-  QTimer::singleShot(1500, this, [this, disconnectedHost, url] {
-    if (m_hostServer.get() != disconnectedHost) {
-      // The server was replaced while waiting (toggle off/on): drop the
-      // stale respawn — the new session owns its own lifecycle.
+  // protocol.md §2: the host may respawn the app after an unexpected exit.
+  // Guard against a stale timer: the user may toggle off/on during the
+  // 1500 ms delay, starting a new child; the old timer must then be dropped.
+  QPointer<FeedWriter> exitedWriter = m_feedWriter.get();
+  qInfo() << "[LX Lyrics] app exited; respawning in 1500 ms";
+  QTimer::singleShot(1500, this, [this, exitedWriter] {
+    if (m_feedWriter.get() != exitedWriter) {
+      // Replaced while waiting (toggle off/on): drop the stale respawn — the
+      // new session owns its own lifecycle.
       return;
     }
-    if (!m_toggleAction->isChecked() || m_hostServer == nullptr || !m_hostServer->isListening()) {
+    if (m_toggleAction == nullptr || !m_toggleAction->isChecked()) {
       return;
     }
-    m_appSpawner->stop();
+    if (m_feedWriter->isRunning()) {
+      return; // A child is already up (restarted by a toggle): nothing to recover.
+    }
     // Respawn only fires while the toggle is checked, so the desktop lyrics
     // are wanted; spawn unconditionally.
-    m_appSpawner->spawn(url);
+    if (!m_feedWriter->spawn()) {
+      qWarning() << "[LX Lyrics] failed to respawn lyrics app; disabling desktop lyrics";
+      m_toggleAction->setChecked(false);
+    }
   });
 }
 
-QUrl LxLyricsPlugin::serverWsUrl() const
+void LxLyricsPlugin::applyFeedWriterSettings()
 {
-  QUrl url;
-  url.setScheme(QStringLiteral("ws"));
-  url.setHost(QStringLiteral("127.0.0.1"));
-  url.setPort(m_hostServer->serverPort());
-  return url;
-}
-
-void LxLyricsPlugin::applySpawnerSettings()
-{
-  if (m_appSpawner == nullptr || m_settingsManager == nullptr) {
+  if (m_feedWriter == nullptr || m_settingsManager == nullptr) {
     return;
   }
-  m_appSpawner->setAppPath(m_settingsManager->value(LxLyrics::appPathKey).toString());
+  m_feedWriter->setAppPath(m_settingsManager->value(LxLyrics::appPathKey).toString());
 }
 
 void LxLyricsPlugin::watchAllWindows()
@@ -441,7 +432,7 @@ void LxLyricsPlugin::updateFullscreen(bool force)
     return; // Unchanged state: nothing to report.
   }
   m_lastFullscreenSent = isFullscreen;
-  if (m_hostServer != nullptr) {
-    m_hostServer->sendSetFullscreen(isFullscreen);
+  if (m_feedWriter != nullptr) {
+    m_feedWriter->sendSetFullscreen(isFullscreen);
   }
 }

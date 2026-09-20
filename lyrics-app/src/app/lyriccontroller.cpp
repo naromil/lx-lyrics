@@ -26,10 +26,10 @@
 #include <optional>
 
 #include "app/appcontext.h"
-#include "bridge/wsclient.h"
 #include "config/desktoplyricconfig.h"
 #include "engine/lyricplayer.h"
 #include "engine/lyricselector.h"
+#include "host/feedtypes.h"
 #include "renderer/lyricrenderer.h"
 #include "window/lyricwindow.h"
 

@@ -7,22 +7,55 @@
 
 #include "playerbridge.h"
 
-#include "hostserver.h"
+#include "feedwriter.h"
 
 #include <QDebug>
 
 namespace {
 constexpr qint64 kStatusThrottleMs = 500;
+
+/// protocol v2 §5 `set_info`: playing context only. `id` and `line` were
+/// removed in v2 (no host computes line numbers, no consumer for `id`) and no
+/// lyric field is sent — the app reads the lyrics itself from the file at
+/// `path` (sidecar, then embedded tags).
+QVariantMap setInfoFields(const Fooyin::Track& track, bool isPlay, qint64 playedTime)
+{
+  QVariantMap fields;
+  fields.insert(QStringLiteral("path"), track.filepath());
+  fields.insert(QStringLiteral("singer"), track.artist());
+  fields.insert(QStringLiteral("name"), track.title());
+  fields.insert(QStringLiteral("album"), track.album());
+  fields.insert(QStringLiteral("isPlay"), isPlay);
+  fields.insert(QStringLiteral("played_time"), playedTime);
+  return fields;
 }
 
-PlayerBridge::PlayerBridge(Fooyin::PlayerController* playerController, HostServer* host,
+/// The same snapshot for "nothing is playing": `path` is "" when unknown.
+QVariantMap emptySetInfoFields()
+{
+  QVariantMap fields;
+  fields.insert(QStringLiteral("path"), QString());
+  fields.insert(QStringLiteral("singer"), QString());
+  fields.insert(QStringLiteral("name"), QString());
+  fields.insert(QStringLiteral("album"), QString());
+  fields.insert(QStringLiteral("isPlay"), false);
+  fields.insert(QStringLiteral("played_time"), 0);
+  return fields;
+}
+} // namespace
+
+PlayerBridge::PlayerBridge(Fooyin::PlayerController* playerController, FeedWriter* writer,
                            QObject* parent)
   : QObject(parent)
   , m_playerController(playerController)
-  , m_host(host)
+  , m_writer(writer)
 {
   if (m_playerController == nullptr) {
     qWarning() << "[LX Lyrics] PlayerBridge created without a PlayerController; bridge inert";
+    return;
+  }
+  if (m_writer == nullptr) {
+    qWarning() << "[LX Lyrics] PlayerBridge created without a FeedWriter; bridge inert";
     return;
   }
 
@@ -38,42 +71,15 @@ PlayerBridge::PlayerBridge(Fooyin::PlayerController* playerController, HostServe
           &PlayerBridge::onPositionMoved);
 }
 
-void PlayerBridge::setLyricProvider(LyricProvider provider)
-{
-  m_lyricProvider = std::move(provider);
-}
-
 void PlayerBridge::setPlaybackRate(double rate)
 {
   m_playbackRate = rate;
 }
 
-void PlayerBridge::onClientConnected()
+void PlayerBridge::onAppStarted()
 {
   m_pushing = true;
-  handleRequestInfo();
-}
-
-void PlayerBridge::handleRequestInfo()
-{
-  if (!m_pushing) {
-    return;
-  }
   pushTrack(currentTrack());
-}
-
-void PlayerBridge::handleRequestStatus()
-{
-  if (!m_pushing) {
-    return;
-  }
-
-  const bool playing = isPlaying();
-  const qint64 time = playedTime();
-  m_host->sendSetStatus(playing, -1, time);
-  if (playing) {
-    m_host->sendSetPlay(time);
-  }
 }
 
 void PlayerBridge::handleRequestAnalyserData()
@@ -120,14 +126,14 @@ void PlayerBridge::onPlayStateChanged(Fooyin::Player::PlayState state,
   switch (state) {
   case Fooyin::Player::PlayState::Playing:
     m_lastStatusMs = 0;
-    m_host->sendSetStatus(true, -1, playedTime());
-    m_host->sendSetPlay(playedTime());
+    m_writer->sendSetStatus(true, playedTime());
+    m_writer->sendSetPlay(playedTime());
     break;
   case Fooyin::Player::PlayState::Paused:
-    m_host->sendSetStatus(false, -1, playedTime());
+    m_writer->sendSetStatus(false, playedTime());
     break;
   case Fooyin::Player::PlayState::Stopped:
-    m_host->sendSetStop();
+    m_writer->sendSetStop();
     break;
   }
 }
@@ -139,12 +145,14 @@ void PlayerBridge::onPositionChanged(uint64_t ms)
   }
 
   const qint64 position = static_cast<qint64>(ms);
-  if (position - m_lastStatusMs < kStatusThrottleMs) {
+  // Throttle only forwards: a position below the last one sent is a backwards
+  // seek, and the app has just been re-anchored, so that update must go now.
+  if (position >= m_lastStatusMs && position - m_lastStatusMs < kStatusThrottleMs) {
     return;
   }
 
   m_lastStatusMs = position;
-  m_host->sendSetStatus(isPlaying(), -1, position);
+  m_writer->sendSetStatus(isPlaying(), position);
 }
 
 void PlayerBridge::onPositionMoved(uint64_t)
@@ -154,8 +162,12 @@ void PlayerBridge::onPositionMoved(uint64_t)
   }
 
   const qint64 time = playedTime();
-  m_host->sendSetPlay(time);
-  m_host->sendSetStatus(isPlaying(), -1, time);
+  m_writer->sendSetPlay(time);
+  m_writer->sendSetStatus(isPlaying(), time);
+  // The app's timer restarts at the seek target: re-anchor the throttle there,
+  // so the next periodic update is due 500 ms of playback from now instead of
+  // being suppressed until playback passes the pre-seek position.
+  m_lastStatusMs = time;
 }
 
 Fooyin::Track PlayerBridge::currentTrack() const
@@ -181,72 +193,22 @@ qint64 PlayerBridge::playedTime() const
                                        : 0;
 }
 
-void PlayerBridge::currentLyrics(const Fooyin::Track& track, QString& lrc, QString& tlrc,
-                                 QString& rlrc, QString& lxlrc) const
-{
-  lrc = tlrc = rlrc = lxlrc = QString();
-  if (m_lyricProvider) {
-    m_lyricProvider(track, lrc, tlrc, rlrc, lxlrc);
-  }
-}
-
-QVariantMap PlayerBridge::setInfoFields(const Fooyin::Track& track, bool isPlay, qint64 playedTime,
-                                        const QString& lrc, const QString& tlrc,
-                                        const QString& rlrc, const QString& lxlrc) const
-{
-  const QString id = track.uniqueFilepath().isEmpty() ? track.filepath() : track.uniqueFilepath();
-
-  QVariantMap fields;
-  fields.insert(QStringLiteral("id"), id);
-  fields.insert(QStringLiteral("singer"), track.artist());
-  fields.insert(QStringLiteral("name"), track.title());
-  fields.insert(QStringLiteral("album"), track.album());
-  fields.insert(QStringLiteral("lrc"), lrc);
-  fields.insert(QStringLiteral("tlrc"), tlrc);
-  fields.insert(QStringLiteral("rlrc"), rlrc);
-  fields.insert(QStringLiteral("lxlrc"), lxlrc);
-  fields.insert(QStringLiteral("isPlay"), isPlay);
-  fields.insert(QStringLiteral("line"), -1);
-  fields.insert(QStringLiteral("played_time"), playedTime);
-  return fields;
-}
-
-QVariantMap PlayerBridge::emptySetInfoFields() const
-{
-  QVariantMap fields;
-  fields.insert(QStringLiteral("id"), QVariant());
-  fields.insert(QStringLiteral("singer"), QString());
-  fields.insert(QStringLiteral("name"), QString());
-  fields.insert(QStringLiteral("album"), QString());
-  fields.insert(QStringLiteral("lrc"), QString());
-  fields.insert(QStringLiteral("tlrc"), QString());
-  fields.insert(QStringLiteral("rlrc"), QString());
-  fields.insert(QStringLiteral("lxlrc"), QString());
-  fields.insert(QStringLiteral("isPlay"), false);
-  fields.insert(QStringLiteral("line"), -1);
-  fields.insert(QStringLiteral("played_time"), 0);
-  return fields;
-}
-
 void PlayerBridge::pushTrack(const Fooyin::Track& track)
 {
-  if (!track.isValid()) {
-    m_host->sendSetInfo(emptySetInfoFields());
+  if (m_writer == nullptr) {
     return;
   }
 
-  QString lrc;
-  QString tlrc;
-  QString rlrc;
-  QString lxlrc;
-  currentLyrics(track, lrc, tlrc, rlrc, lxlrc);
+  if (!track.isValid()) {
+    m_writer->sendSetInfo(emptySetInfoFields());
+    return;
+  }
 
   const bool playing = isPlaying();
   const qint64 time = playedTime();
 
-  m_host->sendSetInfo(setInfoFields(track, playing, time, lrc, tlrc, rlrc, lxlrc));
-  m_host->sendSetLyric(lrc, tlrc, rlrc, lxlrc);
+  m_writer->sendSetInfo(setInfoFields(track, playing, time));
   if (playing) {
-    m_host->sendSetPlay(time);
+    m_writer->sendSetPlay(time);
   }
 }

@@ -6,9 +6,9 @@
  */
 #include <QApplication>
 #include <QCoreApplication>
-#include <QUrl>
 #include <QtGlobal>
 
+#include <csignal>
 #include <memory>
 
 #include "app/appcontext.h"
@@ -16,7 +16,8 @@
 #include "app/lyriccontroller.h"
 #include "app/spectrumbridge.h"
 #include "app/spectrumtransport.h"
-#include "bridge/wsclient.h"
+#include "host/feedreader.h"
+#include "host/pipeio.h"
 #include "i18n/translationmanager.h"
 #include "window/lyricwindow.h"
 
@@ -32,7 +33,6 @@ namespace {
 TrackSnapshot makeDemoTrack()
 {
   TrackSnapshot track;
-  track.id = QStringLiteral("demo-track");
   track.singer = QStringLiteral("Demo Singer");
   track.name = QStringLiteral("Demo Song");
   track.album = QStringLiteral("Demo Album");
@@ -47,7 +47,6 @@ TrackSnapshot makeDemoTrack()
                               "[00:05.00]Third rōmaji");
   track.lxlrc = QString();
   track.isPlay = true;
-  track.line = -1;
   track.playedTimeMs = 0;
   return track;
 }
@@ -62,6 +61,23 @@ int main(int argc, char* argv[])
   // to the platform default otherwise.
   if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM"))
     qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("xcb"));
+
+  // Qt >= 6.11 drops qInfo/qWarning/qCritical output when stderr is not a
+  // terminal — but this app's stderr is a PIPE by design (docs/protocol.md
+  // §2: the player-side adapter captures it and forwards the lines into the
+  // player's log), and stdout is reserved for protocol lines. Force the
+  // logging on so a spawned child is not silent; respect an explicit override.
+  if (!qEnvironmentVariableIsSet("QT_FORCE_STDERR_LOGGING"))
+    qputenv("QT_FORCE_STDERR_LOGGING", QByteArrayLiteral("1"));
+
+  // A host may drop the app's stdout while its stdin lives (a player whose
+  // read loop died, a plugin teardown that closes the read channel first), and
+  // a bare ::write() to a pipe with no reader both raises SIGPIPE — whose
+  // default action kills this process before ::write can return EPIPE — and
+  // fails with EPIPE. Ignore it here, before any feed device exists, so the
+  // failure surfaces as a dropped line instead of a death the adapter would
+  // read as a crash. Inert for the non-feed modes: they never write to a pipe.
+  std::signal(SIGPIPE, SIG_IGN);
 
   QApplication app(argc, argv);
 
@@ -78,13 +94,13 @@ int main(int argc, char* argv[])
   appContext.mainWindow = window;
 
   // Close animation: the X button fades the content out (300 ms, inside
-  // LyricWindow), then this signal quits the app. Other quit paths
-  // (--exit-on-disconnect, WM close) stay instant.
+  // LyricWindow), then this signal quits the app. Other quit paths (the host
+  // closing the feed pipe, WM close) stay instant.
   QObject::connect(window, &LyricWindow::closeAnimationFinished, &app, &QCoreApplication::quit);
 
   // Assemble the full lyric pipeline (task 2.13): LyricSelector -> LyricPlayer
   // -> LyricRenderer inside the window, live-synced to config. Shared by both
-  // modes below (host-driven and --demo self-feed).
+  // modes below (player feed and --demo self-feed).
   auto* lyricController = new LyricController(appContext, *window, &appContext);
 
   // Pause-faint watcher (port of usePauseHide.ts): the play boolean carried by
@@ -97,62 +113,52 @@ int main(int argc, char* argv[])
   QObject::connect(appContext.pauseHide.get(), &PauseHide::unfaintRequested, window,
                    &LyricWindow::unfaint);
 
-  // WebSocket bridge to the host plugin (docs/protocol.md). Every parsed host
-  // message is routed into the music-state machine (task 2.13): the lyric
-  // pipeline in LyricController, the play boolean into PauseHide, and the
-  // spectrum frames into SpectrumBridge. Reconnect is owned by WsClient.
-  if (!cli.wsUrl.isEmpty()) {
-    appContext.wsClient =
-      std::make_unique<WsClient>(WsClient::kDefaultReconnectIntervalMs, &appContext);
-    WsClient* ws = appContext.wsClient.get();
+  // Player feed (docs/protocol.md v2): with --player-feed the app is the
+  // DIRECT CHILD of a player-side adapter and speaks newline-delimited JSON
+  // over its stdin (host→app) and stdout (app→host). QFile cannot serve
+  // either direction — Qt's file engine reports no readiness and no bytes for
+  // a pipe, so the reader would never see a message — hence the pipe devices
+  // in host/pipeio.h. Every parsed host message is routed into the music-state
+  // machine: the lyric pipeline in LyricController, the play boolean into
+  // PauseHide, the spectrum frames into SpectrumBridge.
+  if (cli.playerFeed) {
+    auto* stdinDevice = new PipeReadDevice(0, &appContext);
+    auto* stdoutDevice = new PipeWriteDevice(1, &appContext);
+    appContext.feedReader = std::make_unique<FeedReader>(stdinDevice, stdoutDevice, &appContext);
+    FeedReader* feed = appContext.feedReader.get();
 
-    QObject::connect(ws, &WsClient::connected, &appContext, [ws] {
-      qInfo() << "ws: connected, requesting track info";
-      ws->sendGetInfo(); // Mirrors the reference init() -> getInfo().
-    });
-    QObject::connect(ws, &WsClient::disconnected, &appContext, [&appContext] {
-      qInfo() << "ws: disconnected from host";
-      if (appContext.cli.exitOnDisconnect)
-        QCoreApplication::quit();
-    });
-
-    QObject::connect(ws, &WsClient::infoReceived, &appContext,
-                     [&appContext, ws, lyricController](const TrackSnapshot& info) {
+    QObject::connect(feed, &FeedReader::infoReceived, &appContext,
+                     [&appContext, lyricController](const TrackSnapshot& info) {
                        lyricController->setTrack(info);
                        appContext.pauseHide->setPlayState(info.isPlay);
-                       // The host may not push a fresh set_status after a
-                       // track change; ask for one so playback starts on
-                       // the new lyric (reference set_info -> getStatus).
-                       if (info.isPlay)
-                         ws->sendGetStatus();
                      });
-    QObject::connect(ws, &WsClient::lyricReceived, &appContext,
+    QObject::connect(feed, &FeedReader::lyricReceived, &appContext,
                      [lyricController](const LyricSnapshot& lyric) {
                        lyricController->setLyric(lyric);
                      });
-    QObject::connect(ws, &WsClient::statusReceived, &appContext,
+    QObject::connect(feed, &FeedReader::statusReceived, &appContext,
                      [&appContext, lyricController](const PlaybackSnapshot& status) {
                        lyricController->setStatus(status);
                        appContext.pauseHide->setPlayState(status.isPlay);
                      });
-    QObject::connect(ws, &WsClient::offsetReceived, &appContext,
+    QObject::connect(feed, &FeedReader::offsetReceived, &appContext,
                      [lyricController](qint64 tempOffset) {
                        lyricController->setOffset(tempOffset);
                      });
-    QObject::connect(ws, &WsClient::playbackRateReceived, &appContext,
+    QObject::connect(feed, &FeedReader::playbackRateReceived, &appContext,
                      [lyricController](double rate) {
                        lyricController->setPlaybackRate(rate);
                      });
-    QObject::connect(ws, &WsClient::playReceived, &appContext,
+    QObject::connect(feed, &FeedReader::playReceived, &appContext,
                      [&appContext, lyricController](qint64 timeMs) {
                        lyricController->play(timeMs);
                        appContext.pauseHide->setPlayState(true);
                      });
-    QObject::connect(ws, &WsClient::pauseReceived, &appContext, [&appContext, lyricController] {
+    QObject::connect(feed, &FeedReader::pauseReceived, &appContext, [&appContext, lyricController] {
       lyricController->pause();
       appContext.pauseHide->setPlayState(false);
     });
-    QObject::connect(ws, &WsClient::stopReceived, &appContext, [&appContext, lyricController] {
+    QObject::connect(feed, &FeedReader::stopReceived, &appContext, [&appContext, lyricController] {
       lyricController->stop();
       appContext.pauseHide->setPlayState(false);
     });
@@ -160,54 +166,63 @@ int main(int argc, char* argv[])
     // Host control messages (§5): open_settings raises the app's own
     // configuration dialog — the same path as Ctrl+, / the control-bar gear
     // button — so the host can reconfigure even a locked lyric window.
-    QObject::connect(ws, &WsClient::openSettingsRequested, window,
+    QObject::connect(feed, &FeedReader::openSettingsRequested, window,
                      &LyricWindow::openSettingsDialog);
 
     // Host fullscreen state (§5 set_fullscreen): while desktopLyric.
     // fullscreenHide is enabled the lyric window hides when the host's main
     // window enters fullscreen and shows again when it leaves.
-    QObject::connect(ws, &WsClient::fullscreenReceived, window, &LyricWindow::setHostFullscreen);
+    QObject::connect(feed, &FeedReader::fullscreenReceived, window,
+                     &LyricWindow::setHostFullscreen);
 
     // User-initiated window close (control-bar X or WM close, once per
-    // session): tell the host so it stops its session WITHOUT respawning the
-    // app (protocol §4 close_requested). WS mode only — the demo has no host.
-    // Dropped when the socket is already gone; the host-side handler is
-    // idempotent, so a stale/dead socket cannot change plugin state.
-    QObject::connect(window, &LyricWindow::closeInitiated, &appContext, [ws] {
-      ws->sendCloseRequested();
+    // session): tell the player so it ends its session WITHOUT respawning the
+    // app (§4 close_requested). The host's handler is idempotent, and the
+    // player closes the pipe right after — the EOF below ends this process.
+    QObject::connect(window, &LyricWindow::closeInitiated, &appContext, [feed] {
+      feed->sendCloseRequested();
+    });
+
+    // §2: EOF on stdin means the player is gone. Quit immediately (the close
+    // animation is the app's own X-button path, not this one).
+    QObject::connect(feed, &FeedReader::exited, &appContext, [] {
+      QCoreApplication::quit();
+    });
+
+    // §7: a protocol violation is fatal — log loudly and exit non-zero rather
+    // than half-render data the host may not have meant.
+    QObject::connect(feed, &FeedReader::protocolError, &appContext, [](const QString& reason) {
+      qCritical() << "feed: protocol error, exiting:" << reason;
+      QCoreApplication::exit(1);
     });
 
     // Spectrum visualizer wiring: the bridge owns every spectrum-only
     // coupling (frames -> widget, requests -> host, the (playing &&
-    // audioVisualization) gate); the controller does NOT own it. The
-    // transport seam keeps the host path and the --demo self-feed on one
-    // gate and one request loop.
-    appContext.spectrumTransport = std::make_unique<WsSpectrumTransport>(ws, &appContext);
+    // audioVisualization) gate); the controller does NOT own it. The transport
+    // seam keeps the feed path and the --demo self-feed on one gate and one
+    // request loop, and suppresses requests while the host declared no
+    // analyser.
+    appContext.spectrumTransport = std::make_unique<FeedSpectrumTransport>(feed, &appContext);
     appContext.spectrumBridge = std::make_unique<SpectrumBridge>(
       window->spectrumWidget(), appContext.spectrumTransport.get(), appContext.config, &appContext);
-
-    ws->connectToHost(QUrl(cli.wsUrl));
   }
 
   // Standalone self-feed (task 2.13): the fake track goes through the SAME
   // pipeline as a host set_info. play(0) starts the player's own clock and
   // the player's lineChanged signal moves the renderer's active line — no
-  // WsClient is constructed. The visualizer is fed by the synthetic
+  // FeedReader is constructed. The visualizer is fed by the synthetic
   // transport below (a hostless demo has no host to ask), through the same
   // bridge and gate a host drives.
-  if (cli.demo) {
+  else if (cli.demo) {
     const TrackSnapshot demo = makeDemoTrack();
     lyricController->setTrack(demo);
     lyricController->play(0);
     appContext.pauseHide->setPlayState(true); // The demo plays: keep it bright.
     window->setWindowTitle(QStringLiteral("DEMO: %1 - %2").arg(demo.name, demo.singer));
 
-    if (appContext.wsClient == nullptr) { // --ws wins when both flags are given
-      appContext.spectrumTransport = std::make_unique<DemoSpectrumTransport>(&appContext);
-      appContext.spectrumBridge = std::make_unique<SpectrumBridge>(
-        window->spectrumWidget(), appContext.spectrumTransport.get(), appContext.config,
-        &appContext);
-    }
+    appContext.spectrumTransport = std::make_unique<DemoSpectrumTransport>(&appContext);
+    appContext.spectrumBridge = std::make_unique<SpectrumBridge>(
+      window->spectrumWidget(), appContext.spectrumTransport.get(), appContext.config, &appContext);
   }
 
   // Show path split (host-visibility): the DEMO always displays — it must
