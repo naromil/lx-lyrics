@@ -1,37 +1,39 @@
 # lx-lyrics
 
-A standalone desktop lyrics feature extracted from [lx-music-desktop](https://github.com/lyswhut/lx-music-desktop), delivered as two decoupled components: a self-contained lyrics display app and a Fooyin Music Player plugin that feeds it.
+A standalone desktop lyrics feature extracted from [lx-music-desktop](https://github.com/lyswhut/lx-music-desktop): a self-contained lyrics display app plus in-process player adapters that drive it.
 
 ## Status
 
-Both components are complete and verified:
+Four projects with **zero shared C++ source**; the only contract is `docs/protocol.md` **v2** — a stdin/stdout player feed between a player-side adapter and the display app.
 
-- **`lyrics-app/`** — standalone Qt6 / C++23 desktop lyrics window with synchronized scrolling and active-line rendering. Builds clean and passes its full test suite (6 suites, 151 QTest slots). Ready to run on its own (`--demo` or host-driven over the WebSocket protocol).
-- **`fooyin-plugin/`** — Fooyin plugin that drives the app: watches playback, reads lyrics (embedded tags + local `.lrc`), and streams track/state/lyrics/spectrum data over a loopback WebSocket. Targets Fooyin >= 0.11.1; plugin metadata and the `Plugin`/`CorePlugin`/`GuiPlugin` interfaces load-verified against the installed Fooyin 0.12.6.
+- **`lyrics-app/`** — standalone Qt6 / C++23 desktop lyrics window with synchronized scrolling and active-line rendering. Owns lyric acquisition (sidecar `.lrc` + embedded tags), parsing, selection, and rendering. Passes its full test suite (6 suites, 171 QTest slots). Runs host-driven (`--player-feed`), self-fed (`--demo`), or as an inert window.
+- **`fooyin-plugin/`** — Fooyin adapter (>= 0.11.1): spawns `lx-lyrics-app --player-feed` as its direct child and pushes playing context (path, metadata, state, position, spectrum) over the feed. Plugin metadata and the `Plugin`/`CorePlugin`/`GuiPlugin` interfaces load-verified against the installed Fooyin 0.12.6.
+- **`deadbeef-plugin/`** — DeaDBeeF C adapter (`ddb_lxlyrics.so`), API floor 1.16 (DeaDBeeF >= 1.9.3); answers spectrum requests when the player exposes its analyser.
+- **`rhythmbox-plugin/`** — Rhythmbox libpeas Python adapter; Rhythmbox has no analyser API, so it declares `spectrum: false`.
 
-## Goal
+## Player support
 
-- **`lyrics-app/`** — standalone Qt6 / C++23 desktop lyrics window with synchronized scrolling and line-level rendering.
-- **`fooyin-plugin/`** — Fooyin plugin that watches playback, reads lyrics (embedded tags + local `.lrc`), and streams track/state/lyrics/spectrum data to the app over a loopback WebSocket.
-
-The two components share no source code; `docs/protocol.md` is their only contract.
+Adapters exist for Fooyin, DeaDBeeF and Rhythmbox. **Strawberry, Clementine, Elisa and Tauon are dropped** — they have no extension mechanism to host an in-process adapter, and per decision there is no MPRIS fallback and no fork. Audacious, Quod Libet and VLC adapters are out of scope for this increment.
 
 ## Repository layout
 
 | Path | Contents |
 |---|---|
 | `lyrics-app/` | standalone Qt6 lyrics display — see `lyrics-app/README.md` |
-| `fooyin-plugin/` | Fooyin plugin — see `fooyin-plugin/README.md` |
+| `fooyin-plugin/` | Fooyin adapter — see `fooyin-plugin/README.md` |
+| `deadbeef-plugin/` | DeaDBeeF adapter — see `deadbeef-plugin/README.md` |
+| `rhythmbox-plugin/` | Rhythmbox adapter — see `rhythmbox-plugin/README.md` |
 | `docs/` | architecture, protocol, and research summaries |
 | `references/` | lx-music-desktop v2.12.2 source (gitignored; read-only reference) |
-| `tools/` | build/install helpers — `tools/install.sh` builds and installs both components; `tools/lint.sh` runs the clang-format + clang-tidy gate |
+| `tools/` | build/install helpers — `tools/install.sh` builds and installs the app + the Fooyin adapter; `tools/lint.sh` runs the clang-format + clang-tidy gate |
 
 ## Documentation
 
 - `lyrics-app/README.md` — build, run modes, config, tests
 - `fooyin-plugin/README.md` — build, install, usage, troubleshooting
-- `docs/architecture.md` — component design and decoupling boundary
-- `docs/protocol.md` — the WebSocket JSON protocol (the shared contract)
+- `deadbeef-plugin/README.md`, `rhythmbox-plugin/README.md` — adapter build/install/test notes
+- `docs/architecture.md` — component design, ownership invariant, and decoupling boundary
+- `docs/protocol.md` — the v2 player feed (stdin/stdout JSON lines; the shared contract)
 - `docs/research/` — condensed engineering research for the port
 
 ## Quick start
@@ -45,12 +47,20 @@ Manual fallback (the same steps by hand):
 
 ```sh
 cd lyrics-app && cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug && cmake --build build        # 1. build the display app
-cd ../fooyin-plugin && cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug && cmake --build build # 2. build the plugin
+cd ../fooyin-plugin && cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug && cmake --build build # 2. build the Fooyin adapter
 cp build/fyplugin_lxlyrics.so ~/.local/lib/fooyin/plugins/                                       # 3. install, restart Fooyin
 # 4. point the plugin at the app binary (Settings -> Lyrics -> LX Lyrics -> AppPath), or put
 #    lyrics-app/build/lx-lyrics-app on your PATH so auto-detect finds it
 ```
 
+`tools/install.sh` covers only the app and the Fooyin adapter. Adapter preconditions at a glance:
+
+- **Fooyin** — Fooyin built with `INSTALL_HEADERS=ON`; artifact `build/fyplugin_lxlyrics.so` → `<prefix>/lib/fooyin/plugins`.
+- **DeaDBeeF** — headers from a 1.10.1 checkout (`-DDEADBEEF_INCLUDE_DIR=…`), API floor 1.16 (DeaDBeeF >= 1.9.3); `ddb_lxlyrics.so` → `~/.local/lib/deadbeef/`, then restart the player.
+- **Rhythmbox** — copy `rhythmbox-plugin/` to `~/.local/share/rhythmbox/plugins/lxlyrics/` and enable it in the Plugins dialog.
+
+Each adapter's README has the full build, install, and test commands.
+
 ## License
 
-`lyrics-app/` is Apache-2.0 — its lyric parsing/rendering logic is ported from lx-music-desktop (Apache-2.0) with attribution. `fooyin-plugin/` is GPL-3.0-only because it links Fooyin's GPL-3.0 libraries. See `LICENSE` for this repository's terms.
+`lyrics-app/` is Apache-2.0 — its lyric parsing/rendering logic is ported from lx-music-desktop (Apache-2.0) with attribution. The three adapters (`fooyin-plugin/`, `deadbeef-plugin/`, `rhythmbox-plugin/`) are GPL-3.0-only by repo decision, which their hosts permit: Fooyin is GPL-3.0, Rhythmbox is GPL-2.0-or-later (whose "or later" clause allows a GPL-3.0 plugin), and DeaDBeeF's plugin API header is zlib-licensed. See `LICENSE` for this repository's terms.

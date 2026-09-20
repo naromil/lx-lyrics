@@ -1,0 +1,12 @@
+[Plugin]
+Loader=python3
+Module=lxlyrics
+Depends=rb
+IAge=2
+Name=LX Lyrics
+Description=Show the standalone lx-lyrics desktop lyrics window for the track Rhythmbox is playing
+Authors=naromil
+Copyright=Copyright © 2026, naromil
+
+[RB]
+InitiallyEnabled=true

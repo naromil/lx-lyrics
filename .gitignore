@@ -79,3 +79,7 @@ references/
 .clangd
 .ruff_cache/
 .opencode/
+
+# Python bytecode caches (rhythmbox-plugin)
+__pycache__/
+*.pyc
