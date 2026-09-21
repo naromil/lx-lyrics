@@ -36,8 +36,27 @@ Lyrics** off does the same, and so does the app exiting on its own. Disabling th
 
 ## Requirements
 
-- Rhythmbox with Python plugin support (`plugins_python`), i.e. PyGObject plus
-  `libpeas`/`libpeas-gtk`.
+- Rhythmbox with Python plugin support (`plugins_python`): PyGObject, `libpeas`/`libpeas-gtk`
+  **and the libpeas Python 3 plugin loader** — the module
+  `<libdir>/libpeas-1.0/loaders/libpython3loader.so`, whose loader id (`python3`) is the one
+  `shell/rb-shell.c` enables unconditionally. `libpeas` alone is not enough: the loaders are
+  separate modules and a distribution may build libpeas without the Python one. **Arch's
+  `libpeas` is such a build** — since `1.36.0-7` its PKGBUILD passes `-D python3=false`, so
+  `/usr/lib/libpeas-1.0/loaders/` holds only `liblua51loader.so` — and **no Arch package
+  provides it for libpeas 1.x** (`libpeas-2`'s `libpeas-2/loaders/libpythonloader.so` is a
+  loader for `libpeas-2.so.0` with loader id `python`; Rhythmbox links `libpeas-1.0.so.1`, so
+  it is not a substitute). There, *every* Python Rhythmbox plugin (this one included) fails,
+  whatever its own metadata says; libpeas logs
+
+  ```
+  libpeas-WARNING **: Failed to load module 'python3loader': /usr/lib/libpeas-1.0/loaders/libpython3loader.so: cannot open shared object file: No such file or directory
+  libpeas-WARNING **: Could not load plugin loader 'python3'
+  ```
+
+  and Rhythmbox's Plugins page marks the plugin as not loadable. Upstream libpeas 1.38.1
+  still builds the loader by default (`option('python3', value: true)` in its
+  `meson_options.txt`), so a distribution only has it if it does not switch it off. Where it
+  is missing, build it (see below) — do not look for a code workaround here.
 - The lx-lyrics display app (this repository's `lyrics-app`), built and installed.
 
 PyGObject version notes (these are Rhythmbox's own build constraints, quoted from its
@@ -51,6 +70,61 @@ PyGObject version notes (these are Rhythmbox's own build constraints, quoted fro
 
 Rhythmbox has **no analyser API** (its Visualizer plugin was removed in 2017), so the
 handshake declares `spectrum: false` and the app never requests spectrum frames.
+
+### Provisioning the Python loader where it is missing
+
+The loader is a shared module libpeas `dlopen`s lazily the first time a `Loader=python3`
+plugin is loaded. It must be built against the *installed* PyGObject and Python, from the
+libpeas source matching the installed `libpeas-1.0.so.1` (1.38.1 on Arch), and it needs no
+root to build:
+
+```sh
+git clone --depth 1 --branch libpeas-1.38.1 https://gitlab.gnome.org/GNOME/libpeas.git
+cd libpeas
+meson setup build -Dpython3=true -Dlua51=false -Ddemos=false -Dglade_catalog=false -Dvapi=false
+meson compile -C build        # -> build/loaders/python3/libpython3loader.so
+```
+
+Then either install it system-wide, which needs root and afterwards nothing else:
+
+```sh
+sudo install -Dm755 build/loaders/python3/libpython3loader.so \
+    /usr/lib/libpeas-1.0/loaders/libpython3loader.so
+```
+
+or keep it in your home. `PEAS_PLUGIN_LOADERS_DIR` *replaces* libpeas's built-in loaders
+directory and is searched as `<dir>/<loader id>/`, so the module goes one level deeper:
+
+```sh
+install -Dm755 build/loaders/python3/libpython3loader.so \
+    ~/.local/share/libpeas-1.0/loaders/python3/libpython3loader.so
+```
+
+and `PEAS_PLUGIN_LOADERS_DIR=$HOME/.local/share/libpeas-1.0/loaders` has to be in the
+environment Rhythmbox starts with (for a systemd session,
+`~/.config/environment.d/libpeas.conf` with `PEAS_PLUGIN_LOADERS_DIR=…`, then log back in).
+Because that variable replaces the whole directory, any other loader in use (`lua5.1`) must
+live under it too.
+
+### Why `lxlyrics.plugin` declares no `Depends=`
+
+The adapter imports nothing from Rhythmbox's shared Python code (the `rb` plugin's module,
+`/usr/lib/rhythmbox/plugins/rb/rb.py`): it uses only the `RB` typelib, which comes from
+`librhythmbox-core` and is already required by Rhythmbox's `construct_plugins()` before any
+plugin loads. Rhythmbox's own Python plugins declare `Depends=rb` exactly when they
+`import rb` (`lyrics`, `webremote` and the rest do; `pythonconsole`, which does not,
+declares none).
+
+Declaring it without needing it is worse than useless:
+
+- with the Python loader missing, libpeas reports
+  `Dependency “Shared plugin code” failed to load` — the display name it took from
+  `rb.plugin`'s `Name=` key — instead of the actual cause,
+  `Plugin loader “python3” was not found`;
+- the plugin also refuses to load wherever `rb` cannot, even though it does not depend on it.
+
+(`rb` is only loaded on demand: `shell/rb-shell.c` skips the builtin `rb` module unless some
+plugin depends on it.)
 
 ## Configuration
 
@@ -81,6 +155,10 @@ rhythmbox -D lxlyrics
 That shows the adapter's own lines (spawn failures, stray non-JSON output from the app, a
 protocol error that ends the session, and the `close_requested`/exit transitions). Use
 plain `-d` only if you want all of Rhythmbox's debug output.
+
+libpeas's own `libpeas-WARNING **: Could not load plugin loader 'python3'` in that log is
+not the adapter's line: it means the libpeas Python loader is missing, so no Python plugin
+in Rhythmbox can load — see Requirements.
 
 ## Tests
 

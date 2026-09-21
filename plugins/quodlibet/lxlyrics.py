@@ -543,7 +543,7 @@ class LyricsSession:
 class LxLyrics(EventPlugin, PluginConfigMixin):
     """The event plugin: Quod Libet's own plugin toggle owns the one lyrics session.
 
-    Enabling the plugin in *Music → Plugins* starts the session and disabling it ends
+    Enabling the plugin in *File → Plugins* starts the session and disabling it ends
     it, because an event plugin has no menu action of its own to hang a second toggle
     on (Quod Libet's UI plugin hooks are sidebars and song context menus only). When the
     user closes the lyric window the plugin turns itself off through the plugin manager

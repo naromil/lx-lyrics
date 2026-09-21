@@ -25,7 +25,9 @@ the toggle, so the page honestly reads off afterwards.
     and `pkg-config audacious` names the prefix (`audacious_include_dir`, its `audacious.pc`).
 - **libaudcore**: the module links `-laudcore`, exactly like upstream's plugins do through their
   `audacious_dep` (`audacious-plugins/src/songchange/meson.build`). Nothing else: **no libaudgui,
-  no libaudqt, no GTK/Qt** — the plugin has no window, no menu item and no preferences page.
+  no libaudqt, no GTK/Qt** — the plugin has no window and no menu item, and its one preferences
+  page is plain declarative data (`PreferencesWidget`/`PluginPreferences`) that the host's own
+  frontend renders (see *Configuration*).
 - **C++17** for the glue and **C99** for the transport: libaudcore's plugin API is a C++ class
   hierarchy (`plugin.h:119` `class LIBAUDCORE_PUBLIC Plugin`, `:498`
   `class LIBAUDCORE_PUBLIC GeneralPlugin`), and upstream builds with `cpp_std=gnu++17`
@@ -81,7 +83,7 @@ install -m 755 build/lxlyrics.so <prefix>/lib/audacious/General/
 There is **no per-user plugin directory** and no command-line or environment override for it:
 `AudPath::PluginDir` is only ever the install dir above, and Audacious' option table
 (`src/audacious/main.cc:74-98`) has no such flag. Audacious has to be **restarted** to dlopen the
-plugin (`Settings → Plugins` lists it afterwards).
+plugin (`File → Settings... → Plugins` lists it afterwards).
 
 `../../tools/install.sh --player audacious` builds the module, installs it into the detected
 plugin directory and writes `[lx-lyrics] app_path`; because that directory is root-owned for a
@@ -90,12 +92,14 @@ non-zero.
 
 ## Use
 
-1. **Settings → Plugins** (or `Ctrl+P`) → enable **LX Lyrics**. That *is* the toggle: Audacious
-   starts every enabled general plugin at every player start and calls its `init()`/`cleanup()` on
-   enable/disable (`plugin-init.cc:31-43`, `:160-176`, `:285-308`, reached from `aud_run()` at
-   `runtime.cc:339-357`). The plugin deliberately adds no menu item and no preferences page of its
-   own — the host's Plugins page is the enable/disable control, the same decision the Rhythmbox
-   adapter documents for its host.
+1. Open the Settings dialog's Plugins page — **File → Settings... → Plugins** (Qt) or **File →
+   Settings → Plugins** (GTK); `Ctrl+P` opens the dialog — and enable **LX Lyrics**. That *is* the
+   toggle: Audacious starts every enabled general plugin at every player start and calls its
+   `init()`/`cleanup()` on enable/disable (`plugin-init.cc:31-43`, `:160-176`, `:285-308`, reached
+   from `aud_run()` at `runtime.cc:339-357`). The plugin adds no menu item — the host's Plugins
+   page is the enable/disable control, the same decision the Rhythmbox adapter documents for its
+   host — and its one settings page (the app path) is the host's own dialog, reached from that page
+   (see *Configuration*).
 2. Start playback: enabling the plugin during playback shows the current track immediately (the
    full `set_info` + state snapshot is pushed right after the spawn, protocol §3/§5).
 3. Closing the lyric window ends the session and turns the plugin's enable state off, so the
@@ -104,7 +108,24 @@ non-zero.
    loudly and turns its own enable state off rather than claiming a session that does not exist
    (§7). Nothing is ever respawned automatically; re-enable it in the Plugins page to retry.
 
-Configuration key, in `$XDG_CONFIG_HOME/audacious/config` (`config.cc:259`, INI sections at
+## Configuration
+
+The plugin's one setting — the app path — is also its preferences page: the 4th field of
+`PluginInfo` points at a declarative `const PluginPreferences*` (libaudcore's `preferences.h`,
+one `WidgetLabel` plus `WidgetEntry("Application:", WidgetString("lx-lyrics", "app_path"))`) that
+both frontends build with no toolkit code here. The entry writes the key as the user types
+(`WidgetConfig::set_string()` → `aud_set_str()`), and it is the same `[lx-lyrics] app_path`
+`resolve_app_path()` reads; an empty value is the documented "search `$PATH`" state. Both
+frontends offer the page only while the plugin is **enabled** — `aud_plugin_has_configure()` is
+literally `(bool)info.prefs`, and the UI additionally requires the plugin's enable state:
+
+- **Qt** — **File → Settings... → Plugins →** the gear icon on the **LX Lyrics** row;
+- **GTK** — **File → Settings → Plugins →** select the **LX Lyrics** row → the **Settings**
+  button.
+
+The host's Plugins page stays the enable/disable control; the settings page only edits the path.
+
+The key itself, in `$XDG_CONFIG_HOME/audacious/config` (`config.cc:259`, INI sections at
 `config.cc:245`):
 
 | Section / key | Default | Meaning |
@@ -174,7 +195,8 @@ Configuration key, in `$XDG_CONFIG_HOME/audacious/config` (`config.cc:259`, INI 
   on for the whole session (`visualization.cc:34-41` → `vis-runner.cc:212-217`), and frames arrive
   from the host's 30 Hz vis timer (`vis-runner.cc:128`) on the main thread.
 - **Not sent**: `set_lyric`/`set_offset`/`open_settings` (this adapter has no lyric text, no offset
-  and no settings dialog of its own), `set_playbackRate` (libaudcore's public API has no playback
+  and no trigger for the app's config dialog — its one setting is edited in the host's own plugin
+  page), `set_playbackRate` (libaudcore's public API has no playback
   rate at all — upstream's Speed and Pitch plugin is an *effect* that resamples, not a rate the host
   can report), and **`set_fullscreen`**: Audacious exposes no queryable fullscreen state —
   `libaudcore`'s public headers and the whole `audacious-plugins` tree contain no fullscreen API or
@@ -208,8 +230,8 @@ object is freed while a writer still holds a reference to it.
 The normal check needs an Audacious ≥ 4.6.1 with the plugin installed (`command -v audacious`),
 `lx-lyrics-app` on `$PATH`, and a track with lyrics:
 
-1. Start Audacious, **Settings → Plugins → LX Lyrics** on, then play a track. The lyric window
-   appears and follows the track, seeks/pauses/stops follow the player, and the visualizer moves
+1. Start Audacious, **File → Settings... → Plugins → LX Lyrics** on, then play a track. The lyric
+   window appears and follows the track, seeks/pauses/stops follow the player, and the visualizer moves
    when `desktopLyric.audioVisualization` is enabled in the app.
 2. The app's own log lines arrive on Audacious' stderr (`feed: connected to "audacious"
    spectrum: true`, `feed: track "…"`), because the child's stderr is inherited.

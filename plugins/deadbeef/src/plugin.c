@@ -235,14 +235,21 @@ static void stop_session(void)
   lx_feed_stop(feed);
 }
 
-/* The session ended on its own: release it and clear the toggle state, so the
- * menu item honestly reads off and a fresh one can be started next time. */
-static void end_session(const char* reason)
+/* Whether a session is published right now. Cheap enough for the config-change
+ * path, which runs on every key the host rewrites. */
+static bool session_running(void)
 {
   pthread_mutex_lock(&session_lock);
   const bool running = session_feed != NULL;
   pthread_mutex_unlock(&session_lock);
-  if (running) {
+  return running;
+}
+
+/* The session ended on its own: release it and clear the toggle state, so the
+ * menu item honestly reads off and a fresh one can be started next time. */
+static void end_session(const char* reason)
+{
+  if (session_running()) {
     deadbeef->log("lxlyrics: ending the session (%s)", reason);
   }
   stop_session();
@@ -395,6 +402,48 @@ static void restore_session(void)
   deadbeef->sendmessage(DB_EV_ACTIONSCHANGED, 0, 0, 0);
 }
 
+/* The Preferences -> Plugins page writes these two keys through the host's own
+ * config API while its dialog is live (upstream plugins/gtkui/pluginconf.c:
+ * `.set_param = deadbeef->conf_set_str`) and then broadcasts DB_EV_CONFIGCHANGED
+ * — the only notice a config-dialog edit gets. The wanted state IS the toggle
+ * state, so a write has to reach the child: the key may not claim a session that
+ * does not exist, and a session may not outlive a key that says off.
+ *
+ * `lxlyrics.app_path` is deliberately NOT acted on: the host re-applies the
+ * whole dialog on every keystroke (`updates_immediately`), so restarting a
+ * session here would respawn the app per character. The path is read by the next
+ * start_session() instead, so editing it never disturbs a running child. */
+static void sync_session_with_conf(void)
+{
+  if (!restore_attempted) {
+    /* Before DB_EV_PLUGINSLOADED the streamer is not up yet; restore_session()
+     * owns the first start. */
+    return;
+  }
+
+  if (deadbeef->conf_get_int(LX_CONF_ENABLED, 0) != 0) {
+    if (session_running()) {
+      return;
+    }
+    if (!start_session()) {
+      /* Same rule as restore_session(): a wanted state that cannot be honoured
+       * is cleared, not left claiming a child that does not exist. The live
+       * dialog keeps showing the tick the user clicked (gtkui does not re-read a
+       * widget after a config write), but the key, the menu item and the child
+       * agree again — and an entry that reports the same change on every
+       * keystroke cannot retry the spawn. */
+      deadbeef->log("lxlyrics: cannot start the session for \"%s\"; clearing it", LX_CONF_ENABLED);
+      deadbeef->conf_set_int(LX_CONF_ENABLED, 0);
+      deadbeef->sendmessage(DB_EV_ACTIONSCHANGED, 0, 0, 0);
+    }
+    return;
+  }
+
+  if (session_running()) {
+    end_session("the \"" LX_CONF_ENABLED "\" config key was turned off");
+  }
+}
+
 /* The persisted wanted state is restored by restore_session() on
  * DB_EV_PLUGINSLOADED (below); this action only flips it. start_session() sets
  * the key when the child is up, end_session() clears it when the session ends,
@@ -483,6 +532,12 @@ static int lxlyrics_message(uint32_t id, uintptr_t ctx, uint32_t p1, uint32_t p2
   case DB_EV_PLUGINSLOADED:
     restore_session();
     return 0;
+  case DB_EV_CONFIGCHANGED:
+    /* The configuration dialog and the installer write `lxlyrics.enabled` and
+     * `lxlyrics.app_path` behind the plugin's back; the session has to follow
+     * the key (see sync_session_with_conf). */
+    sync_session_with_conf();
+    return 0;
   default:
     break;
   }
@@ -509,6 +564,27 @@ static DB_plugin_action_t* lxlyrics_get_actions(DB_playItem_t* track)
 {
   return track ? NULL : &lxlyrics_action;
 }
+
+/* DeaDBeeF builds a plugin's configuration UI from this layout script: the host
+ * renders it into Preferences -> Plugins -> Configuration and wires it to the
+ * config API — `get_param` is `deadbeef->conf_get_str(key, def, …)`, `set_param`
+ * is `deadbeef->conf_set_str(key, value)` (upstream
+ * plugins/gtkui/prefwin/prefwinplugins.c), and closing the window runs
+ * `conf_save()`. The widgets live in gtkui, so the string IS the dialog: this
+ * module links no GTK and includes no GTK header. A NULL here is what hides the
+ * whole panel (gtkui hides its button box with it, and the "Only show plugins
+ * with configuration" filter drops the plugin), which is why this plugin had no
+ * configuration at all.
+ *
+ * `entry`, not `file`: the app path's empty value means "search $PATH", and the
+ * host's `file` widget is a read-only entry next to a file chooser (upstream
+ * plugins/gtkui/pluginconf.c: `gtk_editable_set_editable (prop, FALSE)`) that
+ * cannot express an empty path or take a pasted one. Both defaults are the
+ * documented ones — empty app path, session off — and are what the host's
+ * "Reset to defaults" writes. */
+static const char lxlyrics_config_dialog[] =
+  "property \"lx-lyrics-app binary (empty = search $PATH)\" entry " LX_CONF_APP_PATH " \"\";"
+  "property \"Show desktop lyrics (the View/LX Lyrics toggle)\" checkbox " LX_CONF_ENABLED " 0;";
 
 static int lxlyrics_start(void)
 {
@@ -539,6 +615,7 @@ static DB_misc_t lxlyrics_plugin = {
   .plugin.stop = lxlyrics_stop,
   .plugin.get_actions = lxlyrics_get_actions,
   .plugin.message = lxlyrics_message,
+  .plugin.configdialog = lxlyrics_config_dialog,
 };
 
 /* The loader derives this symbol from the module basename: ddb_lxlyrics.so. */

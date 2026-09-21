@@ -30,19 +30,24 @@ into Quod Libet's config (through Quod Libet's own config library) for you.
 
 Then:
 
-1. Restart Quod Libet and open **Music → Plugins**. (The Plugins window's *Refresh*
-   button, which upstream's plugin docs mention, is only shown in debug builds —
-   `quodlibet/qltk/pluginwin.py:424-429`.)
+1. Restart Quod Libet and open **File → Plugins** — the Plugins item is in the **File** menu
+   (`quodlibet/qltk/quodlibetwindow.py`, MENU: `<menu action='File'> … <menuitem
+   action='Plugins'/>`); there is no *Music* menu in Quod Libet 4.4.0, 4.5.0 or 4.7.1. (The
+   Plugins window's *Refresh* button, which upstream's plugin docs mention, is only shown in
+   debug builds — `quodlibet/qltk/pluginwin.py:424-429`.)
 2. Find **LX Lyrics** (the search box accepts the name or the id `lxlyrics`) and switch it
    on. That toggle *is* the session toggle — the plugin starts the display app the moment
    it is enabled, so a freshly installed plugin never opens a window on its own.
-3. If `lx-lyrics-app` is not on `PATH`, set its path in the same Plugins window: select
-   **LX Lyrics** and use the *Lyrics app executable* entry in its preferences pane. The
-   app is always started as `<executable> --player-feed`.
+3. If `lx-lyrics-app` is not on `PATH`, set its path in the same window: select the
+   **LX Lyrics** row and use the *Lyrics app executable* entry in the preferences pane, which
+   is the window's right-hand side and shows for the selected row whether or not the plugin is
+   enabled. The adapter returns a widget (`PluginPreferences`) rather than opening a
+   `Gtk.Window`, so there is no button — the entry sits under the row's description. The app
+   is always started as `<executable> --player-feed`.
 
 Closing the lyric window (its control bar or the WM close button) turns the plugin back
 off and remembers that, so it does not come back on the next start; switch it on again in
-**Music → Plugins** to get the window back. Turning the plugin off there ends the session
+**File → Plugins** to get the window back. Turning the plugin off there ends the session
 the same way, and so does the app exiting on its own.
 
 An event plugin has no menu of its own to hang a second toggle on — Quod Libet's other UI
@@ -83,7 +88,11 @@ lxlyrics_app_path=/usr/local/bin/lx-lyrics-app
 - **Default**: the bare name `lx-lyrics-app`, which GLib resolves against `$PATH` when the
   child is spawned. Nothing is written back until you change it.
 - **Override**: the *Lyrics app executable* entry in the plugin's preferences pane, or the
-  key above. Quod Libet writes the config on exit and every five minutes
+  key above. The pane is **File → Plugins** → select the **LX Lyrics** row → the window's
+  right-hand side; it shows whether or not the plugin is enabled — the adapter returns a widget
+  rather than a `Gtk.Window`, so there is no button — and the entry sits under the row's
+  description. The entry writes the key as you type — an emptied field writes nothing back, so
+  the last non-empty value stays. Quod Libet writes the config on exit and every five minutes
   (`quodlibet/main.py:227`, `quodlibet/_main.py:413-417`).
 
 ## Debugging
@@ -263,7 +272,7 @@ With the plugin installed and enabled, play a track in Quod Libet: the lyric win
 and `ps` shows exactly one `lx-lyrics-app --player-feed` process whose parent is Quod
 Libet. Pause, seek, change tracks, press F11 (the window hides if the app's
 `fullscreenHide` setting is on), then close the lyric window: the plugin's toggle in
-**Music → Plugins** goes off and the app process is gone.
+**File → Plugins** goes off and the app process is gone.
 
 The adapter was also driven end-to-end outside Quod Libet during development, against a
 scratch build of the app (`cmake -S lyrics-app -B /tmp/lx-app-quodlibet -G Ninja

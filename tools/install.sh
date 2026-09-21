@@ -27,7 +27,23 @@
 #   quodlibet   <config>/quodlibet/plugins/lxlyrics.py                 (copied)
 #               quodlibet config [plugins] lxlyrics_app_path          (patched)
 #   vlc         <vlc plugin dir>/liblxlyrics_plugin.so                (built here)
-#               vlcrc [lxlyrics] lxlyrics-app-path                    (patched)
+#               vlcrc [core] extraintf / [lxlyrics] lxlyrics-app-path (patched)
+#
+# VLC is the one exception to "the freshly built module goes to the destination":
+# when a directory VLC actually scans (its pkg-config `pluginsdir`, here
+# /usr/lib/vlc/plugins, as <dir>/misc/liblxlyrics_plugin.so) already holds the
+# module, that copy *is* the installed one — nothing is written into the
+# unscanned $HOME/.local/lib/vlc/plugins to shadow it, a module an earlier
+# install left there is removed (VLC never scans it, and with VLC_PLUGIN_PATH
+# exported the older of the two copies can win), and the summary says whether the
+# system copy is older than the freshly built module, which root refreshes with
+# the `sudo install` command printed in the pending-root block.
+#
+# Rhythmbox's plugin only loads through libpeas's Python 3 loader
+# (<libdir>/libpeas-1.0/loaders/libpython3loader.so, loader id `python3`), which
+# some distributions do not ship (Arch builds libpeas with -D python3=false). The
+# adapter installs regardless; the missing loader is reported as a warning naming
+# the file to provision (plugins/rhythmbox/README.md).
 #
 # --no-autospawn writes each player's "do not start the lyrics session on your
 # own" state: fooyin RememberState=false, deadbeef lxlyrics.enabled=0, rhythmbox
@@ -38,7 +54,8 @@
 # Adapters whose destination directory is root-owned (a distro Audacious, a
 # system VLC plugin dir) are not installed by this script: the exact `sudo
 # install` command is printed and the script exits non-zero, with the other
-# requested adapters still installed.
+# requested adapters still installed. That block also carries the refresh
+# command for a system VLC module older than the freshly built one.
 #
 # Re-running is safe: cmake rebuilds incrementally and every config key is
 # updated in place.
@@ -133,10 +150,23 @@ usage: ./tools/install.sh [--player NAME]... [--prefix DIR] [--no-autospawn] [--
   --vlc-plugin-dir DIR
                   destination directory for that adapter's module. Defaults to
                   the player's own plugin directory: fooyin
-                  $HOME/.local/lib/fooyin/plugins, audacious and vlc detected
+                  $HOME/.local/lib/fooyin/plugins, audacious and vlc detected.
+                  VLC uses a module its own plugin directory already holds
+                  (pkg-config `vlc-plugin` pluginsdir, /usr/lib/vlc/plugins here)
+                  instead of shadowing it in the unscanned
+                  $HOME/.local/lib/vlc/plugins (a stale module left there is
+                  removed), and reports whether that copy is older than the
+                  freshly built module
   --help          show this help and exit
 
 The lyrics app is always installed, since every adapter needs it.
+
+Each adapter also points its player at the installed binary; the summary names
+the configuration surface that holds the switch and the app path in that player.
+
+Rhythmbox's plugin only loads through libpeas's Python 3 loader; when it is
+missing (Arch ships libpeas without it) the install continues and a warning names
+the file to provision — see plugins/rhythmbox/README.md.
 EOF
 }
 
@@ -763,12 +793,62 @@ install_player_deadbeef() {
     summary_add_path deadbeef "$deadbeef_plugin_dir/ddb_lxlyrics.so"
     summary_add "" "deadbeef config lxlyrics.app_path"
     next_steps_add deadbeef "restart DeaDBeeF, then View -> LX Lyrics"
+    next_steps_add "" "the app path is in Preferences -> Plugins -> LX Lyrics"
+}
+
+# peas_libdir — the library directory libpeas lives in, read from the library
+# Rhythmbox itself links (a plain <libdir> is /usr/lib, a Debian multiarch one
+# /usr/lib/<triplet>, and ldd sees the real one either way), falling back to
+# pkg-config. Nothing when neither can be read.
+peas_libdir() {
+    local binary line
+    binary="$(command -v rhythmbox 2>/dev/null || true)"
+    if [ -n "$binary" ]; then
+        line="$(ldd "$binary" 2>/dev/null | awk '/libpeas-1\.0\.so/ { print $3; exit }')"
+        if [ -n "$line" ]; then
+            dirname "$line"
+            return 0
+        fi
+    fi
+    line="$(pkg-config --variable=libdir libpeas-1.0 2>/dev/null || true)"
+    [ -n "$line" ] || return 1
+    printf '%s\n' "$line"
+}
+
+# peas_python3_loader_path — the libpeas Python 3 loader Rhythmbox's plugin has
+# to load through (`shell/rb-shell.c` enables the `python3` loader
+# unconditionally). PEAS_PLUGIN_LOADERS_DIR *replaces* libpeas's built-in
+# loaders directory and is searched as <dir>/<loader id>/, so the module sits one
+# level deeper under it. Prints the path to look for, nothing when <libdir>
+# cannot be derived.
+peas_python3_loader_path() {
+    local libdir
+    if [ -n "${PEAS_PLUGIN_LOADERS_DIR:-}" ]; then
+        printf '%s/python3/libpython3loader.so\n' "$PEAS_PLUGIN_LOADERS_DIR"
+        return 0
+    fi
+    libdir="$(peas_libdir)" || return 1
+    printf '%s/libpeas-1.0/loaders/libpython3loader.so\n' "$libdir"
 }
 
 install_player_rhythmbox() {
     local src_dir="$REPO_ROOT/plugins/rhythmbox"
     local plugin_dir="$data_home/rhythmbox/plugins/lxlyrics"
     local conf="$config_home/lx-lyrics/rhythmbox.conf"
+    local loader
+
+    # A distribution may build libpeas without the Python 3 loader (Arch passes
+    # -D python3=false), and then no Python Rhythmbox plugin loads at all. That
+    # is a player prerequisite this script cannot satisfy, so it warns — the
+    # install itself is not affected.
+    loader="$(peas_python3_loader_path || true)"
+    if [ -n "$loader" ] && [ ! -e "$loader" ]; then
+        warn "rhythmbox: libpeas' Python 3 loader is missing: $loader"
+        warn "    Rhythmbox enables the 'python3' loader unconditionally, so the"
+        warn "    plugin will not load until it is provisioned — see the"
+        warn "    'Provisioning the Python loader where it is missing' section of"
+        warn "    plugins/rhythmbox/README.md"
+    fi
 
     if ! copy_file "the Rhythmbox plugin module" "$src_dir/lxlyrics.py" "$plugin_dir/lxlyrics.py" 644; then
         player_failed rhythmbox "$copy_error"
@@ -860,6 +940,7 @@ install_player_audacious() {
     summary_add_path audacious "$dest_dir/lxlyrics.so"
     summary_add "" "audacious config [lx-lyrics] app_path"
     next_steps_add audacious "restart Audacious, then Settings -> Plugins -> LX Lyrics"
+    next_steps_add "" "the settings icon on that row sets the app path"
 }
 
 install_player_quodlibet() {
@@ -918,7 +999,8 @@ PY
 
     summary_add_path quodlibet "$plugin_dir/lxlyrics.py"
     summary_add "" "quodlibet config [plugins] lxlyrics_app_path"
-    next_steps_add quodlibet "restart Quod Libet, then Music -> Plugins -> LX Lyrics"
+    next_steps_add quodlibet "restart Quod Libet, then File -> Plugins -> LX Lyrics"
+    next_steps_add "" "its pane sets the app path (the Plugins window is under File, not Music)"
 }
 
 # VLC scans <libdir>/vlc/plugins and every directory in $VLC_PLUGIN_PATH.
@@ -931,15 +1013,28 @@ vlc_plugin_dir_default() {
 
 install_player_vlc() {
     local extra=() dest_dir system_dir conf scanned=0
+    local built="$REPO_ROOT/plugins/vlc/build/liblxlyrics_plugin.so"
+    local per_user_copy="$HOME/.local/lib/vlc/plugins/liblxlyrics_plugin.so"
+    local system_copy="" system_older=0 stale_removed=""
     [ -n "$vlc_include_dir" ] && extra=("-DVLC_INCLUDE_DIR=$vlc_include_dir")
     build_adapter vlc "plugins/vlc" "$REPO_ROOT/plugins/vlc" "liblxlyrics_plugin.so" "${extra[@]}" || return 1
 
     system_dir="$(vlc_plugin_dir_default || true)"
+    # A module a scanned directory already holds is the installed one: VLC scans
+    # <pluginsdir> and $VLC_PLUGIN_PATH and nothing else, so a second copy in
+    # $HOME/.local/lib/vlc/plugins would shadow nothing and load nothing.
+    if [ -n "$system_dir" ] && [ -e "$system_dir/misc/liblxlyrics_plugin.so" ]; then
+        system_copy="$system_dir/misc/liblxlyrics_plugin.so"
+    fi
+
     dest_dir="$vlc_plugin_dir"
     if [ -z "$dest_dir" ]; then
-        # A writable system directory is what a plain `vlc` scans; otherwise the
-        # module goes to the per-user directory, which needs VLC_PLUGIN_PATH.
-        if [ -n "$system_dir" ] && [ -d "$system_dir" ] && [ -w "$system_dir" ]; then
+        if [ -n "$system_copy" ]; then
+            dest_dir="$system_dir/misc"
+        elif [ -n "$system_dir" ] && [ -d "$system_dir" ] && [ -w "$system_dir" ]; then
+            # A writable system directory is what a plain `vlc` scans; otherwise
+            # the module goes to the per-user directory, which needs
+            # VLC_PLUGIN_PATH.
             dest_dir="$system_dir/misc"
         else
             dest_dir="$HOME/.local/lib/vlc/plugins"
@@ -951,12 +1046,32 @@ install_player_vlc() {
         esac
     fi
 
-    copy_file "the VLC module" \
-        "$REPO_ROOT/plugins/vlc/build/liblxlyrics_plugin.so" \
-        "$dest_dir/liblxlyrics_plugin.so" 755 || {
+    if [ -n "$system_copy" ] && [ "$dest_dir" = "$system_dir/misc" ]; then
+        # Nothing to copy: the module is already where VLC finds it. Only a copy
+        # older than the freshly built one needs a privileged refresh.
+        step "Using the VLC module already installed in $system_copy"
+        # A module left in the per-user directory by an earlier install is dead
+        # weight — VLC does not scan it — and a footgun the moment
+        # VLC_PLUGIN_PATH is exported, since the older of the two copies can
+        # then win. Remove exactly that one file, never the directory.
+        if [ -e "$per_user_copy" ]; then
+            if rm -f "$per_user_copy"; then
+                note "removed the stale per-user copy $per_user_copy"
+                stale_removed="$per_user_copy"
+            else
+                warn "vlc: cannot remove the stale per-user copy $per_user_copy"
+            fi
+        fi
+        if [ "$built" -nt "$system_copy" ]; then
+            system_older=1
+            warn "vlc: $system_copy is older than the freshly built module; run this yourself:"
+            warn "    sudo install -m 755 $built $system_copy"
+            pending_root+=("install -m 755 $built $system_copy")
+        fi
+    elif ! copy_file "the VLC module" "$built" "$dest_dir/liblxlyrics_plugin.so" 755; then
         player_failed vlc "$copy_error"
         return 1
-    }
+    fi
 
     conf="$config_home/vlc/vlcrc"
     local state=""
@@ -981,9 +1096,22 @@ install_player_vlc() {
             *":lxlyrics:"*) ;;
             *) die "$conf: [core] extraintf must load lxlyrics" ;;
         esac
-        summary_add_path vlc "$dest_dir/liblxlyrics_plugin.so"
+        if [ -n "$system_copy" ]; then
+            if [ "$system_older" -eq 1 ]; then
+                summary_add vlc "$system_copy (system copy is older — refresh it; needs root, see below)"
+            else
+                summary_add vlc "$system_copy (system copy is up to date)"
+            fi
+        else
+            summary_add_path vlc "$dest_dir/liblxlyrics_plugin.so"
+        fi
+        if [ -n "$stale_removed" ]; then
+            summary_add "" "removed the stale per-user copy $stale_removed"
+        fi
         summary_add "" "vlcrc [core] extraintf / [lxlyrics] lxlyrics-app-path"
-        next_steps_add vlc "restart VLC; the module is loaded through vlcrc extraintf=lxlyrics"
+        next_steps_add vlc "restart VLC: the module loads through [core] extraintf=lxlyrics in vlcrc"
+        next_steps_add "" "the switch and the app path are in Preferences -> All -> Interface -> Main interfaces"
+        next_steps_add "" 'tick "Desktop lyrics (lx-lyrics)" under Extra interface modules, then Save'
     else
         summary_add_path vlc "$dest_dir/liblxlyrics_plugin.so"
         summary_add "" "vlcrc [lxlyrics] lxlyrics-app-path"

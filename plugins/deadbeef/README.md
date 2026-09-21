@@ -32,7 +32,8 @@ stdin EOF, and the toggle clears itself.
 
 ## Build
 
-CMake (headers via `-DDEADBEEF_INCLUDE_DIR`):
+CMake (headers via `-DDEADBEEF_INCLUDE_DIR`, or found by CMake's `find_path` when an SDK is
+installed):
 
 ```sh
 cmake -B build -G Ninja -DDEADBEEF_INCLUDE_DIR=/path/to/deadbeef/include
@@ -69,7 +70,7 @@ install -m 755 build/ddb_lxlyrics.so ~/.local/lib/deadbeef/
 
 DeaDBeeF searches, in order: `~/.local/lib64/deadbeef`, `~/.local/lib/deadbeef`, then its system
 plugin directory; with `XDG_LOCAL_HOME` set that variable takes the place of the `~/.local` entry.
-DeaDBeeF has to be **restarted** to dlopen the plugin (`Plugins` in preferences lists it
+DeaDBeeF has to be **restarted** to dlopen the plugin (`Preferences → Plugins` lists it
 afterwards).
 
 ## Use
@@ -77,19 +78,38 @@ afterwards).
 1. Start playback.
 2. **View → LX Lyrics** spawns the lyric window; the same item ends the session. DeaDBeeF's
    action API has no checkable flag, so the item carries no tick — the wanted state lives in
-   `lxlyrics.enabled`, and the plugin keeps that key, the item and the actual child in agreement.
+   `lxlyrics.enabled`, and the plugin keeps that key, the item, the Configuration checkbox and the
+   actual child in agreement.
 3. Closing the lyric window ends the session and clears the wanted state.
 4. The wanted state is **restored at player start**: when `lxlyrics.enabled` is set, the plugin
    spawns the session on the first `DB_EV_PLUGINSLOADED` (after the streamer is up), the same way
    Fooyin's `RememberState` path does. If that restore cannot spawn the app (missing binary, exec
    failure), the key is cleared so the menu item honestly reads off.
+5. **Preferences → Plugins → LX Lyrics** is the plugin's own configuration panel: the app binary
+   and the same toggle, in the host's UI. See *Configuration*.
 
-Configuration keys in `~/.config/deadbeef/config`:
+## Configuration
+
+Both keys live in `~/.config/deadbeef/config` and are editable from the host's own plugin page:
+**Preferences → Plugins → LX Lyrics → Configuration**. The panel is the `lxlyrics_config_dialog`
+layout string in `src/plugin.c`, which gtkui renders and wires to
+`deadbeef->conf_get_str`/`conf_set_str` — the module links no GTK and the string *is* the dialog.
+A plugin whose `configdialog` is `NULL` gets no panel at all (gtkui hides its button box and the
+list's "Only show plugins with configuration" filter drops the plugin), so this layout is what
+makes the plugin configurable in the GUI. The host re-applies the whole dialog on every keystroke,
+**Reset to defaults** writes the defaults below, and closing the window runs `conf_save()`.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `lxlyrics.enabled` | `0` | Wanted desktop-lyrics state; restored at the next player start. |
-| `lxlyrics.app_path` | *(empty)* | Path to `lx-lyrics-app`; empty means "search `$PATH`". |
+| `lxlyrics.enabled` | `0` | Wanted desktop-lyrics state — the **Show desktop lyrics** checkbox. Restored at the next player start. |
+| `lxlyrics.app_path` | *(empty)* | Path to `lx-lyrics-app` (the **lx-lyrics-app binary** entry); empty means "search `$PATH`". |
+
+The host broadcasts `DB_EV_CONFIGCHANGED` after every config write, and the plugin follows it:
+`lxlyrics.enabled` on with no session starts one (a start that cannot spawn clears the key again),
+`lxlyrics.enabled` off with a running session ends it. `lxlyrics.app_path` is deliberately **not**
+acted on there — the dialog re-applies itself on every keystroke, so restarting a session per
+character would respawn the app — hence an app-path edit takes effect at the **next** session
+start, never mid-session.
 
 ## How the session works
 

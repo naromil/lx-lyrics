@@ -58,7 +58,7 @@ also checked against the running system.
 | Fullscreen *is* queryable: the playlist owns a `fullscreen` bool, and the Qt interface mirrors the video output's state onto it. | `src/playlist/engine.c:471`; `modules/gui/qt/input_manager.cpp:1290-1291`, `actions_manager.cpp:146` |
 | **No analyser API is reachable from a plugin.** The only spectrum consumers are `visual` *video-output effect* modules (`modules/visualization/visual/visual.h` is a module-private header), and the installed plugin headers contain no visualisation interface. The handshake therefore always says `spectrum: false`. | `modules/visualization/visual/visual.h`; no `vlc_visualizations.h` among the installed headers *(verified)* |
 | Config values written by a module are persisted: `config_PutInt()` marks the config dirty and VLC saves it to `vlcrc` at exit. | `include/vlc_configuration.h:100`; `src/config/core.c:225-243`; `src/config/file.c:525-540`; `src/libvlc.c:422-423` |
-| Module options appear in **Tools → Preferences → (Show settings: All)** under their category, because that tree enumerates every loaded module's config items. | `modules/gui/qt/components/complete_preferences.cpp:87-96`, `:101-178`, `:209-218` |
+| Module options appear in **Tools → Preferences → (Show settings: All)** under their category, because that tree walks every *banked* (discovered) module — not only the loaded ones: the module's own node is there with the module never instantiated. | `modules/gui/qt/components/complete_preferences.cpp:87-96`, `:101-178`, `:198-267` *(verified: the node and its two options render with `extraintf` empty)* |
 | Plugins are found in `<libdir>/plugins` and in every directory of `$VLC_PLUGIN_PATH`, and the directory is *scanned* at every start (`plugins-scan` defaults to true) — an unknown file is loaded from disk, so **`vlc-cache-gen` is not required** to install one. | `src/modules/bank.c:530-565`, `:469-505`, `:271-303`; `src/libvlc-module.c:2033-2036` |
 | A plugin cannot be an extension instead: extensions are hosted by the Qt interface and are activated from the View menu, and the Lua API they run on gives them at most a unidirectional `io.popen` — one pipe, while the feed needs the child's stdin *and* stdout. | `modules/gui/qt/extensions_manager.cpp:43-66`; `include/vlc_extensions.h:63-81`; `modules/lua/extension.c:830` |
 
@@ -146,21 +146,27 @@ VLC has to be **restarted** to pick the module up — `extraintf` is read once, 
    vlc --extraintf=lxlyrics
    ```
    In the GUI this is **Tools → Preferences → Show settings: All → Interface → Main interfaces →
-   "Extra interface modules"**, where you add `lxlyrics` to the colon-separated list (e.g.
-   `rc:lxlyrics`), click **Save** and restart VLC. In `vlcrc` the same two settings are:
+   "Extra interface modules"**, where the module is listed as a checkbox labelled with its own
+   description, **"Desktop lyrics (lx-lyrics)"**, so ticking it is enough (or add
+   `lxlyrics` to the colon-separated list, e.g. `rc:lxlyrics`); then click **Save** and restart VLC.
+   "Show settings: **All**" is not optional: VLC's Simple pages are hand-written panels bound to
+   literal option names (`config_FindConfig("qt-notification")` and friends), so no out-of-tree
+   module can ever appear on them. In `vlcrc` the same two settings are:
 
    ```ini
    [core]
    extraintf=lxlyrics
 
-   [lxlyrics] # Spawns the lx-lyrics desktop lyrics display and feeds it player state
+   [lxlyrics] # Desktop lyrics (lx-lyrics)
    lxlyrics-enabled=1
    #lxlyrics-app-path=
    ```
 
    The module's own options are in the same "All" settings tree under **Interface → Main
-   interfaces** ("Desktop lyrics" and "Path to lx-lyrics-app"), and on the command line as
-   `--lxlyrics-enabled` / `--lxlyrics-app-path`.
+   interfaces → "LX Lyrics"** (the module's `set_shortname()`): **Desktop lyrics** and
+   **Path to lx-lyrics-app**, and on the command line as `--lxlyrics-enabled` /
+   `--lxlyrics-app-path` — the boolean takes VLC's bare `--lxlyrics-enabled` /
+   `--no-lxlyrics-enabled` form (`--lxlyrics-enabled=0` is rejected by VLC's option parser).
 2. The lyric window appears with the session. It follows the playing track, the pause/seek/stop
    state, and VLC's fullscreen state (with `desktopLyric.fullscreenHide` the app hides itself while
    VLC is fullscreen).

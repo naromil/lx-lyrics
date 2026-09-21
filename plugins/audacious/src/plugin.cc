@@ -19,6 +19,7 @@
 #include <libaudcore/mainloop.h>
 #include <libaudcore/plugin.h>
 #include <libaudcore/plugins.h>
+#include <libaudcore/preferences.h>
 #include <libaudcore/runtime.h>
 #include <libaudcore/tuple.h>
 
@@ -110,6 +111,30 @@ static void snapshot_read(LxSnapshot* out)
 }
 
 /*
+ * The plugin's preferences page — the app path, and nothing else.
+ *
+ * The widgets are declarative because one binary serves both frontends
+ * (preferences.h:257 `struct PreferencesWidget`); WidgetString() binds a
+ * section and a key (preferences.h:250), and every frontend wires the entry's
+ * own "changed" signal straight to WidgetConfig::set_string() -> aud_set_str()
+ * (prefs-widget-qt.cc:214-218, prefs-widget.cc:191-195). No init()/apply()
+ * callback is needed: the key is written as the user types, and it is the same
+ * `[lx-lyrics] app_path` resolve_app_path() reads. An empty value is the
+ * documented "search $PATH" state, so clearing the field stays meaningful.
+ */
+static const PreferencesWidget lx_widgets[] = {
+  WidgetLabel(N_("Path to the lx-lyrics-app executable; empty means search $PATH.")),
+  WidgetEntry(N_("Application:"), WidgetString(LX_CONF_SECTION, LX_CONF_APP_PATH)),
+};
+
+static constexpr PluginPreferences lx_prefs = {
+  {lx_widgets}, // widgets
+  nullptr,      // init: nothing to prepare
+  nullptr,      // apply: the entry writes the key as it is typed
+  nullptr,      // cleanup
+};
+
+/*
  * The plugin.
  *
  * There is no toggle of its own: Audacious' Plugins settings page enables and
@@ -120,6 +145,17 @@ static void snapshot_read(LxSnapshot* out)
  * cleanup() ends it, and turning the plugin's own enable state off is how this
  * adapter reports "no session" (§4/§7) — the same decision the Rhythmbox
  * adapter documents for its host.
+ *
+ * The page `info.prefs` points at below is the one place the app path is
+ * editable in the host's UI: Settings -> Plugins -> the settings icon in the LX
+ * Lyrics row (Qt, prefs-window-qt.cc:625-638) or the Settings button after
+ * selecting the row (GTK, plugin-view.cc:236). Both frontends render the same
+ * declarative widgets (preferences.h:257 `struct PreferencesWidget`, :400
+ * `struct PluginPreferences`) — the Qt one through audqt::prefs_populate()
+ * (prefs-plugin.cc:130), the GTK one through audgui_create_widgets_with_domain()
+ * (plugin-prefs.cc:174) — and both are reachable only while the plugin is
+ * enabled, because the host gates them on `aud_plugin_has_configure(p) &&
+ * aud_plugin_get_enabled(p)` (plugin-view.cc:170-175, prefs-window-qt.cc:627-628).
  */
 class LxLyrics : public GeneralPlugin {
 public:
@@ -127,7 +163,7 @@ public:
     N_("LX Lyrics"), // name
     "lx-lyrics",     // gettext domain (no catalogue: the name is used verbatim)
     nullptr,         // about
-    nullptr,         // preferences page: none, the Plugins page is the toggle
+    &lx_prefs,       // preferences page: the app path (see lx_widgets)
     0,               // flags: no main-loop restriction, this module uses neither GLib nor Qt
   };
 

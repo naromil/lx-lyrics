@@ -451,18 +451,40 @@ static void Close(vlc_object_t* obj)
 // clang-format off
 #define ENABLED_TEXT N_("Desktop lyrics")
 #define ENABLED_LONGTEXT N_( \
-    "Start the lx-lyrics desktop lyrics display when VLC starts. " \
-    "Closing the lyrics window turns this off.")
+    "Show the lx-lyrics desktop lyrics window for the playing track. " \
+    "Honoured only while the module is loaded: see \"Extra interface modules\" " \
+    "in \"Main interfaces\". Closing the lyrics window turns this off.")
 #define APP_PATH_TEXT N_("Path to lx-lyrics-app")
 #define APP_PATH_LONGTEXT N_( \
     "Full path of the lx-lyrics display application. " \
     "Leave empty to search $PATH.")
 
+/*
+ * The descriptor is the module's whole surface in VLC's own GUI, because VLC's
+ * Simple settings pages cannot show an out-of-tree option at all: their panels
+ * bind literal option names (`config_FindConfig("qt-notification")` and friends
+ * in modules/gui/qt/components/simple_preferences.cpp) instead of enumerating
+ * the config list. Everything a user can reach lives in "Show settings: All":
+ *
+ * - Interface -> Main interfaces -> "Extra interface modules" lists every banked
+ *   module of this subcategory as a checkbox and uses `set_description()` as its
+ *   label, so the description is what the user clicks to load the module.
+ * - the same page carries the module's own node, labelled `set_shortname()` (the
+ *   settings tree renders a module node labelled with the shortname and searches
+ *   `set_description()`/`set_help()`/each option's *text* — never its name, so
+ *   the option names alone cannot be searched for).
+ * - `set_help()` is the text shown for that node, so it is the only place inside
+ *   VLC that can spell out the enable+restart path.
+ */
 vlc_module_begin()
     set_category(CAT_INTERFACE)
     set_subcategory(SUBCAT_INTERFACE_MAIN)
     set_shortname(N_("LX Lyrics"))
-    set_description(N_("Spawns the lx-lyrics desktop lyrics display and feeds it player state"))
+    set_description(N_("Desktop lyrics (lx-lyrics)"))
+    set_help(N_( \
+        "Loaded as the extra interface module \"lxlyrics\": tick it under " \
+        "\"Extra interface modules\" in \"Main interfaces\", Save, then restart " \
+        "VLC (that list is read once, while libvlc starts)."))
     add_bool(LX_CONF_ENABLED, true, ENABLED_TEXT, ENABLED_LONGTEXT, false)
     add_string(LX_CONF_APP_PATH, "", APP_PATH_TEXT, APP_PATH_LONGTEXT, false)
     /* Score 0: this module is never auto-selected. It only runs when the user

@@ -7,6 +7,11 @@
 # child and streams newline-delimited v2 JSON to the child's stdin. Acquisition, parsing
 # and rendering all belong to the app; Rhythmbox has no analyser API (the visualizer
 # plugin was removed in 2017), so the handshake declares `spectrum: false`.
+#
+# Nothing here imports Rhythmbox's shared `rb` plugin (the `RB` typelib below comes from
+# librhythmbox-core, not from `rb`), so `lxlyrics.plugin` declares no `Depends=`. Adding
+# one back would make libpeas report the dependency instead of the real problem when a
+# prerequisite is missing — see the README.
 
 import json
 import os

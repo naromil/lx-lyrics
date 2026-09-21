@@ -78,10 +78,10 @@ Adapter preconditions at a glance (the ones a plain `--player all` run reports w
 they are missing):
 
 - **Fooyin** — Fooyin built with `INSTALL_HEADERS=ON`; artifact `build/fyplugin_lxlyrics.so` → `<prefix>/lib/fooyin/plugins` (or `~/.local/lib/fooyin/plugins`).
-- **DeaDBeeF** — headers from a 1.10.1 checkout (`--deadbeef-include DIR`), API floor 1.16 (DeaDBeeF >= 1.9.3); `ddb_lxlyrics.so` → `~/.local/lib/deadbeef/`, then restart the player.
+- **DeaDBeeF** — its headers (`deadbeef/deadbeef.h`: an installed SDK such as the distro package's `/usr/include/deadbeef/`, or a source checkout; `--deadbeef-include DIR` is the override when CMake's `find_path` finds neither), API floor 1.16 (DeaDBeeF >= 1.9.3); `ddb_lxlyrics.so` → `~/.local/lib/deadbeef/`, then restart the player.
 - **Rhythmbox** — no build: `lxlyrics.py` + `lxlyrics.plugin` → `~/.local/share/rhythmbox/plugins/lxlyrics/`; needs Rhythmbox with Python plugin support (the libpeas python3 loader), else the plugin cannot be loaded.
 - **Audacious** — headers from Audacious ≥ 4.6.1 (`pkg-config audacious`, or `--audacious-include DIR`); `lxlyrics.so` → `<prefix>/lib/audacious/General/` (there is no per-user plugin dir, so this one needs root), then restart Audacious.
-- **Quod Libet** — no build: `lxlyrics.py` (the module, not the directory) → `~/.config/quodlibet/plugins/`, restart, and enable it in Music → Plugins.
+- **Quod Libet** — no build: `lxlyrics.py` (the module, not the directory) → `~/.config/quodlibet/plugins/`, restart, and enable it in File → Plugins (that is where the Plugins item lives; Quod Libet has no Music menu).
 - **VLC** — VLC 3.0.x module headers (`pkg-config vlc-plugin`, or `--vlc-include DIR`); `liblxlyrics_plugin.so` → a directory on `VLC_PLUGIN_PATH` (default `~/.local/lib/vlc/plugins`, or the scanned system dir when writable), then restart VLC with `--extraintf=lxlyrics`.
 
 Each adapter's README has the full build, install, and test commands.

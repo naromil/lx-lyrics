@@ -34,7 +34,7 @@ Consequences:
 
 Each adapter:
 
-- Provides the plugin shell for its player (Fooyin `Plugin`/`CorePlugin`/`GuiPlugin`, DeaDBeeF `DB_misc_t`, Rhythmbox `Peas.Activatable`), a session toggle, and — for Fooyin and Rhythmbox — a settings/preferences pane.
+- Provides the plugin shell for its player (Fooyin `Plugin`/`CorePlugin`/`GuiPlugin`, DeaDBeeF `DB_misc_t`, Rhythmbox `Peas.Activatable`), a session toggle, and a host-UI surface for the app path: Fooyin's Settings → Lyrics → LX Lyrics page (a `SettingsPage`), DeaDBeeF's Preferences → Plugins → LX Lyrics panel (a `configdialog` layout string gtkui renders), Rhythmbox's plugin Preferences dialog (`PeasGtk.Configurable`).
 - Watches its player's playback API (Fooyin `PlayerController`, DeaDBeeF events + `streamer_get_playing_track_safe`, Rhythmbox `RBShellPlayer` signals) and pushes `set_info`/`set_status`/`set_play`/`set_pause`/`set_stop` lines carrying the file path, metadata, state, and position.
 - Spawns the app as its direct child and strictly parses the two app→host actions (`get_analyser_data_array`, `close_requested`).
 - Samples the player's analyser where one exists (Fooyin `VisualisationService`, DeaDBeeF `vis_spectrum_listen2`) and answers `spectrum` requests; Rhythmbox has no analyser API and declares `spectrum: false`.
@@ -42,7 +42,7 @@ Each adapter:
 
 ### plugins/audacious
 
-An Audacious **general plugin** (a `GeneralPlugin`, C++17 glue over a pure POSIX C transport) with no UI of its own — Audacious' Plugins page is the toggle, and there is no per-user plugin directory. `spectrum: true` is real public API, not a guess: a general plugin subclasses the public `Visualizer` class and registers it with `aud_visualizer_add()`, so the host hands it 256 FFT frequencies on its 30 Hz vis timer — and registering it also switches the host's vis runner on for the whole session. Because `aud_drct_*` is documented as not thread-safe, every host call happens on the main thread: the hooks plus a 250 ms `TimerRate::Hz4` timer refresh a mutex-guarded snapshot that the feed's reader thread consumes.
+An Audacious **general plugin** (a `GeneralPlugin`, C++17 glue over a pure POSIX C transport) with no window and no menu item of its own — Audacious' Plugins page is the toggle, and there is no per-user plugin directory. Its one settings surface is the row's settings page (`PluginInfo.prefs`, a declarative `PluginPreferences` holding the app path), offered only while the plugin is enabled. `spectrum: true` is real public API, not a guess: a general plugin subclasses the public `Visualizer` class and registers it with `aud_visualizer_add()`, so the host hands it 256 FFT frequencies on its 30 Hz vis timer — and registering it also switches the host's vis runner on for the whole session. Because `aud_drct_*` is documented as not thread-safe, every host call happens on the main thread: the hooks plus a 250 ms `TimerRate::Hz4` timer refresh a mutex-guarded snapshot that the feed's reader thread consumes.
 
 ### plugins/quodlibet
 
