@@ -45,16 +45,20 @@ Adapters exist for Fooyin, DeaDBeeF, Rhythmbox, Audacious, Quod Libet and VLC. *
 ## Quick start
 
 ```sh
-./tools/install.sh                        # the app + the Fooyin adapter (the default)
-./tools/install.sh --player all           # the app + every adapter
+./tools/install.sh                        # the app + every adapter whose player is installed here
+./tools/install.sh --player all           # the app + all six adapters, detected or not
 ./tools/install.sh --player vlc --player audacious
 ```
 
-Each run builds the app plus the selected adapters in Release, installs them into
-the player's own plugin directory, and writes the adapter's config so it finds the
-installed `lx-lyrics-app` (Fooyin `AppPath`, DeaDBeeF `lxlyrics.app_path`, Rhythmbox
-`app-path`, Audacious `[lx-lyrics] app_path`, Quod Libet `lxlyrics_app_path`, VLC
-`lxlyrics-app-path`). `--prefix DIR` moves the app to `DIR/bin`; `--no-autospawn`
+With no `--player` flag the installer takes every adapter whose player it finds on
+the machine; name adapters to pick them explicitly, or `--player all` to install all
+six. Each run builds the app plus the selected adapters in Release, installs each one
+into its own player's plugin directory, and writes that adapter's config so it finds
+the installed `lx-lyrics-app` (Fooyin `AppPath`, DeaDBeeF `lxlyrics.app_path`,
+Rhythmbox `app-path`, Audacious `[lx-lyrics] app_path`, Quod Libet
+`lxlyrics_app_path`, VLC `lxlyrics-app-path`). `--prefix DIR` moves the app to
+`DIR/bin` and nothing else — a plugin only moves with its own
+`--fooyin-plugin-dir`/`--audacious-plugin-dir`/`--vlc-plugin-dir`; `--no-autospawn`
 writes each player's "do not start the lyrics session on your own" state.
 `./tools/install.sh --help` lists the per-adapter header/destination overrides.
 Adapters that install into a root-owned directory (a distro Audacious, a system VLC

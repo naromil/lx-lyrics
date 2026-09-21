@@ -54,8 +54,9 @@ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
 cmake --build build
 ```
 
-Or use the project's `tools/install.sh` to build and install the app — together with the Fooyin
-adapter by default, or with any other adapter via `--player NAME` / `--player all`.
+Or use the project's `tools/install.sh` to build and install the app — together with every adapter
+whose player is installed on the machine, or with the ones named via `--player NAME` (`--player all`
+installs all six).
 
 ## Run modes
 

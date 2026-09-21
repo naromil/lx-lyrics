@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
 #
-# Build + install the LX Lyrics components for one or more players, then point
-# every adapter at the installed lyrics app so no path has to be typed in by
-# hand.
+# Build + install the LX Lyrics components for the players installed on this
+# machine, then point every adapter at the installed lyrics app so no path has
+# to be typed in by hand.
 #
 #   ./tools/install.sh [--player NAME]... [--prefix DIR] [--no-autospawn] [--help]
 #
-# Players: fooyin (the default), deadbeef, rhythmbox, audacious, quodlibet, vlc
-# or `all`. Repeat --player to pick several adapters.
+# With no --player flag the script installs every adapter whose player it finds
+# on this machine; repeat --player NAME to pick adapters explicitly, or pass
+# `--player all` to install all six (fooyin, deadbeef, rhythmbox, audacious,
+# quodlibet, vlc) whether or not they were detected.
 #
 # What lands where; <config> is $XDG_CONFIG_HOME (~/.config), <data> is
-# $XDG_DATA_HOME (~/.local/share), <prefix> defaults to $HOME/.local:
+# $XDG_DATA_HOME (~/.local/share), <prefix> is where the app goes (default
+# $HOME/.local) and every plugin goes to its own player's plugin directory:
 #
 #   lyrics-app  <prefix>/bin/lx-lyrics-app                            (built here)
-#   fooyin      <prefix>/lib/fooyin/plugins/fyplugin_lxlyrics.so      (built here)
+#   fooyin      $HOME/.local/lib/fooyin/plugins/fyplugin_lxlyrics.so  (built here)
 #               fooyin.conf [LxLyrics] AppPath / RememberState         (patched)
 #   deadbeef    $HOME/.local/lib/deadbeef/ddb_lxlyrics.so             (built here)
 #               deadbeef config lxlyrics.app_path                     (patched)
@@ -51,20 +54,30 @@ BUILD_TYPE="Release"
 
 ALL_PLAYERS=(fooyin deadbeef rhythmbox audacious quodlibet vlc)
 
-# Fooyin scans <home>/.local/lib/fooyin/plugins for user plugins (corepaths.cpp:
-# userPluginsPath()), NOT $XDG_DATA_HOME — with --prefix it scans
-# <prefix>/lib/fooyin/plugins next to the binary.
+# Install locations. The app goes to <prefix>/bin; a plugin goes to its own
+# player's plugin directory, which is where that host actually looks: Fooyin
+# scans <home>/.local/lib/fooyin/plugins for user plugins (corepaths.cpp:
+# userPluginsPath()), NOT $XDG_DATA_HOME; DeaDBeeF scans ~/.local/lib64/deadbeef
+# then ~/.local/lib/deadbeef; Rhythmbox and Quod Libet scan directories under
+# <data> and <config> respectively; Audacious and VLC have no per-user plugin
+# directory at all, so theirs is only ever detected or passed in.
 prefix="$HOME/.local"
-prefix_given=0
-want_remember_state=1
-declare -A player_wanted=()
+config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+fooyin_plugin_dir="$HOME/.local/lib/fooyin/plugins"
+deadbeef_plugin_dir="${XDG_LOCAL_HOME:-$HOME/.local}/lib/deadbeef"
+audacious_plugin_dir=""
+vlc_plugin_dir=""
 
-# Header locations and plugin destinations: auto-detected unless overridden.
+# Header locations: the cmake projects find installed headers on their own, so
+# these only cover a header set cmake does not look at.
 deadbeef_include_dir=""
 audacious_include_dir=""
 vlc_include_dir=""
-audacious_plugin_dir=""
-vlc_plugin_dir=""
+
+want_remember_state=1
+declare -A player_wanted=()
+player_auto=0
 
 # --- State -------------------------------------------------------------------
 
@@ -99,10 +112,14 @@ usage() {
     cat <<'EOF'
 usage: ./tools/install.sh [--player NAME]... [--prefix DIR] [--no-autospawn] [--help]
 
-  --player NAME   adapter to install: fooyin (default), deadbeef, rhythmbox,
-                  audacious, quodlibet, vlc or all. Repeat the flag for several.
-  --prefix DIR    install the app under DIR/bin and the Fooyin plugin under
-                  DIR/lib/fooyin/plugins (default: $HOME/.local)
+  Without --player, every adapter whose player is installed on this machine is
+  installed, together with the lyrics app all of them need.
+
+  --player NAME   adapter to install: fooyin, deadbeef, rhythmbox, audacious,
+                  quodlibet, vlc, or all (all six, detected or not). Repeat the
+                  flag for several adapters.
+  --prefix DIR    install the app under DIR/bin (default: $HOME/.local); each
+                  adapter's plugin still goes to that player's plugin directory
   --no-autospawn  write each player's "do not start the lyrics session on your
                   own" state (see the header of this script); players without
                   such a state are reported and left alone
@@ -111,14 +128,33 @@ usage: ./tools/install.sh [--player NAME]... [--prefix DIR] [--no-autospawn] [--
   --vlc-include DIR
                   header directory for an adapter whose headers are not
                   installed where cmake/pkg-config looks
+  --fooyin-plugin-dir DIR
   --audacious-plugin-dir DIR
   --vlc-plugin-dir DIR
-                  destination directory for that adapter's module (default:
-                  the player's own plugin directory)
+                  destination directory for that adapter's module. Defaults to
+                  the player's own plugin directory: fooyin
+                  $HOME/.local/lib/fooyin/plugins, audacious and vlc detected
   --help          show this help and exit
 
 The lyrics app is always installed, since every adapter needs it.
 EOF
+}
+
+# player_present PLAYER - is this player installed here? The binary on PATH is
+# the signal; a config directory counts too, since a player can be installed
+# without a launcher on PATH. Only used to pick the default adapter set.
+player_present() {
+    local player="$1"
+    command -v "$player" >/dev/null 2>&1 && return 0
+    case "$player" in
+        fooyin) [ -d "$config_home/fooyin" ] ;;
+        deadbeef) [ -d "$config_home/deadbeef" ] || [ -d "$deadbeef_plugin_dir" ] ;;
+        rhythmbox) [ -d "$data_home/rhythmbox" ] ;;
+        audacious) [ -d "$config_home/audacious" ] ;;
+        quodlibet) [ -d "$config_home/quodlibet" ] ;;
+        vlc) [ -d "$config_home/vlc" ] ;;
+        *) return 1 ;;
+    esac
 }
 
 require_command() {
@@ -190,6 +226,7 @@ while [ $# -gt 0 ]; do
             ;;
         --player|--player=*|--prefix|--prefix=*|--deadbeef-include|--deadbeef-include=*|\
         --audacious-include|--audacious-include=*|--vlc-include|--vlc-include=*|\
+        --fooyin-plugin-dir|--fooyin-plugin-dir=*|\
         --audacious-plugin-dir|--audacious-plugin-dir=*|--vlc-plugin-dir|--vlc-plugin-dir=*)
             flag="${1%%=*}"
             if [ "$1" = "$flag" ]; then
@@ -203,10 +240,11 @@ while [ $# -gt 0 ]; do
             [ -n "$value" ] || die "$flag requires a non-empty argument"
             case "$flag" in
                 --player) add_player "$value" ;;
-                --prefix) prefix="$value"; prefix_given=1 ;;
+                --prefix) prefix="$value" ;;
                 --deadbeef-include) deadbeef_include_dir="$value" ;;
                 --audacious-include) audacious_include_dir="$value" ;;
                 --vlc-include) vlc_include_dir="$value" ;;
+                --fooyin-plugin-dir) fooyin_plugin_dir="$value" ;;
                 --audacious-plugin-dir) audacious_plugin_dir="$value" ;;
                 --vlc-plugin-dir) vlc_plugin_dir="$value" ;;
             esac
@@ -218,23 +256,24 @@ while [ $# -gt 0 ]; do
 done
 
 if [ "${#player_wanted[@]}" -eq 0 ]; then
-    add_player fooyin
+    # No adapter named: install the ones this machine actually has.
+    player_auto=1
+    detected=()
+    undetected=()
+    for player in "${ALL_PLAYERS[@]}"; do
+        if player_present "$player"; then
+            player_wanted[$player]=1
+            detected+=("$player")
+        else
+            undetected+=("$player")
+        fi
+    done
 fi
 
 # --- Resolve install locations -------------------------------------------------
 
-if [ "$prefix_given" -eq 1 ]; then
-    bin_dir="$prefix/bin"
-    fooyin_plugin_dir="$prefix/lib/fooyin/plugins"
-else
-    bin_dir="$HOME/.local/bin"
-    fooyin_plugin_dir="$HOME/.local/lib/fooyin/plugins"
-fi
+bin_dir="$prefix/bin"
 app_path="$bin_dir/$APP_BINARY_NAME"
-
-config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
-data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
-deadbeef_plugin_dir="${XDG_LOCAL_HOME:-$HOME/.local}/lib/deadbeef"
 
 remember_value=false
 if [ "$want_remember_state" -eq 1 ]; then
@@ -249,7 +288,61 @@ require_command awk
 
 [ -d "$APP_DIR" ] || die "lyrics-app source directory not found: $APP_DIR"
 
+if [ "$player_auto" -eq 1 ]; then
+    if [ "${#detected[@]}" -eq 0 ]; then
+        step "No player detected: installing the lyrics app only"
+        note "pass --player NAME (or --player all) to install an adapter anyway"
+    else
+        step "Detected players: ${detected[*]}"
+        if [ "${#undetected[@]}" -gt 0 ]; then
+            note "not installed here: ${undetected[*]} (--player NAME installs one anyway)"
+        fi
+    fi
+fi
+
 # --- Build + install helpers -----------------------------------------------------
+
+# configure_failure_reason PROJECT OUTPUT - what the summary says when a
+# configure fails: a known missing prerequisite names what fixes it, and the
+# cmake error itself was already printed above.
+configure_failure_reason() {
+    local project="$1" output="$2"
+    case "$project" in
+        fooyin)
+            case "$output" in
+                *FindFooyin.cmake*|*'package configuration file provided by "Fooyin"'*)
+                    printf 'cmake did not find Fooyin (install Fooyin built with INSTALL_HEADERS=ON)'
+                    return 0
+                    ;;
+            esac
+            ;;
+        deadbeef)
+            case "$output" in
+                *DEADBEEF_INCLUDE_DIR*)
+                    printf 'DeaDBeeF headers were not found (pass --deadbeef-include DIR)'
+                    return 0
+                    ;;
+            esac
+            ;;
+        audacious)
+            case "$output" in
+                *AUDACIOUS_INCLUDE_DIR*)
+                    printf 'Audacious headers were not found (install the audacious dev package or pass --audacious-include DIR)'
+                    return 0
+                    ;;
+            esac
+            ;;
+        vlc)
+            case "$output" in
+                *VLC_INCLUDE_DIR*)
+                    printf 'VLC module headers were not found (install the vlc dev package or pass --vlc-include DIR)'
+                    return 0
+                    ;;
+            esac
+            ;;
+    esac
+    printf 'cmake configure failed (see the error above)'
+}
 
 # build_project PROJECT DIR ARTIFACT [cmake args...]
 # Builds one project in Release and verifies its artifact appeared.
@@ -265,9 +358,19 @@ build_project() {
     fi
 
     step "Building $project ($BUILD_TYPE)"
+    # Configure separately from the build: a missing dependency shows up there,
+    # and its output is what lets the summary name the missing piece.
+    local configure_output="" configure_status=0
+    configure_output="$(
+        cd "$dir" && cmake -B build -G Ninja -DCMAKE_BUILD_TYPE="$BUILD_TYPE" "$@" 2>&1
+    )" || configure_status=$?
+    if [ "$configure_status" -ne 0 ]; then
+        printf '%s\n' "$configure_output" >&2
+        build_error="$(configure_failure_reason "$project" "$configure_output")"
+        return 1
+    fi
     if ! (
         cd "$dir"
-        cmake -B build -G Ninja -DCMAKE_BUILD_TYPE="$BUILD_TYPE" "$@"
         cmake --build build
     ); then
         build_error="the build of $project failed (see the output above)"
