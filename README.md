@@ -31,7 +31,7 @@ Adapters exist for Fooyin, DeaDBeeF, Rhythmbox, Audacious, Quod Libet and VLC. *
 | `plugins/vlc/` | VLC adapter — see `plugins/vlc/README.md` |
 | `docs/` | architecture, protocol, and research summaries |
 | `references/` | lx-music-desktop v2.12.2 source (gitignored; read-only reference) |
-| `tools/` | build/install helpers — `tools/install.sh` builds and installs the app + the Fooyin adapter; `tools/lint.sh` runs the clang-format + clang-tidy gate |
+| `tools/` | build/install helpers — `tools/install.sh` builds and installs the app plus any of the six adapters (`--player NAME`, `--player all`); `tools/lint.sh` runs the clang-format + clang-tidy gate |
 
 ## Documentation
 
@@ -45,9 +45,20 @@ Adapters exist for Fooyin, DeaDBeeF, Rhythmbox, Audacious, Quod Libet and VLC. *
 ## Quick start
 
 ```sh
-./tools/install.sh   # builds lyrics-app + plugins/fooyin, installs both, and
-                     # auto-configures the plugin's app path (no manual entry)
+./tools/install.sh                        # the app + the Fooyin adapter (the default)
+./tools/install.sh --player all           # the app + every adapter
+./tools/install.sh --player vlc --player audacious
 ```
+
+Each run builds the app plus the selected adapters in Release, installs them into
+the player's own plugin directory, and writes the adapter's config so it finds the
+installed `lx-lyrics-app` (Fooyin `AppPath`, DeaDBeeF `lxlyrics.app_path`, Rhythmbox
+`app-path`, Audacious `[lx-lyrics] app_path`, Quod Libet `lxlyrics_app_path`, VLC
+`lxlyrics-app-path`). `--prefix DIR` moves the app to `DIR/bin`; `--no-autospawn`
+writes each player's "do not start the lyrics session on your own" state.
+`./tools/install.sh --help` lists the per-adapter header/destination overrides.
+Adapters that install into a root-owned directory (a distro Audacious, a system VLC
+plugin dir) print the exact `sudo install` command and exit non-zero instead.
 
 Manual fallback (the same steps by hand):
 
@@ -59,14 +70,15 @@ cp build/fyplugin_lxlyrics.so ~/.local/lib/fooyin/plugins/                      
 #    lyrics-app/build/lx-lyrics-app on your PATH so auto-detect finds it
 ```
 
-`tools/install.sh` covers only the app and the Fooyin adapter. Adapter preconditions at a glance:
+Adapter preconditions at a glance (the ones a plain `--player all` run reports when
+they are missing):
 
-- **Fooyin** — Fooyin built with `INSTALL_HEADERS=ON`; artifact `build/fyplugin_lxlyrics.so` → `<prefix>/lib/fooyin/plugins`.
-- **DeaDBeeF** — headers from a 1.10.1 checkout (`-DDEADBEEF_INCLUDE_DIR=…`), API floor 1.16 (DeaDBeeF >= 1.9.3); `ddb_lxlyrics.so` → `~/.local/lib/deadbeef/`, then restart the player.
-- **Rhythmbox** — copy `plugins/rhythmbox/` to `~/.local/share/rhythmbox/plugins/lxlyrics/` and enable it in the Plugins dialog.
-- **Audacious** — headers from Audacious ≥ 4.6.1 (`pkg-config audacious`, or `-DAUDACIOUS_INCLUDE_DIR=…`); `lxlyrics.so` → `<prefix>/lib/audacious/General/` (there is no per-user plugin dir), then restart Audacious.
-- **Quod Libet** — copy `plugins/quodlibet/lxlyrics.py` (the module, not the directory) to `~/.config/quodlibet/plugins/`, restart, and enable it in Music → Plugins.
-- **VLC** — VLC 3.0.x module headers (`pkg-config vlc-plugin`, or `-DVLC_INCLUDE_DIR=…`); `liblxlyrics_plugin.so` → a directory on `VLC_PLUGIN_PATH` (or `<libdir>/vlc/plugins/`), then restart VLC with `--extraintf=lxlyrics`.
+- **Fooyin** — Fooyin built with `INSTALL_HEADERS=ON`; artifact `build/fyplugin_lxlyrics.so` → `<prefix>/lib/fooyin/plugins` (or `~/.local/lib/fooyin/plugins`).
+- **DeaDBeeF** — headers from a 1.10.1 checkout (`--deadbeef-include DIR`), API floor 1.16 (DeaDBeeF >= 1.9.3); `ddb_lxlyrics.so` → `~/.local/lib/deadbeef/`, then restart the player.
+- **Rhythmbox** — no build: `lxlyrics.py` + `lxlyrics.plugin` → `~/.local/share/rhythmbox/plugins/lxlyrics/`; needs Rhythmbox with Python plugin support (the libpeas python3 loader), else the plugin cannot be loaded.
+- **Audacious** — headers from Audacious ≥ 4.6.1 (`pkg-config audacious`, or `--audacious-include DIR`); `lxlyrics.so` → `<prefix>/lib/audacious/General/` (there is no per-user plugin dir, so this one needs root), then restart Audacious.
+- **Quod Libet** — no build: `lxlyrics.py` (the module, not the directory) → `~/.config/quodlibet/plugins/`, restart, and enable it in Music → Plugins.
+- **VLC** — VLC 3.0.x module headers (`pkg-config vlc-plugin`, or `--vlc-include DIR`); `liblxlyrics_plugin.so` → a directory on `VLC_PLUGIN_PATH` (default `~/.local/lib/vlc/plugins`, or the scanned system dir when writable), then restart VLC with `--extraintf=lxlyrics`.
 
 Each adapter's README has the full build, install, and test commands.
 

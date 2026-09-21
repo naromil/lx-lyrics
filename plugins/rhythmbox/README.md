@@ -17,7 +17,8 @@ cp -r plugins/rhythmbox ~/.local/share/rhythmbox/plugins/lxlyrics
 ```
 
 Rhythmbox scans `$XDG_DATA_HOME/rhythmbox/plugins/<name>/` (`~/.local/share` by default)
-for per-user plugins, so no root is needed. Then:
+for per-user plugins, so no root is needed. `../../tools/install.sh --player rhythmbox`
+copies those two files and writes `app-path` into the config file below for you. Then:
 
 1. Restart Rhythmbox and open **Tools → Plugins** (or **Edit → Plugins**) and make sure
    **LX Lyrics** is enabled — a fresh install ships with `InitiallyEnabled=true`, so it

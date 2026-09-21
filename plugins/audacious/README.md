@@ -83,6 +83,11 @@ There is **no per-user plugin directory** and no command-line or environment ove
 (`src/audacious/main.cc:74-98`) has no such flag. Audacious has to be **restarted** to dlopen the
 plugin (`Settings → Plugins` lists it afterwards).
 
+`../../tools/install.sh --player audacious` builds the module, installs it into the detected
+plugin directory and writes `[lx-lyrics] app_path`; because that directory is root-owned for a
+distro Audacious, it prints the exact `sudo install` command instead of installing and exits
+non-zero.
+
 ## Use
 
 1. **Settings → Plugins** (or `Ctrl+P`) → enable **LX Lyrics**. That *is* the toggle: Audacious

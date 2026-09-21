@@ -64,6 +64,9 @@ mkdir -p ~/.local/lib/deadbeef
 install -m 755 build/ddb_lxlyrics.so ~/.local/lib/deadbeef/
 ```
 
+`../../tools/install.sh --player deadbeef` does that (and builds the app) for you, and writes
+`lxlyrics.app_path` so the plugin finds `lx-lyrics-app` without a manual path entry.
+
 DeaDBeeF searches, in order: `~/.local/lib64/deadbeef`, `~/.local/lib/deadbeef`, then its system
 plugin directory; with `XDG_LOCAL_HOME` set that variable takes the place of the `~/.local` entry.
 DeaDBeeF has to be **restarted** to dlopen the plugin (`Plugins` in preferences lists it

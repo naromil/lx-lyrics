@@ -55,7 +55,8 @@ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
 cmake --build build
 ```
 
-Or use the project's `tools/install.sh` to build and install the app and the plugin automatically.
+Or use the project's `tools/install.sh` — this adapter is its default — to build and install the app and
+the plugin, and to point `AppPath` at the binary without any manual entry.
 
 Artifact: `build/fyplugin_lxlyrics.so`.
 

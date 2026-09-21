@@ -25,6 +25,9 @@ metadata from class attributes. Copy the single module as shown — Quod Libet's
 walks subdirectories, so dropping the whole `plugins/quodlibet/` directory into the plugins
 folder would also try to import `tests/test_lxlyrics.py` as a plugin.
 
+`../../tools/install.sh --player quodlibet` does that copy and writes `lxlyrics_app_path`
+into Quod Libet's config (through Quod Libet's own config library) for you.
+
 Then:
 
 1. Restart Quod Libet and open **Music → Plugins**. (The Plugins window's *Refresh*

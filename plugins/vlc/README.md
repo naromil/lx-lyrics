@@ -130,6 +130,12 @@ the variable in the launcher's environment.
 (`src/modules/bank.c:271-303`, `:469-505`). Run `vlc-cache-gen <plugin-dir>` (or start VLC with
 `--reset-plugins-cache`) only if you disabled the scan.
 
+`../../tools/install.sh --player vlc` builds the module, installs it into the scanned system
+directory when that is writable and into `~/.local/lib/vlc/plugins` otherwise, writes
+`[lxlyrics] lxlyrics-app-path` and — when VLC will find the module without extra environment —
+adds `lxlyrics` to `[core] extraintf`. For a per-user install it prints the
+`VLC_PLUGIN_PATH=… vlc --extraintf=lxlyrics` launch line instead.
+
 VLC has to be **restarted** to pick the module up — `extraintf` is read once, while libvlc starts
 (`src/libvlc.c:301`).
 
