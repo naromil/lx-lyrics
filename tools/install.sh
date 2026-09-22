@@ -33,11 +33,12 @@
 # when a directory VLC actually scans (its pkg-config `pluginsdir`, here
 # /usr/lib/vlc/plugins, as <dir>/misc/liblxlyrics_plugin.so) already holds the
 # module, that copy *is* the installed one — nothing is written into the
-# unscanned $HOME/.local/lib/vlc/plugins to shadow it, a module an earlier
+# unscanned $HOME/.local/lib/vlc/plugins to shadow it, and a module an earlier
 # install left there is removed (VLC never scans it, and with VLC_PLUGIN_PATH
-# exported the older of the two copies can win), and the summary says whether the
-# system copy is older than the freshly built module, which root refreshes with
-# the `sudo install` command printed in the pending-root block.
+# exported the older of the two copies can win). The summary says whether that
+# copy is older than the freshly built module: one this user may write is
+# refreshed in place, and the refresh that needs root ends up as the `sudo
+# install` command printed in the pending-root block.
 #
 # Rhythmbox's plugin only loads through libpeas's Python 3 loader
 # (<libdir>/libpeas-1.0/loaders/libpython3loader.so, loader id `python3`), which
@@ -55,7 +56,8 @@
 # system VLC plugin dir) are not installed by this script: the exact `sudo
 # install` command is printed and the script exits non-zero, with the other
 # requested adapters still installed. That block also carries the refresh
-# command for a system VLC module older than the freshly built one.
+# command for a system VLC module older than the freshly built one that this
+# user cannot write.
 #
 # Re-running is safe: cmake rebuilds incrementally and every config key is
 # updated in place.
@@ -151,12 +153,16 @@ usage: ./tools/install.sh [--player NAME]... [--prefix DIR] [--no-autospawn] [--
                   destination directory for that adapter's module. Defaults to
                   the player's own plugin directory: fooyin
                   $HOME/.local/lib/fooyin/plugins, audacious and vlc detected.
-                  VLC uses a module its own plugin directory already holds
-                  (pkg-config `vlc-plugin` pluginsdir, /usr/lib/vlc/plugins here)
-                  instead of shadowing it in the unscanned
-                  $HOME/.local/lib/vlc/plugins (a stale module left there is
-                  removed), and reports whether that copy is older than the
-                  freshly built module
+                  For VLC, a directory it scans — its pkg-config `vlc-plugin`
+                  pluginsdir (/usr/lib/vlc/plugins here), that directory itself,
+                  or anything under it — is used as the module's home: vlcrc gets
+                  [core] extraintf=lxlyrics and no VLC_PLUGIN_PATH is suggested.
+                  When VLC's own pluginsdir already holds the module (in
+                  <dir>/misc), that copy is the installed one: it is refreshed
+                  when it is older than the freshly built module (in place if
+                  writable, else by the `sudo install` command in the pending
+                  block), and a stale copy in the unscanned
+                  $HOME/.local/lib/vlc/plugins is removed
   --help          show this help and exit
 
 The lyrics app is always installed, since every adapter needs it.
@@ -1015,7 +1021,7 @@ install_player_vlc() {
     local extra=() dest_dir system_dir conf scanned=0
     local built="$REPO_ROOT/plugins/vlc/build/liblxlyrics_plugin.so"
     local per_user_copy="$HOME/.local/lib/vlc/plugins/liblxlyrics_plugin.so"
-    local system_copy="" system_older=0 stale_removed=""
+    local system_copy="" system_older=0 system_refreshed=0 stale_removed="" using_system_copy=0
     [ -n "$vlc_include_dir" ] && extra=("-DVLC_INCLUDE_DIR=$vlc_include_dir")
     build_adapter vlc "plugins/vlc" "$REPO_ROOT/plugins/vlc" "liblxlyrics_plugin.so" "${extra[@]}" || return 1
 
@@ -1040,15 +1046,20 @@ install_player_vlc() {
             dest_dir="$HOME/.local/lib/vlc/plugins"
         fi
     fi
+    # VLC's bank walks a directory it scans recursively, so a module in the
+    # pluginsdir itself is found as surely as one in <pluginsdir>/misc.
     if [ -n "$system_dir" ]; then
         case "$dest_dir" in
-            "$system_dir"/*) scanned=1 ;;
+            "$system_dir" | "$system_dir"/*) scanned=1 ;;
         esac
     fi
 
     if [ -n "$system_copy" ] && [ "$dest_dir" = "$system_dir/misc" ]; then
         # Nothing to copy: the module is already where VLC finds it. Only a copy
-        # older than the freshly built one needs a privileged refresh.
+        # older than the freshly built one is refreshed — in place when this user
+        # may write it (the installer run as root, or a VLC built into a
+        # user-owned prefix), and through root when it may not.
+        using_system_copy=1
         step "Using the VLC module already installed in $system_copy"
         # A module left in the per-user directory by an earlier install is dead
         # weight — VLC does not scan it — and a footgun the moment
@@ -1063,10 +1074,15 @@ install_player_vlc() {
             fi
         fi
         if [ "$built" -nt "$system_copy" ]; then
-            system_older=1
-            warn "vlc: $system_copy is older than the freshly built module; run this yourself:"
-            warn "    sudo install -m 755 $built $system_copy"
-            pending_root+=("install -m 755 $built $system_copy")
+            if [ -w "$system_dir/misc" ] && install -m 755 "$built" "$system_copy" 2>/dev/null; then
+                note "refreshed $system_copy with the freshly built module"
+                system_refreshed=1
+            else
+                system_older=1
+                warn "vlc: $system_copy is older than the freshly built module and needs root:"
+                warn "    sudo install -m 755 $built $system_copy"
+                pending_root+=("install -m 755 $built $system_copy")
+            fi
         fi
     elif ! copy_file "the VLC module" "$built" "$dest_dir/liblxlyrics_plugin.so" 755; then
         player_failed vlc "$copy_error"
@@ -1096,9 +1112,15 @@ install_player_vlc() {
             *":lxlyrics:"*) ;;
             *) die "$conf: [core] extraintf must load lxlyrics" ;;
         esac
-        if [ -n "$system_copy" ]; then
+        # The scanned directory's own copy is the installed module only when it
+        # is also this run's destination; a module placed elsewhere in a scanned
+        # directory (the pluginsdir itself, an explicit --vlc-plugin-dir) is the
+        # one just installed.
+        if [ "$using_system_copy" -eq 1 ]; then
             if [ "$system_older" -eq 1 ]; then
                 summary_add vlc "$system_copy (system copy is older — refresh it; needs root, see below)"
+            elif [ "$system_refreshed" -eq 1 ]; then
+                summary_add vlc "$system_copy (refreshed the older system copy)"
             else
                 summary_add vlc "$system_copy (system copy is up to date)"
             fi

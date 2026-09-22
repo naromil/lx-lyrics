@@ -427,11 +427,14 @@ static void sync_session_with_conf(void)
     }
     if (!start_session()) {
       /* Same rule as restore_session(): a wanted state that cannot be honoured
-       * is cleared, not left claiming a child that does not exist. The live
-       * dialog keeps showing the tick the user clicked (gtkui does not re-read a
-       * widget after a config write), but the key, the menu item and the child
-       * agree again — and an entry that reports the same change on every
-       * keystroke cannot retry the spawn. */
+       * is cleared, not left claiming a child that does not exist — a failed
+       * start may not ratchet the key on. The live dialog is a different
+       * matter: gtkui never re-reads a widget after a config write, so it keeps
+       * showing the tick while its entry rewrites BOTH keys from the widget
+       * state it still holds on the next keystroke. That rewrite reaches this
+       * function again, so an open panel can retry the spawn — and every retry
+       * that cannot spawn clears the key again, so the key converges to 0
+       * instead of resting at a claim of a child that does not exist. */
       deadbeef->log("lxlyrics: cannot start the session for \"%s\"; clearing it", LX_CONF_ENABLED);
       deadbeef->conf_set_int(LX_CONF_ENABLED, 0);
       deadbeef->sendmessage(DB_EV_ACTIONSCHANGED, 0, 0, 0);

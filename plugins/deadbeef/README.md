@@ -78,8 +78,11 @@ afterwards).
 1. Start playback.
 2. **View → LX Lyrics** spawns the lyric window; the same item ends the session. DeaDBeeF's
    action API has no checkable flag, so the item carries no tick — the wanted state lives in
-   `lxlyrics.enabled`, and the plugin keeps that key, the item, the Configuration checkbox and the
-   actual child in agreement.
+   `lxlyrics.enabled`, and the plugin keeps that key, the item and the actual child in agreement.
+   The Configuration panel's checkbox is the host's own widget rather than a mirror of the key:
+   gtkui does not re-read it after a config write, so a start that fails leaves the key at 0 with
+   the tick still drawn, and the panel stays able to write that tick back (see *Configuration*).
+   Reopen the panel to see the stored state.
 3. Closing the lyric window ends the session and clears the wanted state.
 4. The wanted state is **restored at player start**: when `lxlyrics.enabled` is set, the plugin
    spawns the session on the first `DB_EV_PLUGINSLOADED` (after the streamer is up), the same way
@@ -106,10 +109,14 @@ makes the plugin configurable in the GUI. The host re-applies the whole dialog o
 
 The host broadcasts `DB_EV_CONFIGCHANGED` after every config write, and the plugin follows it:
 `lxlyrics.enabled` on with no session starts one (a start that cannot spawn clears the key again),
-`lxlyrics.enabled` off with a running session ends it. `lxlyrics.app_path` is deliberately **not**
-acted on there — the dialog re-applies itself on every keystroke, so restarting a session per
-character would respawn the app — hence an app-path edit takes effect at the **next** session
-start, never mid-session.
+`lxlyrics.enabled` off with a running session ends it. A failed start therefore does not ratchet
+the key on, while a panel that is still open can retry: the next keystroke in it rewrites both keys
+from the widget state gtkui still holds (a tick the user clicked even though the key was cleared),
+which reaches the plugin as another "enabled" write — each retry that cannot spawn clears the key
+again, so the key converges to 0 rather than resting on a child that does not exist.
+`lxlyrics.app_path` is deliberately **not** acted on there — the dialog re-applies itself on every
+keystroke, so restarting a session per character would respawn the app — hence an app-path edit
+takes effect at the **next** session start, never mid-session.
 
 ## How the session works
 
