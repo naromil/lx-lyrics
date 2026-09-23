@@ -53,6 +53,20 @@ private:
   void rememberState(bool enabled);
   void startDesktopLyrics();
   void stopDesktopLyrics();
+  /// Creates the session-scoped objects — PlayerBridge and SpectrumSource —
+  /// and their connections when they are absent, so every path that is about
+  /// to spawn a child owns a wired session. Idempotent: a live session keeps
+  /// the objects (and the pushing state) it started with. Called by
+  /// startDesktopLyrics() and the crash-recovery respawn; a no-op without a
+  /// writer.
+  void ensureSessionObjects();
+  /// Destroys the session-scoped objects so no playback push and no analyser
+  /// callback can fire after a session ends. Idempotent. Called by
+  /// stopDesktopLyrics(), shutdown() and a protocol abort; every later start
+  /// rebuilds the objects through ensureSessionObjects(). The FeedWriter
+  /// itself is NOT session-scoped (it owns only the child process and the
+  /// plugin-level connections), so it survives a teardown.
+  void teardownSession();
   /// The child process ended (FeedWriter::appExited). `closeRequested` marks a
   /// clean end-of-session the user asked for; `status == 0` without it is a
   /// crash the plugin recovers from by respawning after 1500 ms while the
@@ -107,8 +121,12 @@ private:
   LxLyricsSettingsPage* m_settingsPage = nullptr;
   // The child lyrics-app process and its feed (spawn/stop/JSON lines). Kept
   // alive for the plugin's lifetime — stopDesktopLyrics() only stops the
-  // child — so the AppPath subscription and later spawns keep working.
+  // child — so the AppPath subscription and later spawns keep working. Only
+  // its plugin-level connections are made once, when it is created.
   std::unique_ptr<FeedWriter> m_feedWriter;
+  // Session-scoped: created by ensureSessionObjects() before every spawn and
+  // destroyed by teardownSession(), so a stopped session leaves neither a
+  // playback push nor an analyser callback behind. Both are null together.
   std::unique_ptr<PlayerBridge> m_playerBridge;
   std::unique_ptr<SpectrumSource> m_spectrumSource;
 

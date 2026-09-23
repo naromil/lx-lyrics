@@ -16,6 +16,10 @@
 
 class FeedWriter;
 
+namespace Fooyin {
+class SettingsManager;
+} // namespace Fooyin
+
 /// Translates Fooyin playback events into protocol v2 feed frames
 /// (docs/protocol.md §5). The plugin never acquires lyrics: the app reads them
 /// from the file at `set_info.path`, so this bridge supplies playing context
@@ -24,7 +28,11 @@ class PlayerBridge : public QObject {
   Q_OBJECT
 
 public:
+  /// `settingsManager` is read for Fooyin's own shutdown state
+  /// (Settings::Core::Shutdown): the player is stopped as part of quitting,
+  /// and that teardown stop must not be forwarded (see onPlayStateChanged).
   explicit PlayerBridge(Fooyin::PlayerController* playerController, FeedWriter* writer,
+                        Fooyin::SettingsManager* settingsManager = nullptr,
                         QObject* parent = nullptr);
 
   void setPlaybackRate(double rate);
@@ -60,6 +68,9 @@ private:
 
   Fooyin::PlayerController* m_playerController = nullptr;
   FeedWriter* m_writer = nullptr;
+  /// Fooyin's settings, read only to tell "the user stopped playback" apart
+  /// from "Fooyin is quitting and stopped playback on its way out".
+  Fooyin::SettingsManager* m_settingsManager = nullptr;
   Fooyin::Track m_currentTrack;
   double m_playbackRate = 1.0;
   bool m_pushing = false;

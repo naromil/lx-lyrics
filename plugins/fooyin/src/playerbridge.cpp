@@ -9,6 +9,9 @@
 
 #include "feedwriter.h"
 
+#include <core/coresettings.h>
+#include <utils/settings/settingsmanager.h>
+
 #include <QDebug>
 
 namespace {
@@ -45,10 +48,11 @@ QVariantMap emptySetInfoFields()
 } // namespace
 
 PlayerBridge::PlayerBridge(Fooyin::PlayerController* playerController, FeedWriter* writer,
-                           QObject* parent)
+                           Fooyin::SettingsManager* settingsManager, QObject* parent)
   : QObject(parent)
   , m_playerController(playerController)
   , m_writer(writer)
+  , m_settingsManager(settingsManager)
 {
   if (m_playerController == nullptr) {
     qWarning() << "[LX Lyrics] PlayerBridge created without a PlayerController; bridge inert";
@@ -133,6 +137,18 @@ void PlayerBridge::onPlayStateChanged(Fooyin::Player::PlayState state,
     m_writer->sendSetStatus(false, playedTime());
     break;
   case Fooyin::Player::PlayState::Stopped:
+    // Fooyin stops playback as part of quitting (MainWindow::exit ->
+    // Settings::Core::Shutdown -> PlayerController::stop(), all synchronous),
+    // so this Stopped can be that teardown stop rather than user intent.
+    // Forwarding it would clear the app's lyric: the window would show "No
+    // lyrics" for as long as the engine takes to drain, right before the
+    // session ends. The app keeps its last frame instead and exits on the
+    // stdin EOF that ends the session. A real stop (the user pressing Stop)
+    // still goes through - the setting is only true while Fooyin is quitting.
+    if (m_settingsManager != nullptr &&
+        m_settingsManager->value<Fooyin::Settings::Core::Shutdown>()) {
+      return;
+    }
     m_writer->sendSetStop();
     break;
   }

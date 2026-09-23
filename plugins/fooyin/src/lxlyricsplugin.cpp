@@ -142,11 +142,7 @@ void LxLyricsPlugin::shutdown()
   // Stopping the feed terminates the child lyrics-app: the lyric window lives
   // and dies with the session, never as an orphan. The spectrum source is
   // destroyed first so no analyser callbacks fire after teardown.
-  if (m_playerBridge != nullptr) {
-    m_playerBridge->stopPush();
-  }
-  m_spectrumSource.reset();
-  m_playerBridge.reset();
+  teardownSession();
   if (m_feedWriter != nullptr) {
     m_feedWriter->stop();
   }
@@ -198,22 +194,6 @@ void LxLyricsPlugin::startDesktopLyrics()
     // respawning (the exit that follows must not look like a crash).
     connect(m_feedWriter.get(), &FeedWriter::closeRequested, this,
             &LxLyricsPlugin::onCloseRequested);
-
-    // Playback mapping only: the app owns lyric acquisition in v2, so the
-    // bridge sends playing context (path, metadata, state, position).
-    m_playerBridge = std::make_unique<PlayerBridge>(m_playerController, m_feedWriter.get(), this);
-    // The child's analyser request is gated by the bridge's pushing state
-    // (nothing is pushed to a dead or absent child).
-    connect(m_feedWriter.get(), &FeedWriter::analyserDataRequested, m_playerBridge.get(),
-            &PlayerBridge::handleRequestAnalyserData);
-
-    // Spectrum: PlayerBridge forwards each analyser request as
-    // analyserDataRequested (it gates on the pushing state); SpectrumSource
-    // pulls a fresh frame and replies through the same feed.
-    m_spectrumSource =
-      std::make_unique<SpectrumSource>(m_engineController, m_feedWriter.get(), this);
-    connect(m_playerBridge.get(), &PlayerBridge::analyserDataRequested, m_spectrumSource.get(),
-            &SpectrumSource::onAnalyserDataRequested);
   }
 
   applyFeedWriterSettings(); // app path from settings before every launch
@@ -237,13 +217,40 @@ void LxLyricsPlugin::startDesktopLyrics()
 
   // Every caller (manual View-menu toggle / startup restore, and the
   // crash-recovery respawn) only runs when the desktop lyrics are wanted.
+  ensureSessionObjects(); // A start always brings the session objects with it.
   if (!m_feedWriter->spawn()) {
     qWarning() << "[LX Lyrics] failed to start lyrics app; disabling desktop lyrics";
     m_toggleAction->setChecked(false);
   }
 }
 
-void LxLyricsPlugin::stopDesktopLyrics()
+void LxLyricsPlugin::ensureSessionObjects()
+{
+  if (m_feedWriter == nullptr || m_playerBridge != nullptr) {
+    return; // No writer yet, or the live session already owns its objects.
+  }
+
+  // Playback mapping only: the app owns lyric acquisition in v2, so the
+  // bridge sends playing context (path, metadata, state, position). The
+  // settings manager lets it drop the stop Fooyin issues while quitting
+  // (Settings::Core::Shutdown), which would otherwise clear the app's lyric
+  // and make the window flicker "No lyrics" just before it closes.
+  m_playerBridge =
+    std::make_unique<PlayerBridge>(m_playerController, m_feedWriter.get(), m_settingsManager, this);
+  // The child's analyser request is gated by the bridge's pushing state
+  // (nothing is pushed to a dead or absent child).
+  connect(m_feedWriter.get(), &FeedWriter::analyserDataRequested, m_playerBridge.get(),
+          &PlayerBridge::handleRequestAnalyserData);
+
+  // Spectrum: PlayerBridge forwards each analyser request as
+  // analyserDataRequested (it gates on the pushing state); SpectrumSource
+  // pulls a fresh frame and replies through the same feed.
+  m_spectrumSource = std::make_unique<SpectrumSource>(m_engineController, m_feedWriter.get(), this);
+  connect(m_playerBridge.get(), &PlayerBridge::analyserDataRequested, m_spectrumSource.get(),
+          &SpectrumSource::onAnalyserDataRequested);
+}
+
+void LxLyricsPlugin::teardownSession()
 {
   if (m_playerBridge != nullptr) {
     m_playerBridge->stopPush();
@@ -251,6 +258,11 @@ void LxLyricsPlugin::stopDesktopLyrics()
   // Spectrum source first: no analyser callbacks fire after teardown.
   m_spectrumSource.reset();
   m_playerBridge.reset();
+}
+
+void LxLyricsPlugin::stopDesktopLyrics()
+{
+  teardownSession();
 
   if (m_feedWriter == nullptr) {
     return;
@@ -316,16 +328,15 @@ void LxLyricsPlugin::onAppExited(int status, bool closeRequested)
   if (status != 0) {
     // protocol.md §7: a protocol violation aborts the app with a non-zero
     // exit status. This is NOT a crash to respawn — a respawn would loop on
-    // the same malformed input. Log loudly, clear the pushing state, drop the
-    // dead child's bookkeeping and end the session: the toggle is unchecked
-    // signal-blocked (no synchronous teardown from inside the emitting
-    // writer) and the remembered state is written here explicitly, because
-    // the blocker suppresses toggleDesktopLyrics().
+    // the same malformed input. Log loudly, tear the session down (the
+    // bridge and spectrum source die with it), drop the dead child's
+    // bookkeeping and end the session: the toggle is unchecked signal-blocked
+    // (no synchronous writer teardown from inside the emitting writer) and
+    // the remembered state is written here explicitly, because the blocker
+    // suppresses toggleDesktopLyrics().
     qWarning() << "[LX Lyrics] lyrics app aborted (protocol error), exit status" << status
                << "; disabling desktop lyrics";
-    if (m_playerBridge != nullptr) {
-      m_playerBridge->stopPush();
-    }
+    teardownSession();
     if (m_toggleAction != nullptr) {
       const QSignalBlocker blocker(m_toggleAction);
       m_toggleAction->setChecked(false);
@@ -362,7 +373,9 @@ void LxLyricsPlugin::onAppExited(int status, bool closeRequested)
       return; // A child is already up (restarted by a toggle): nothing to recover.
     }
     // Respawn only fires while the toggle is checked, so the desktop lyrics
-    // are wanted; spawn unconditionally.
+    // are wanted; spawn unconditionally (the session objects survived the
+    // crash — this is the same guarantee a fresh start gives).
+    ensureSessionObjects();
     if (!m_feedWriter->spawn()) {
       qWarning() << "[LX Lyrics] failed to respawn lyrics app; disabling desktop lyrics";
       m_toggleAction->setChecked(false);
