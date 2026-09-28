@@ -7,82 +7,80 @@
 
 #include "lxlyricssettings.h"
 
+#include <QAbstractButton>
 #include <QCheckBox>
-#include <QFormLayout>
+#include <QDialogButtonBox>
+#include <QGridLayout>
+#include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
 
 #include <utility>
 
-LxLyricsSettingsPageWidget::LxLyricsSettingsPageWidget(Fooyin::SettingsManager* settings,
-                                                       QWidget* parent)
-  : Fooyin::SettingsPageWidget()
+LxLyricsSettingsDialog::LxLyricsSettingsDialog(Fooyin::SettingsManager* settings,
+                                               std::function<void()> openSettings, QWidget* parent)
+  : QDialog(parent)
   , m_settings(settings)
   , m_appPathEdit(new QLineEdit(this))
   , m_rememberStateCheck(
       new QCheckBox(tr("Remember the desktop lyrics state from the last session"), this))
   , m_openSettingsButton(new QPushButton(tr("Open lyrics settings"), this))
 {
-  if (parent != nullptr) {
-    setParent(parent);
-  }
+  setWindowTitle(tr("LX Lyrics"));
 
   m_appPathEdit->setPlaceholderText(tr("Auto-detect (lyrics-app in PATH)"));
 
-  auto* layout = new QFormLayout(this);
-  layout->addRow(tr("Lyrics app path:"), m_appPathEdit);
-  layout->addRow(m_rememberStateCheck);
-  layout->addRow(m_openSettingsButton);
+  auto* buttons = new QDialogButtonBox(
+    QDialogButtonBox::Ok | QDialogButtonBox::Cancel | QDialogButtonBox::RestoreDefaults, this);
+  connect(buttons, &QDialogButtonBox::accepted, this, &LxLyricsSettingsDialog::accept);
+  connect(buttons, &QDialogButtonBox::rejected, this, &LxLyricsSettingsDialog::reject);
+  // The settings dialog's per-page reset, kept: back to the untouched
+  // defaults, written only if the dialog is then accepted.
+  connect(buttons->button(QDialogButtonBox::RestoreDefaults), &QAbstractButton::clicked, this,
+          [this] {
+            m_appPathEdit->clear();
+            m_rememberStateCheck->setChecked(true); // Default: remember the state.
+          });
+  connect(m_openSettingsButton, &QPushButton::clicked, this,
+          [openSettings = std::move(openSettings)] {
+            // Guard null: the app is not running when the callback is a no-op.
+            if (openSettings) {
+              openSettings();
+            }
+          });
 
-  connect(m_openSettingsButton, &QPushButton::clicked, this, [this] {
-    // Guard null: the callback is only set while the plugin is alive; when
-    // the app is not running the plugin's callback is itself a no-op.
-    if (m_openSettingsCallback) {
-      m_openSettingsCallback();
-    }
-  });
-}
+  auto* layout = new QGridLayout(this);
+  layout->setSizeConstraint(QLayout::SetFixedSize);
 
-void LxLyricsSettingsPageWidget::setOpenSettingsCallback(std::function<void()> cb)
-{
-  m_openSettingsCallback = std::move(cb);
-}
+  int row{0};
+  layout->addWidget(new QLabel(tr("Lyrics app path:"), this), row, 0);
+  layout->addWidget(m_appPathEdit, row++, 1);
+  layout->addWidget(m_rememberStateCheck, row++, 0, 1, 2);
+  layout->addWidget(m_openSettingsButton, row++, 0, 1, 2, Qt::AlignLeft);
+  layout->addWidget(buttons, row++, 0, 1, 2, Qt::AlignBottom);
 
-void LxLyricsSettingsPageWidget::load()
-{
   m_appPathEdit->setText(m_settings->value(LxLyrics::appPathKey).toString());
   m_rememberStateCheck->setChecked(m_settings->value(LxLyrics::rememberStateKey).toBool());
 }
 
-void LxLyricsSettingsPageWidget::apply()
+void LxLyricsSettingsDialog::accept()
 {
+  // set() notifies the plugin's subscribers: the app path reaches the feed
+  // writer at once, and RememberState is read on the next startup restore.
   m_settings->set(LxLyrics::appPathKey, m_appPathEdit->text().trimmed());
   m_settings->set(LxLyrics::rememberStateKey, m_rememberStateCheck->isChecked());
+
+  done(Accepted);
 }
 
-void LxLyricsSettingsPageWidget::reset()
+LxLyricsPluginSettingsProvider::LxLyricsPluginSettingsProvider(Fooyin::SettingsManager* settings,
+                                                               std::function<void()> openSettings)
+  : m_settings(settings)
+  , m_openSettings(std::move(openSettings))
 {
-  m_appPathEdit->clear();
-  m_rememberStateCheck->setChecked(true); // Default: remember the state.
 }
 
-LxLyricsSettingsPage::LxLyricsSettingsPage(Fooyin::SettingsManager* settings, QObject* parent)
-  : Fooyin::SettingsPage(settings->settingsDialog(), parent)
+QDialog* LxLyricsPluginSettingsProvider::createSettings(QWidget* parent)
 {
-  setId(Fooyin::Id(QStringLiteral("Fooyin.Page.LxLyrics")));
-  setName(tr("LX Lyrics"));
-  setCategory({QStringLiteral("LX Lyrics")});
-  // The dialog creates the widget lazily (WidgetCreator runs only when the
-  // page is opened), so the open-settings callback is forwarded at creation
-  // time instead of fetched via SettingsPage::widget().
-  setWidgetCreator([settings, this] {
-    auto* widget = new LxLyricsSettingsPageWidget(settings);
-    widget->setOpenSettingsCallback(m_openSettingsCallback);
-    return widget;
-  });
-}
-
-void LxLyricsSettingsPage::setOpenSettingsCallback(std::function<void()> cb)
-{
-  m_openSettingsCallback = std::move(cb);
+  return new LxLyricsSettingsDialog(m_settings, m_openSettings, parent);
 }

@@ -58,28 +58,15 @@ void LxLyricsPlugin::initialise(const Fooyin::GuiPluginContext& context)
   m_actionManager->registerAction(m_toggleAction,
                                   Fooyin::Id(QStringLiteral("LxLyrics.DesktopLyrics")));
 
-  // "LX Lyrics" settings page under the Lyrics category. Constructing the
-  // page with the settings dialog controller registers it (the SettingsPage
-  // ctor calls SettingsDialogController::addPage). settingsDialog() is only
-  // valid from GuiPlugin::initialise onwards (see settingsmanager.h).
-  m_settingsPage = new LxLyricsSettingsPage(m_settingsManager, this);
+  // Config surface: the plugin's own dialog, offered through
+  // PluginConfigGuiPlugin (see settingsProvider) — Fooyin's dedicated
+  // per-plugin configuration place: the Plugins page's "Configure" button.
+  // The host builds the provider once at startup and owns it; the dialog
+  // itself is created on first Configure click.
 
-  // "Open lyrics settings" button on that page: clicking it asks the running
-  // lyrics app to open its own configuration dialog (protocol.md §5
-  // open_settings) — so the user can reconfigure even when the lyric window
-  // is locked. sendOpenSettings() is a safe no-op when no child is running;
-  // the callback dereferences m_feedWriter at click time, which is safe
-  // because startDesktopLyrics() creates the writer before any app exists and
-  // it outlives every child (stopDesktopLyrics() only stops the child).
-  m_settingsPage->setOpenSettingsCallback([this] {
-    if (m_feedWriter != nullptr) {
-      m_feedWriter->sendOpenSettings();
-    }
-  });
-
-  // Feed the FeedWriter on setting change (the page's apply() writes through
-  // SettingsManager::set, which notifies these subscribers). The writer is
-  // also fed inside startDesktopLyrics() before every launch.
+  // Feed the FeedWriter on setting change (the dialog's accept() writes
+  // through SettingsManager::set, which notifies this subscriber). The writer
+  // is also fed inside startDesktopLyrics() before every launch.
   m_settingsManager->subscribe(LxLyrics::appPathKey, this, [this](const QVariant& appPath) {
     if (m_feedWriter != nullptr) {
       m_feedWriter->setAppPath(appPath.toString());
@@ -133,6 +120,22 @@ void LxLyricsPlugin::initialise(const Fooyin::GuiPluginContext& context)
 
   qInfo() << "[LX Lyrics] GuiPlugin initialised; actionManager stored; 'Desktop Lyrics' toggle "
              "added to View menu";
+}
+
+std::unique_ptr<Fooyin::PluginSettingsProvider> LxLyricsPlugin::settingsProvider() const
+{
+  // Called once by the host during GuiApplication::initialise, which runs after
+  // CorePlugin::initialise — m_settingsManager is set by then, and the dialog
+  // dereferences it. The callback dereferences m_feedWriter at click time,
+  // which is safe because startDesktopLyrics() creates the writer before any
+  // app exists and it outlives every child (stopDesktopLyrics() only stops the
+  // child); sendOpenSettings() is itself a no-op while no child runs.
+  qInfo() << "[LX Lyrics] config provider created for the Plugins page's Configure button";
+  return std::make_unique<LxLyricsPluginSettingsProvider>(m_settingsManager, [this] {
+    if (m_feedWriter != nullptr) {
+      m_feedWriter->sendOpenSettings();
+    }
+  });
 }
 
 void LxLyricsPlugin::shutdown()

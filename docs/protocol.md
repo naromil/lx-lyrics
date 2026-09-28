@@ -207,7 +207,7 @@ spectrum:
 req bars:  app  → host  {"v":2,"action":"get_analyser_data_array"}
 bars:      host → app   {"v":2,"action":"spectrum","data":"<base64, exactly 128 bytes>"}
 
-open settings (from the player's LX Lyrics settings page):
+open settings (from the player's LX Lyrics Configure dialog):
            host → app   {"v":2,"action":"open_settings"}      # app opens/raises its config dialog
 
 user close (control-bar X or WM close):

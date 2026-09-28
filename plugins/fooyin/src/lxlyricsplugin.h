@@ -14,13 +14,13 @@
 #include <core/plugins/coreplugin.h>
 #include <core/plugins/plugin.h>
 #include <gui/plugins/guiplugin.h>
+#include <gui/plugins/pluginconfigguiplugin.h>
 
 #include <QObject>
 
 #include <memory>
 #include <optional>
 
-class LxLyricsSettingsPage;
 class QAction;
 
 namespace Fooyin {
@@ -33,15 +33,23 @@ class SettingsManager;
 class LxLyricsPlugin : public QObject,
                        public Fooyin::Plugin,
                        public Fooyin::CorePlugin,
-                       public Fooyin::GuiPlugin {
+                       public Fooyin::GuiPlugin,
+                       public Fooyin::PluginConfigGuiPlugin {
   Q_OBJECT
   Q_PLUGIN_METADATA(IID "org.fooyin.fooyin.plugin/1.0" FILE "lxlyrics.json")
-  Q_INTERFACES(Fooyin::Plugin Fooyin::CorePlugin Fooyin::GuiPlugin)
+  Q_INTERFACES(Fooyin::Plugin Fooyin::CorePlugin Fooyin::GuiPlugin Fooyin::PluginConfigGuiPlugin)
 
 public:
   void initialise(const Fooyin::CorePluginContext& context) override;
   void initialise(const Fooyin::GuiPluginContext& context) override;
   void shutdown() override;
+
+  /// Fooyin's per-plugin configuration entry point: the Plugins page's
+  /// "Configure" button is enabled for plugins that return a provider here,
+  /// and the returned dialog is that button's whole UI. The dialog is built
+  /// lazily by the provider; the callback it carries asks the running lyrics
+  /// app to open its own config dialog (protocol.md §5 open_settings).
+  [[nodiscard]] std::unique_ptr<Fooyin::PluginSettingsProvider> settingsProvider() const override;
 
 private:
   void toggleDesktopLyrics(bool checked);
@@ -116,9 +124,6 @@ private:
   Fooyin::ActionManager* m_actionManager = nullptr;
 
   QAction* m_toggleAction = nullptr;
-  // Parented to the plugin (QObject parent chain owns it); the member keeps
-  // the registration alive for the SettingsManager's dialog.
-  LxLyricsSettingsPage* m_settingsPage = nullptr;
   // The child lyrics-app process and its feed (spawn/stop/JSON lines). Kept
   // alive for the plugin's lifetime — stopDesktopLyrics() only stops the
   // child — so the AppPath subscription and later spawns keep working. Only

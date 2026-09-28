@@ -34,7 +34,7 @@ Consequences:
 
 Each adapter:
 
-- Provides the plugin shell for its player (Fooyin `Plugin`/`CorePlugin`/`GuiPlugin`, DeaDBeeF `DB_misc_t`, Rhythmbox `Peas.Activatable`), a session toggle, and a host-UI surface for the app path: Fooyin's Settings → Lyrics → LX Lyrics page (a `SettingsPage`), DeaDBeeF's Preferences → Plugins → LX Lyrics panel (a `configdialog` layout string gtkui renders), Rhythmbox's plugin Preferences dialog (`PeasGtk.Configurable`).
+- Provides the plugin shell for its player (Fooyin `Plugin`/`CorePlugin`/`GuiPlugin`, DeaDBeeF `DB_misc_t`, Rhythmbox `Peas.Activatable`), a session toggle, and a host-UI surface for the app path: Fooyin's Plugins page → LX Lyrics → **Configure** (a `PluginConfigGuiPlugin`/`PluginSettingsProvider` dialog), DeaDBeeF's Preferences → Plugins → LX Lyrics panel (a `configdialog` layout string gtkui renders), Rhythmbox's plugin Preferences dialog (`PeasGtk.Configurable`).
 - Watches its player's playback API (Fooyin `PlayerController`, DeaDBeeF events + `streamer_get_playing_track_safe`, Rhythmbox `RBShellPlayer` signals) and pushes `set_info`/`set_status`/`set_play`/`set_pause`/`set_stop` lines carrying the file path, metadata, state, and position.
 - Spawns the app as its direct child and strictly parses the two app→host actions (`get_analyser_data_array`, `close_requested`).
 - Samples the player's analyser where one exists (Fooyin `VisualisationService`, DeaDBeeF `vis_spectrum_listen2`) and answers `spectrum` requests; Rhythmbox has no analyser API and declares `spectrum: false`.

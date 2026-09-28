@@ -38,8 +38,10 @@ The app-side pipeline (acquisition, parsing, line selection, rendering, settings
 
 - Fooyin >= 0.11.1, **built with `INSTALL_HEADERS=ON`** so `FooyinConfig.cmake` and the Fooyin
   headers (`/usr/include/fooyin`) are installed. This tree is load-verified against the installed
-  Fooyin 0.12.6 (plugin metadata + `Plugin`/`CorePlugin`/`GuiPlugin` interfaces resolve via
-  `QPluginLoader`); rebuild against the Fooyin release you run, since compatibility is by ABI.
+  Fooyin 0.13.1 (2026-09-27): plugin metadata plus the `Plugin`/`CorePlugin`/`GuiPlugin` interfaces
+  resolve via `QPluginLoader`, and the host calls the `PluginConfigGuiPlugin` interface's
+  `settingsProvider()` (the Plugins page's Configure button); rebuild against the Fooyin release
+  you run, since compatibility is by ABI.
 - Qt 6 >= 6.4 — Core, Widgets (FooyinConfig does not propagate Qt modules; declared here).
 - A C++23 compiler, CMake >= 3.19, Ninja.
 - The `lx-lyrics-app` binary (this repository's `lyrics-app`), on `PATH` or configured via AppPath.
@@ -71,14 +73,16 @@ cp build/fyplugin_lxlyrics.so ~/.local/lib/fooyin/plugins/
 # cp build/fyplugin_lxlyrics.so <prefix>/lib/fooyin/plugins/
 ```
 
-After restart the plugin appears as **LX Lyrics** (Category: Lyrics) in Fooyin's plugin list.
+After restart the plugin appears as **LX Lyrics** (Category: Lyrics) in Fooyin's plugin list, with
+**About** and — because it implements `PluginConfigGuiPlugin` — an enabled **Configure** button.
 
 ## Use
 
 - **View → Desktop Lyrics** — toggle. Spawns the standalone lyrics app
   (`lx-lyrics-app --player-feed`) as a direct child and pushes the current track right after the
   handshake, so the window shows what is already playing.
-- **Settings → Lyrics → LX Lyrics**:
+- **Settings → Plugins → LX Lyrics → Configure** (Fooyin's per-plugin configuration dialog —
+  `PluginConfigGuiPlugin`/`PluginSettingsProvider`; the button is enabled for this plugin):
   - **AppPath** — path to the `lx-lyrics-app` binary. Empty = auto-detect: `PATH` lookup, then the
     plugin's app directory.
   - **RememberState** — remember the desktop lyrics state from the last session (kept under
@@ -87,6 +91,8 @@ After restart the plugin appears as **LX Lyrics** (Category: Lyrics) in Fooyin's
     **View → Desktop Lyrics** once.
   - **Open lyrics settings** — asks the running app to open its own configuration dialog
     (`open_settings`); no-op while the app is not running.
+  - **Restore Defaults** — clears AppPath and re-checks RememberState in the dialog; the values
+    are written only when the dialog is accepted.
 - **Lyrics** — the app reads them itself for the file at `set_info.path`: the same-name `.lrc`
   sidecar and the embedded tag (`LYRICS`, `SYNCEDLYRICS`, `UNSYNCEDLYRICS`, `UNSYNCED LYRICS`,
   plus the `LYRICS:<description>` fallbacks), joined when both exist. Encoding is auto-detected
