@@ -106,7 +106,7 @@ Writes are debounced (500 ms) so rapid settings changes do not thrash the disk.
 Press **`Ctrl+,`** to open the settings dialog (the control bar hides when the window is locked,
 so the shortcut is the way back). Every change writes through the config and re-renders live.
 A host can also ask for the dialog over the feed (`open_settings`), e.g. from the Fooyin
-plugin's Configure dialog in its Plugins page.
+plugin's Configure dialog in its Plugins page or the Audacious plugin's settings page.
 
 ## Tests
 

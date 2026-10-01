@@ -142,6 +142,8 @@ void lx_feed_send_play(lx_feed_t* feed, int64_t time_ms);
 void lx_feed_send_pause(lx_feed_t* feed);
 /** `set_stop`. */
 void lx_feed_send_stop(lx_feed_t* feed);
+/** `open_settings`: ask the running app to raise its own config dialog. */
+void lx_feed_send_open_settings(lx_feed_t* feed);
 /**
  * `spectrum`: base64 of exactly LX_FEED_SPECTRUM_BYTES bytes. Other sizes are
  * the caller's bug: they are refused and logged.

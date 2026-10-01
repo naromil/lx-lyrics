@@ -23,7 +23,7 @@
 #   rhythmbox   <data>/rhythmbox/plugins/lxlyrics/                     (copied)
 #               lx-lyrics/rhythmbox.conf [lx-lyrics] app-path          (patched)
 #   audacious   <audacious plugin dir>/General/lxlyrics.so            (built here)
-#               audacious config [lx-lyrics] app_path                 (patched)
+#               audacious config [lx-lyrics] app_path / remember_state (patched)
 #   quodlibet   <config>/quodlibet/plugins/lxlyrics.py                 (copied)
 #               quodlibet config [plugins] lxlyrics_app_path          (patched)
 #   vlc         <vlc plugin dir>/liblxlyrics_plugin.so                (built here)
@@ -49,8 +49,11 @@
 # --no-autospawn writes each player's "do not start the lyrics session on your
 # own" state: fooyin RememberState=false, deadbeef lxlyrics.enabled=0, rhythmbox
 # enabled=false, `lxlyrics` dropped from Quod Libet's active_plugins, vlc
-# lxlyrics-enabled=0. Audacious has no such key — the host's Plugins page toggle
-# *is* the session switch, and the plugin ships disabled.
+# lxlyrics-enabled=0, audacious `[lx-lyrics] remember_state=FALSE`. Audacious
+# still ships the plugin disabled (its enable toggle *is* the session switch, and
+# the plugin declares enabled_by_default=false); remember_state=FALSE makes an
+# enabled plugin drop that state again at the next player start instead of
+# restoring a session there.
 #
 # Adapters whose destination directory is root-owned (a distro Audacious, a
 # system VLC plugin dir) are not installed by this script: the exact `sudo
@@ -913,7 +916,7 @@ audacious_plugin_dir_default() {
 }
 
 install_player_audacious() {
-    local extra=() dest_dir conf
+    local extra=() dest_dir conf state=""
     [ -n "$audacious_include_dir" ] && extra=("-DAUDACIOUS_INCLUDE_DIR=$audacious_include_dir")
     build_adapter audacious "plugins/audacious" "$REPO_ROOT/plugins/audacious" "lxlyrics.so" "${extra[@]}" || return 1
 
@@ -932,15 +935,20 @@ install_player_audacious() {
     }
 
     conf="$config_home/audacious/config"
-    step "Configuring Audacious: [lx-lyrics] app_path=$app_path"
+    [ "$want_remember_state" -eq 0 ] && state=" remember_state=FALSE"
+    step "Configuring Audacious: [lx-lyrics] app_path=$app_path$state"
     warn_if_running audacious "$conf"
     prepare_config_file "$conf"
     ini_set_key "$conf" "[lx-lyrics]" app_path "$app_path"
     verify_ini_value "$conf" "[lx-lyrics]" app_path "$app_path"
-
     if [ "$want_remember_state" -eq 0 ]; then
-        note "Audacious has no remembered session state: the Plugins page enable"
-        note "toggle is the session switch and the plugin ships disabled."
+        # Uppercase because that is what aud_set_bool() writes and what
+        # aud_get_bool() compares against (config.cc:420-427); the key's absence
+        # means "remember" (the plugin registers TRUE as its default).
+        ini_set_key "$conf" "[lx-lyrics]" remember_state FALSE
+        verify_ini_value "$conf" "[lx-lyrics]" remember_state FALSE
+        note "Audacious: remember_state=FALSE — an enabled plugin will not"
+        note "restore a session at the next player start."
     fi
 
     summary_add_path audacious "$dest_dir/lxlyrics.so"

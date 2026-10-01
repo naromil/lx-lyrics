@@ -836,6 +836,16 @@ void lx_feed_send_stop(lx_feed_t* feed)
   feed_emit(feed, &line, "set_stop");
 }
 
+void lx_feed_send_open_settings(lx_feed_t* feed)
+{
+  if (!feed) {
+    return;
+  }
+  lx_buf_t line = {0};
+  buf_printf(&line, "{\"v\":%d,\"action\":\"open_settings\"}", LX_FEED_PROTOCOL_VERSION);
+  feed_emit(feed, &line, "open_settings");
+}
+
 void lx_feed_send_spectrum(lx_feed_t* feed, const uint8_t* bytes, size_t size)
 {
   if (!feed) {

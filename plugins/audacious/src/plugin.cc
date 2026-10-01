@@ -37,6 +37,10 @@
 /** Config section/key overriding where lx-lyrics-app lives (audacious.conf). */
 #define LX_CONF_SECTION "lx-lyrics"
 #define LX_CONF_APP_PATH "app_path"
+/** The settings page's "remember the state" checkbox: off makes the plugin drop
+ * its own enable state at the next player start instead of restoring a session
+ * (see init()). */
+#define LX_CONF_REMEMBER_STATE "remember_state"
 /** Name reported in `hello.host`. */
 #define LX_HOST_NAME "audacious"
 /** The display app, resolved on $PATH when the config key is empty. */
@@ -111,7 +115,31 @@ static void snapshot_read(LxSnapshot* out)
 }
 
 /*
- * The plugin's preferences page — the app path, and nothing else.
+ * The Plugins row's information button: `PluginInfo.about` is what the
+ * frontends key it off — `aud_plugin_has_about()` is literally `about !=
+ * nullptr`, and the Qt list gives that row a "dialog-information" icon
+ * (prefs-pluginlist-model.cc:159-163) whose click runs audqt::plugin_about()
+ * (prefs-plugin.cc:41-61); the GTK/skins view adds the same "_About" button
+ * (plugin-view.cc:202-207, :243-247). Both show a plain message dialog titled
+ * "About <name>" with this text as the body, so it is written as plain text for
+ * two frontends that render markup differently.
+ */
+static const char lx_about[] = N_(
+  "Displays the playing track's lyrics in the standalone lx-lyrics desktop window.\n\n"
+  "This plugin is transport only: it reports the playing file, its metadata, the playback state "
+  "and position - plus the player's analyser frames - to a lx-lyrics-app child process over a "
+  "pipe, and reads the two requests the app makes (an analyser frame, or that the user closed the "
+  "window). The app acquires the lyrics itself (the sidecar .lrc next to the file, then the file's "
+  "embedded tag), parses them and renders the window; no lyric is read, parsed or rendered "
+  "here.\n\n"
+  "Settings: the app-path entry says which binary to spawn (empty searches $PATH), \"Open lyrics "
+  "settings\" raises the app's own configuration dialog over the same pipe, and the remember-state "
+  "checkbox decides whether a session that is running when the player exits is restored at the "
+  "next player start.");
+
+/*
+ * The plugin's preferences page — the app path, a "remember the state" checkbox
+ * and the way into the app's own configuration dialog.
  *
  * The widgets are declarative because one binary serves both frontends
  * (preferences.h:257 `struct PreferencesWidget`); WidgetString() binds a
@@ -120,11 +148,34 @@ static void snapshot_read(LxSnapshot* out)
  * (prefs-widget-qt.cc:214-218, prefs-widget.cc:191-195). No init()/apply()
  * callback is needed: the key is written as the user types, and it is the same
  * `[lx-lyrics] app_path` resolve_app_path() reads. An empty value is the
- * documented "search $PATH" state, so clearing the field stays meaningful.
+ * documented "search $PATH" state, so clearing the field stays meaningful. The
+ * checkbox is the same kind of binding — WidgetBool() over a section and a key
+ * is read/written with aud_get_bool()/aud_set_bool() (preferences.cc:25-48),
+ * and the defaults registered below decide what an untouched config shows.
+ *
+ * The button is the one non-config widget, and its label is the whole point:
+ * the app's own settings (37 keys) are edited in the app's dialog, which this
+ * page reaches over the feed instead of duplicating them. A button is
+ * declarative too — WidgetButton carries the callback (preferences.h:299) — but
+ * the callback itself must be a plain function, so it is declared here (the
+ * array needs its address) and defined below the plugin class, which owns the
+ * session.
  */
+static void lx_open_settings_clicked();
+
+/* Registered so a config that never saw the key reads "remember" — aud_get_str()
+ * falls back to these defaults (config.cc:402-412), which is what the checkbox
+ * then shows and what init() reads. */
+static const char* const lx_config_defaults[] = {LX_CONF_REMEMBER_STATE, "TRUE", nullptr};
+
 static const PreferencesWidget lx_widgets[] = {
   WidgetLabel(N_("Path to the lx-lyrics-app executable; empty means search $PATH.")),
   WidgetEntry(N_("Application:"), WidgetString(LX_CONF_SECTION, LX_CONF_APP_PATH)),
+  /* Off: a player start refuses to restore a session instead of starting one
+   * (see init()); the box only ever gates that restore. */
+  WidgetCheck(N_("Remember the desktop lyrics state from the last session"),
+              WidgetBool(LX_CONF_SECTION, LX_CONF_REMEMBER_STATE)),
+  WidgetButton(N_("Open lyrics settings"), WidgetVButton{lx_open_settings_clicked, nullptr}),
 };
 
 static constexpr PluginPreferences lx_prefs = {
@@ -149,21 +200,29 @@ static constexpr PluginPreferences lx_prefs = {
  * The page `info.prefs` points at below is the one place the app path is
  * editable in the host's UI: Settings -> Plugins -> the settings icon in the LX
  * Lyrics row (Qt, prefs-window-qt.cc:625-638) or the Settings button after
- * selecting the row (GTK, plugin-view.cc:236). Both frontends render the same
+ * selecting the row (GTK, plugin-view.cc:236). It is also the host's only route
+ * to the app's *own* settings: the page's "Open lyrics settings" button sends
+ * `open_settings` (§5), since the app owns its configuration and this page
+ * carries just the app path and the remember-state checkbox. Both frontends render the same
  * declarative widgets (preferences.h:257 `struct PreferencesWidget`, :400
  * `struct PluginPreferences`) — the Qt one through audqt::prefs_populate()
  * (prefs-plugin.cc:130), the GTK one through audgui_create_widgets_with_domain()
  * (plugin-prefs.cc:174) — and both are reachable only while the plugin is
  * enabled, because the host gates them on `aud_plugin_has_configure(p) &&
  * aud_plugin_get_enabled(p)` (plugin-view.cc:170-175, prefs-window-qt.cc:627-628).
+ *
+ * `info.about` (lx_about) is the row's separate information button: the Qt list
+ * paints an information icon in that column and the GTK/skins view adds an
+ * "_About" button, both gated on `aud_plugin_has_about(p)` and both opening a
+ * message dialog with that text (see lx_about).
  */
 class LxLyrics : public GeneralPlugin {
 public:
   static constexpr PluginInfo info = {
     N_("LX Lyrics"), // name
     "lx-lyrics",     // gettext domain (no catalogue: the name is used verbatim)
-    nullptr,         // about
-    &lx_prefs,       // preferences page: the app path (see lx_widgets)
+    lx_about,        // about: the Plugins row's information button (see lx_about)
+    &lx_prefs,       // preferences page: the app path, the checkbox (see lx_widgets)
     0,               // flags: no main-loop restriction, this module uses neither GLib nor Qt
   };
 
@@ -203,6 +262,11 @@ private:
   void end_session();
   bool resolve_app_path(char* path, size_t path_size);
 
+  /* The prefs page's button (lx_widgets) has to be a plain function — a
+   * declarative PreferencesWidget holds a `void (*)()` — so it is declared at
+   * file scope and friend of the session it pushes to. */
+  friend void lx_open_settings_clicked();
+
   Timer<LxLyrics> m_timer;
   QueuedFunc m_end_queued;
   LxSpectrum m_spectrum;
@@ -221,6 +285,19 @@ private:
  * basename becomes the plugin's id. audacious-plugins exports it the same way,
  * with EXPORT = __attribute__((visibility("default"))) (their meson.build:151-155). */
 __attribute__((visibility("default"))) LxLyrics aud_plugin_instance;
+
+/*
+ * "Open lyrics settings" (the prefs page's button). A preferences callback runs
+ * on the program's main thread — the frontends connect the widget's own clicked
+ * signal (prefs-widget-qt.cc / plugin-prefs.cc), the same thread that spawns,
+ * pushes and stops the session — and lx_feed_send_open_settings() is a no-op
+ * with no session, so a click while the app is gone does nothing instead of
+ * needing an enable/disable dance.
+ */
+static void lx_open_settings_clicked()
+{
+  lx_feed_send_open_settings(aud_plugin_instance.m_feed);
+}
 
 LxLyrics::LxLyrics()
   : GeneralPlugin(info, false)
@@ -501,10 +578,32 @@ bool LxLyrics::init()
     AUDERR("lx-lyrics: cannot resolve our own plugin handle; not starting a session\n");
     return true;
   }
+  aud_config_set_defaults(LX_CONF_SECTION, lx_config_defaults);
   pthread_mutex_lock(&m_request_lock);
   m_ending = false;
   m_end_reason[0] = '\0';
   pthread_mutex_unlock(&m_request_lock);
+
+  /* The settings page's remember-state checkbox gates the player-start restore
+   * only — the same shape as Fooyin's LxLyrics/RememberState. What tells that
+   * restore apart from a session the user asks for is the interface:
+   * start_plugins_two() starts the general plugins *before* the interface plugin
+   * (plugin-init.cc:205-210), so no interface is current yet when the host
+   * restores LX Lyrics, while the Plugins page — and audtool, and D-Bus — can
+   * only ever enable it with one already running. A session the user asks for is
+   * therefore always honoured, this run or after the box was flipped.
+   * With remembering off, the restore turns the plugin's own enable state off
+   * instead of starting a session: this adapter has no "enabled but idle" state
+   * (the toggle *is* the session switch, §4/§7), so the next player start begins
+   * disabled and nothing is spawned on its own. A headless run starts no
+   * interface at all, so there is nothing to tell the two apart by there and the
+   * checkbox stays inert. */
+  const bool restoring =
+    !aud_get_headless_mode() && aud_plugin_get_current(PluginType::Iface) == nullptr;
+  if (restoring && !aud_get_bool(LX_CONF_SECTION, LX_CONF_REMEMBER_STATE)) {
+    request_end("the last session is not remembered");
+    return true;
+  }
 
   if (!resolve_app_path(m_app_path, sizeof(m_app_path))) {
     AUDERR("lx-lyrics: %s not found; install it or set \"%s\" in the [%s] section of "

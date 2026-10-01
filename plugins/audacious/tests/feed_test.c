@@ -286,6 +286,7 @@ static void test_scripted_lines(const char* script, const char* log_path)
   lx_feed_send_status(feed, true, 2345);
   lx_feed_send_play(feed, 3456);
   lx_feed_send_pause(feed);
+  lx_feed_send_open_settings(feed);
   lx_feed_send_spectrum(feed, g_frame, 8); /* refused: protocol §5 is 128 bytes */
   lx_feed_send_stop(feed);
   check(wait_for(&child_exits, 1, 3000), "the app exiting is reported");
@@ -304,6 +305,7 @@ static void test_scripted_lines(const char* script, const char* log_path)
            "{\"v\":2,\"action\":\"set_status\",\"isPlay\":true,\"played_time\":2345}\n"
            "{\"v\":2,\"action\":\"set_play\",\"time\":3456}\n"
            "{\"v\":2,\"action\":\"set_pause\"}\n"
+           "{\"v\":2,\"action\":\"open_settings\"}\n"
            "{\"v\":2,\"action\":\"set_stop\"}\n",
            spectrum, k_info_path_json, k_info_name_json);
   char* log = read_file(log_path);
@@ -455,6 +457,7 @@ static void test_missing_app(void)
   lx_feed_send_play(NULL, 1);
   lx_feed_send_pause(NULL);
   lx_feed_send_stop(NULL);
+  lx_feed_send_open_settings(NULL);
   lx_feed_send_spectrum(NULL, g_frame, sizeof(g_frame));
   lx_feed_stop(NULL);
   check(true, "the writers tolerate a NULL feed");
