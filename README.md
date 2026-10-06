@@ -1,3 +1,5 @@
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 # lx-lyrics
 
 A standalone desktop-lyrics display, ported from the desktop-lyrics window of [lx-music-desktop](https://github.com/lyswhut/lx-music-desktop): a self-contained lyrics app plus in-process player adapters that drive it.
