@@ -2,9 +2,9 @@
 
 ## What it is
 
-A standalone desktop lyrics display for Linux, written in Qt6 / C++23. It is the desktop-lyrics
-feature of [lx-music-desktop](https://github.com/lyswhut/lx-music-desktop) (`renderer-lyric` /
-`lyric-font-player`) extracted into a self-contained widget application.
+A standalone desktop lyrics display for Linux, written in Qt6 / C++23 — a port of the
+desktop-lyrics window from [lx-music-desktop](https://github.com/lyswhut/lx-music-desktop)
+(`renderer-lyric` / `lyric-font-player`) into a self-contained widget application.
 
 The app is **host-agnostic**: it knows nothing about Fooyin or any specific player. A player-side
 adapter drives it over the stdin/stdout player feed documented in `../docs/protocol.md` (v2); the
@@ -12,8 +12,9 @@ app owns **all** lyric acquisition, parsing, line selection, and rendering.
 
 ## Features
 
-- **Line-by-line synchronized lyrics** with active-line highlight. Karaoke word-fill is
-  intentionally **not** included, matching lx-music-desktop's original desktop-lyric design.
+- **Line-by-line synchronized lyrics** with active-line highlight. Word-level karaoke fill is
+  intentionally **not** rendered — `<start,duration>` word tags only set line mode and are
+  stripped at paint time, where lx-music animates each word individually.
 - **Fully transparent when locked**: locking the window fades the background to fully
   transparent (no shading) over 400 ms; unlocking restores the normal shade.
 - **Smooth active-line color transition**: the active line cross-fades between the unplayed

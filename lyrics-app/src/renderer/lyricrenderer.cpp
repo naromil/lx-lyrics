@@ -83,8 +83,8 @@ const QSize kSizeHint(400, 120);
 // group rect.
 constexpr qreal kCacheHaloPadPx = 8.0;
 
-// Word-level karaoke tags are stripped; display is line-by-line per the
-// original lx-music design. Removes every <digits,digits> sequence (JS
+// Word-level karaoke tags are stripped; the display fills whole lines
+// (lx-music animates each word). Removes every <digits,digits> sequence (JS
 // timeRxpAll: /<(\d+),(\d+)>/g); extended lines arrive pre-tagged too. The
 // pattern lives in a function-local static: a namespace-scope
 // QRegularExpression could throw during static init

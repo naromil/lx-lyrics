@@ -1,6 +1,6 @@
 # lx-lyrics
 
-A standalone desktop lyrics feature extracted from [lx-music-desktop](https://github.com/lyswhut/lx-music-desktop): a self-contained lyrics display app plus in-process player adapters that drive it.
+A standalone desktop-lyrics display, ported from the desktop-lyrics window of [lx-music-desktop](https://github.com/lyswhut/lx-music-desktop): a self-contained lyrics app plus in-process player adapters that drive it.
 
 ## Status
 

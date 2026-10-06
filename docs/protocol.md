@@ -22,7 +22,7 @@ The two sides share **no source code**. Each side is implemented from this docum
 - Chooses whether to render `lxlrc` or `lrc` (lxlrc takes priority when present and enabled).
 - Builds the extended lyric lines from `tlrc` (translation) and `rlrc` (romaji/romanization), including ordering/swapping of translation vs romaji.
 - Decodes `[awlrc:base64,...]` container payloads inside lyric text.
-- Performs all karaoke word-tag rendering (`<start,duration>` in ms).
+- Parses the word-level `lxlrc` tags (`<start,duration>` in ms) itself; the adapter never interprets them.
 - Recomputes the active line from `played_time`; it does not trust a host-supplied line number (v2 has none).
 
 The adapter must **never** parse LRC, compute line numbers, build extended lyrics, or render anything. It treats lyric strings as opaque UTF-8 text — and, in v2, it usually sends none at all.

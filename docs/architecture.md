@@ -2,9 +2,9 @@
 
 ## Overview
 
-The desktop-lyrics feature is extracted from lx-music-desktop into seven independent projects with **zero shared C++ source**; the only contract between them is `docs/protocol.md` **v2** — a stdin/stdout player feed:
+A port of lx-music-desktop's desktop-lyrics window, split into seven independent projects with **zero shared C++ source**; the only contract between them is `docs/protocol.md` **v2** — a stdin/stdout player feed:
 
-- **`lyrics-app/`** — a standalone Qt6 / C++23 desktop lyrics display with karaoke rendering (the port of lx-music's `renderer-lyric` + `lyric-font-player`). It owns lyric acquisition, parsing, selection, and rendering.
+- **`lyrics-app/`** — a standalone Qt6 / C++23 desktop lyrics display with synchronized line rendering (the port of lx-music's `renderer-lyric` + `lyric-font-player`). It owns lyric acquisition, parsing, selection, and rendering.
 - **`plugins/fooyin/`**, **`plugins/deadbeef/`**, **`plugins/rhythmbox/`**, **`plugins/audacious/`**, **`plugins/quodlibet/`**, **`plugins/vlc/`** — in-process adapters for their players. Each observes playback through the player's native API and supplies playing context to the app.
 
 The app does not know which player drives it; an adapter contains no acquisition, parsing, or display code.
@@ -26,7 +26,7 @@ Consequences:
 - Owns **acquisition**: for the file at `set_info.path`, the same-directory `<dir>/<completeBaseName>.lrc` sidecar and the embedded lyrics tag (TagLib) — joined when both exist — with encoding conversion (UTF-8 BOM / UTF-16 BOM / GB18030 / BIG5 via ICU).
 - Owns **all parsing**: LRC, translation (`tlrc`), romaji (`rlrc`), word-level (`lxlrc`), and the `[awlrc:…]` container.
 - Owns **all selection logic**: lxlrc-vs-lrc choice, extended-lyrics construction (translation/romaji swap), offset handling, and active-line recomputation from `played_time`.
-- Owns **all rendering**: synchronized scrolling, word-level karaoke fill, colors/fonts/opacity, vertical and horizontal layouts, spectrum visualization, and window management (frameless, always-on-top, lock, hover-hide, etc.).
+- Owns **all rendering**: synchronized scrolling, line-by-line fill of the active line (word tags are stripped — lx-music's per-word karaoke animation is not reproduced), colors/fonts/opacity, vertical and horizontal layouts, spectrum visualization, and window management (frameless, always-on-top, lock, hover-hide, etc.).
 - Owns the full settings surface ported from `desktopLyric.*`, persisted in its own config store.
 - Run modes: `--player-feed` (host-driven), `--demo` (self-fed fake track + synthetic spectrum), or an inert window when no flag is given.
 
@@ -67,7 +67,7 @@ Pushing selection logic (e.g. lxlrc-vs-lrc) or container decoding into an adapte
 
 ## Key decisions
 
-- **Native C++/Qt6** for the app (no Electron) — the extracted feature is rewritten as a Qt widget app.
+- **Native C++/Qt6** for the app (no Electron) — the ported feature is rewritten as a Qt widget app.
 - **Player-owned adapters, app-owned acquisition** — the adapter lives in the player process and spawns the app as its child, so the window shares the player's lifetime; the app reads the lyrics itself, so every adapter stays thin and the acquisition logic exists exactly once.
 - **Full settings port** — the `desktopLyric.*` key set is carried over verbatim, but the default values are tuned to user preference (enable, isAlwaysOnTop, isAlwaysOnTopLoop, fullscreenHide, width, fontSize, opacity, isZoomActiveLrc deviate from upstream); window positions default to auto (null).
 - **User-tuned behavior deviations** — the close button fades the content out (300 ms, reusing the reference's `#container` opacity-transition idiom) before quitting, where the reference closes the window instantly; and the active lyric line renders at the full configured played color, where the reference's hardcoded `body { opacity: .8 }` dims every pixel to 80%. Non-active lines keep that dimming here (applied per-line as `(opacity/100) × lerp(0.8, 1.0, colorProgress)` instead of a window-wide effect); all other quit paths (stdin EOF / player shutdown, WM close) stay instant like the reference.
@@ -77,4 +77,4 @@ Pushing selection logic (e.g. lxlrc-vs-lrc) or container decoding into an adapte
 
 ## Status
 
-Active extraction from lx-music-desktop (Apache-2.0) with attribution. The ported app logic keeps Apache-2.0; the adapters are GPL-3.0-only, which their hosts permit (Fooyin is GPL-3.0; Rhythmbox, Quod Libet and VLC are GPL-2.0-or-later, whose "or later" clause allows a GPL-3.0 plugin; DeaDBeeF's plugin API header is zlib-licensed; Audacious' libaudcore is BSD-2-Clause). Research reports live in `docs/research/`.
+An active port of lx-music-desktop's desktop-lyrics window (Apache-2.0), with attribution. The ported app logic keeps Apache-2.0; the adapters are GPL-3.0-only, which their hosts permit (Fooyin is GPL-3.0; Rhythmbox, Quod Libet and VLC are GPL-2.0-or-later, whose "or later" clause allows a GPL-3.0 plugin; DeaDBeeF's plugin API header is zlib-licensed; Audacious' libaudcore is BSD-2-Clause). Research reports live in `docs/research/`.
