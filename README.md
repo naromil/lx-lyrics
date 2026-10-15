@@ -4,6 +4,8 @@
 
 A standalone desktop-lyrics display, ported from the desktop-lyrics window of [lx-music-desktop](https://github.com/lyswhut/lx-music-desktop): a self-contained lyrics app plus in-process player adapters that drive it.
 
+https://github.com/user-attachments/assets/5c4d514a-bff1-4451-988f-a04ae1c47f10
+
 ## Status
 
 Seven projects — the display app plus six adapters — with **zero shared C++ source**; the only contract is `docs/protocol.md` **v2** — a stdin/stdout player feed between a player-side adapter and the display app.
