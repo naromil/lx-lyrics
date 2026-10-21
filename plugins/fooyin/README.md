@@ -45,6 +45,9 @@ The app-side pipeline (acquisition, parsing, line selection, rendering, settings
 - Qt 6 >= 6.4 — Core, Widgets (FooyinConfig does not propagate Qt modules; declared here).
 - A C++23 compiler, CMake >= 3.19, Ninja.
 - The `lx-lyrics-app` binary (this repository's `lyrics-app`), on `PATH` or configured via AppPath.
+- `lx-lyrics-hotkey` (built and installed next to the app by the `lyrics-app` project when
+  `pkg-config gio-2.0` is available) for the global shortcut. Missing is one warning; everything
+  except the shortcut still works.
 
 No ICU and no WebSockets here: encoding conversion lives in the app, and the transport is a
 private pipe pair.
@@ -62,6 +65,15 @@ adapter whose player it finds on the machine) to build and install the app and t
 `AppPath` at the binary without any manual entry.
 
 Artifact: `build/fyplugin_lxlyrics.so`.
+
+The project also builds `hotkey_test`, a hermetic test of the helper transport (`src/hotkey.c`)
+that needs no Fooyin headers, player or display server — `/bin/sh` stand-ins speak the fd-3
+protocol:
+
+```sh
+ctest --test-dir build
+# or, standalone: cc -Wall -Wextra -I src src/hotkey.c tests/hotkey_test.c -lpthread
+```
 
 ## Install
 
@@ -89,14 +101,58 @@ After restart the plugin appears as **LX Lyrics** (Category: Lyrics) in Fooyin's
     `LxLyrics/Enabled`). When on, startup restores the state the previous session ended with;
     when off, desktop lyrics always start off. A fresh install stays off until the user toggles
     **View → Desktop Lyrics** once.
+  - **Hotkey** — the *preferred* trigger (`LxLyrics/Hotkey`, default `CTRL+ALT+l`) passed to
+    `lx-lyrics-hotkey` when the plugin starts. The desktop owns the real binding — see
+    *Global shortcut*.
+  - **HotkeyHelper** — path to `lx-lyrics-hotkey` (`LxLyrics/HotkeyHelper`). Empty = next to the
+    resolved lyrics app, then `PATH`. Both hotkey values are read when Fooyin starts.
   - **Open lyrics settings** — asks the running app to open its own configuration dialog
     (`open_settings`); no-op while the app is not running.
-  - **Restore Defaults** — clears AppPath and re-checks RememberState in the dialog; the values
-    are written only when the dialog is accepted.
+  - **Restore Defaults** — clears AppPath, re-checks RememberState, restores `CTRL+ALT+l` and
+    clears HotkeyHelper in the dialog; the values are written only when the dialog is accepted.
 - **Lyrics** — the app reads them itself for the file at `set_info.path`: the same-name `.lrc`
   sidecar and the embedded tag (`LYRICS`, `SYNCEDLYRICS`, `UNSYNCEDLYRICS`, `UNSYNCED LYRICS`,
   plus the `LYRICS:<description>` fallbacks), joined when both exist. Encoding is auto-detected
   inside the app — UTF-8, UTF-16 (BOM), then GB18030→BIG5 via ICU.
+
+## Global shortcut
+
+Fooyin exposes no global-shortcut API to plugins, so the key never passes through the host. The
+plugin spawns `lx-lyrics-hotkey` (built from `../../lyrics-app/src/hotkey/`, installed next to
+`lx-lyrics-app`) at plugin initialisation and speaks a private one-line protocol with it over
+fd 3: `ready <trigger>` once the binding exists, `unavailable <reason>` when it does not, and
+`toggle` for every key press.
+
+A `toggle` flips the **View → Desktop Lyrics** checked action on the Qt main thread — exactly
+what clicking the menu item does — so it starts a session when none is showing and ends one
+when it is. The helper runs for the plugin's whole lifetime, not per session: enabled ≠ showing,
+and the key can open a window that is currently hidden. On Fooyin shutdown the helper gets
+SIGTERM (SIGKILL after 1 s) and is reaped; a helper that is missing or cannot spawn is one
+warning, and everything except the shortcut keeps working.
+
+The helper holds the key through the XDG desktop portal
+(`org.freedesktop.portal.GlobalShortcuts`): `CreateSession`, then `BindShortcuts` with
+`[LxLyrics] Hotkey` as the `preferred_trigger`. The portal decides the real binding and reports
+it back (KDE normalises `CTRL+ALT+l` to `Ctrl+Alt+L`); the plugin logs
+`[LX Lyrics] global shortcut bound to <trigger>`.
+
+**The app id comes from the systemd user unit.** The portal accepts a shortcut only for a caller
+whose unit is named `app-<app-id>@<uuid>.service`. A player started from the KDE launcher has
+one, so the shortcut is associated with Fooyin's own app id. A player started from a terminal
+has no unit name, and the portal answers
+`org.freedesktop.portal.Error.NotAllowed: An app id is required`; the helper reports
+`unavailable ...` on the pipe, exits 0, and the plugin logs it once. That is a normal outcome,
+not a failure — everything except the shortcut still works and the menu item remains.
+
+**Re-binding.** `[LxLyrics] Hotkey` is only the *preferred* trigger offered at the next plugin
+start (restart Fooyin after changing it; `[LxLyrics] HotkeyHelper` likewise). The binding belongs
+to the desktop: open **System Settings → Shortcuts** (KDE), find Fooyin under its own application
+group, and change or clear the key there. A combination that is already taken is normally
+reassigned by the desktop, which is why the helper reports the trigger it actually got — but
+`xdg-desktop-portal-kde` 6.8 can also fail to build its own "shortcut is already in use" message
+and then send **no answer at all**. The helper therefore treats a request the desktop leaves
+unanswered for 10 s as `unavailable the desktop did not answer the shortcut request`, logs it
+once, and exits 0, so nothing hangs.
 
 ## Troubleshooting
 

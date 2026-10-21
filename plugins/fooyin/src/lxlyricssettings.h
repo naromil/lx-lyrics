@@ -57,6 +57,8 @@ private:
   Fooyin::SettingsManager* m_settings;
   QLineEdit* m_appPathEdit;
   QCheckBox* m_rememberStateCheck;
+  QLineEdit* m_hotkeyEdit;
+  QLineEdit* m_hotkeyHelperEdit;
   QPushButton* m_openSettingsButton;
 };
 
