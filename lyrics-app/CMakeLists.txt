@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(lx-lyrics-app VERSION 0.1.0 LANGUAGES CXX)
+project(lx-lyrics-app VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -25,6 +25,7 @@ find_package(ICU REQUIRED COMPONENTS uc)
 
 # TagLib: prefer the CONFIG package (target TagLib::tag), fall back to
 # pkg-config (target PkgConfig::TagLib) on installs that ship no CMake files.
+find_package(PkgConfig QUIET)
 find_package(TagLib CONFIG QUIET)
 if(NOT TARGET TagLib::tag)
     find_package(PkgConfig REQUIRED)
@@ -32,6 +33,25 @@ if(NOT TARGET TagLib::tag)
     set(LX_TAGLIB_TARGET PkgConfig::TagLib)
 else()
     set(LX_TAGLIB_TARGET TagLib::tag)
+endif()
+
+# The audacious adapter's global-shortcut helper. Optional on purpose: the
+# adapter treats a missing helper as "no shortcut" (one log line), so a system
+# without GIO must keep building the app and the plugin.
+if(PkgConfig_FOUND)
+    pkg_check_modules(GIO QUIET IMPORTED_TARGET gio-2.0)
+endif()
+if(GIO_FOUND)
+    add_executable(lx-lyrics-hotkey src/hotkey/lx-lyrics-hotkey.c)
+    set_target_properties(lx-lyrics-hotkey PROPERTIES
+        C_STANDARD 11
+        C_STANDARD_REQUIRED ON
+    )
+    target_compile_options(lx-lyrics-hotkey PRIVATE -Wall -Wextra)
+    target_link_libraries(lx-lyrics-hotkey PRIVATE PkgConfig::GIO)
+    message(STATUS "lx-lyrics-hotkey: enabled (gio-2.0 ${GIO_VERSION})")
+else()
+    message(STATUS "lx-lyrics-hotkey: skipped (gio-2.0 not found)")
 endif()
 
 add_executable(lx-lyrics-app

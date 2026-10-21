@@ -16,6 +16,7 @@
 # $HOME/.local) and every plugin goes to its own player's plugin directory:
 #
 #   lyrics-app  <prefix>/bin/lx-lyrics-app                            (built here)
+#               <prefix>/bin/lx-lyrics-hotkey (the audacious global shortcut)
 #   fooyin      $HOME/.local/lib/fooyin/plugins/fyplugin_lxlyrics.so  (built here)
 #               fooyin.conf [LxLyrics] AppPath / RememberState         (patched)
 #   deadbeef    $HOME/.local/lib/deadbeef/ddb_lxlyrics.so             (built here)
@@ -72,6 +73,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_PROJECT="lyrics-app"
 APP_DIR="$REPO_ROOT/$APP_PROJECT"
 APP_BINARY_NAME="lx-lyrics-app"
+# Built only when gio-2.0 is present (the helper target is optional); the
+# audacious adapter then logs that the global shortcut is unavailable.
+APP_HELPER_BINARY_NAME="lx-lyrics-hotkey"
 BUILD_TYPE="Release"
 
 ALL_PLAYERS=(fooyin deadbeef rhythmbox audacious quodlibet vlc)
@@ -313,6 +317,7 @@ fi
 
 bin_dir="$prefix/bin"
 app_path="$bin_dir/$APP_BINARY_NAME"
+helper_path="$bin_dir/$APP_HELPER_BINARY_NAME"
 
 remember_value=false
 if [ "$want_remember_state" -eq 1 ]; then
@@ -1170,6 +1175,22 @@ if ! copy_file "the lyrics app" "$APP_DIR/build/$APP_BINARY_NAME" "$app_path" 75
 fi
 app_pending=$copy_pending
 
+# The global-shortcut helper is an optional target (it needs gio-2.0): when the
+# configure step skipped it, the app and every adapter still install and the
+# audacious adapter reports the shortcut as unavailable at runtime.
+helper_state="installed"
+if [ -e "$APP_DIR/build/$APP_HELPER_BINARY_NAME" ]; then
+    if ! copy_file "the global shortcut helper" \
+        "$APP_DIR/build/$APP_HELPER_BINARY_NAME" "$helper_path" 755; then
+        die "$copy_error"
+    fi
+    helper_pending=$copy_pending
+else
+    warn "lx-lyrics-hotkey was not built (gio-2.0 not found); the global shortcut will be unavailable"
+    helper_pending=-1
+    helper_state="not built (gio-2.0 missing)"
+fi
+
 # --- Install the requested adapters --------------------------------------------------
 
 for player in "${ALL_PLAYERS[@]}"; do
@@ -1186,6 +1207,13 @@ if [ "$app_pending" -eq 1 ]; then
     printf '  %-10s %s (needs root; see below)\n' "lyrics app" "$app_path"
 else
     printf '  %-10s %s\n' "lyrics app" "$app_path"
+fi
+if [ "$helper_pending" -eq 1 ]; then
+    printf '  %-10s %s (needs root; see below)\n' "shortcut" "$helper_path"
+elif [ "$helper_pending" -eq 0 ]; then
+    printf '  %-10s %s\n' "shortcut" "$helper_path"
+else
+    printf '  %-10s %s\n' "shortcut" "$helper_state"
 fi
 if [ "${#summary[@]}" -gt 0 ]; then
     printf '%s\n' "${summary[@]}"
