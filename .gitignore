@@ -83,3 +83,6 @@ references/
 # Python bytecode caches (plugins/rhythmbox)
 __pycache__/
 *.pyc
+
+# supervisor round briefs + reports (local ledger)
+.supervision/
