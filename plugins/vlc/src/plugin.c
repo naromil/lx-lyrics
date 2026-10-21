@@ -8,11 +8,12 @@
  * in docs/protocol.md. It reads no lyrics — the app owns acquisition, parsing
  * and rendering.
  *
- * Everything VLC-specific lives here: the module boilerplate, the playback
- * sampler (VLC 3.0 exposes no analyser API a plugin can reach and no playback
- * event callback that is safe off the input thread, so the feed's 500 ms tick
- * polls the public input variables) and the state mapping (mapper.c). feed.c
- * and mapper.c stay VLC-header-free and hermetically testable.
+ * Everything VLC-specific lives here: the module boilerplate, the global-shortcut
+ * helper (hotkey.c) and its toggle, the playback sampler (VLC 3.0 exposes no
+ * analyser API a plugin can reach and no playback event callback that is safe
+ * off the input thread, so the feed's 500 ms tick polls the public input
+ * variables) and the state mapping (mapper.c). feed.c, hotkey.c and mapper.c
+ * stay VLC-header-free and hermetically testable.
  */
 
 /*
@@ -59,6 +60,7 @@
 #include <vlc_variables.h>
 
 #include "feed.h"
+#include "hotkey.h"
 #include "mapper.h"
 
 #include <stdlib.h>
@@ -73,7 +75,14 @@
 #define LX_HOST_NAME "vlc"
 /** The display app, resolved on $PATH when LX_CONF_APP_PATH is empty. */
 #define LX_APP_NAME "lx-lyrics-app"
-/** Buffer for a resolved app path. */
+/** The global-shortcut helper, resolved next to the app then on $PATH. */
+#define LX_HOTKEY_NAME "lx-lyrics-hotkey"
+/** Preferred trigger handed to the helper; the desktop owns the real binding. */
+#define LX_HOTKEY_DEFAULT "CTRL+ALT+l"
+/** How often the session thread re-reads the wanted state when nothing wakes
+ * it, so a preferences write reaches an already-loaded module. */
+#define LX_SESSION_POLL_MS 500
+/** Buffer for a resolved app or helper path. */
 #define LX_PATH_MAX 4096
 
 /*
@@ -100,19 +109,24 @@
  *
  * `mapper` is owned by the feed's reader thread — the feed's first sampler call
  * primes it and every later one updates it (feed.h) — so no lock guards it. The
- * fields guarded by `lock` are the ones shared between VLC's main thread and the
- * reader thread.
+ * fields guarded by `lock` are the ones shared between VLC's main thread, the
+ * helper's reader thread and the feed's reader thread.
  */
 struct intf_sys_t {
   intf_thread_t* intf;
   vlc_mutex_t lock;
   vlc_cond_t wait;
-  lx_feed_t* feed;    /* published and cleared by the session thread, under lock */
-  bool end_requested; /* guarded by lock: the session thread must end the session */
-  bool keep_enabled;  /* guarded by lock: VLC is shutting down, keep the wanted state */
+  /* Close(): stop the current feed (keeping the wanted state) and exit. */
+  bool quit_requested;
+  /* The helper's reader thread: the session thread must flip the wanted state.
+   * The helper thread never calls config_PutInt() itself. */
+  bool toggle_requested;
+  /* The feed's reader thread: the session ended on its own. */
+  bool end_requested;
   bool thread_started;
   vlc_thread_t thread;
-  lx_mapper_t mapper; /* feed reader thread only */
+  lx_hotkey_t* hotkey; /* VLC main thread (Open/Close) only */
+  lx_mapper_t mapper;  /* feed reader thread only */
   char app_path[LX_PATH_MAX];
 };
 
@@ -284,29 +298,51 @@ static void on_child_exited(lx_feed_t* feed, void* userdata)
   lx_end_session(userdata, "the app exited");
 }
 
-/* $LX_CONF_APP_PATH when set, otherwise lx-lyrics-app on $PATH. */
-static bool lx_resolve_app_path(intf_thread_t* intf, char* path, size_t path_size)
+/* A "toggle" line arrives on the helper's reader thread. It only flags the
+ * session thread — no config write and no other VLC state change here; that
+ * thread owns the child and applies the flip in its poll loop. */
+static void on_hotkey_toggle(void* userdata)
 {
-  char* configured = var_InheritString(intf, LX_CONF_APP_PATH);
-  if (configured != NULL && *configured != '\0') {
-    snprintf(path, path_size, "%s", configured);
-    free(configured);
-    return true;
-  }
-  free(configured);
+  struct intf_sys_t* session = userdata;
+  vlc_mutex_lock(&session->lock);
+  session->toggle_requested = true;
+  vlc_cond_signal(&session->wait);
+  vlc_mutex_unlock(&session->lock);
+}
 
+/* One status line ("ready <trigger>" or "unavailable <reason>"). Logging from
+ * this thread is safe (VLC's logger takes its own lock); the helper writes each
+ * line once, so an unavailable shortcut is reported once. */
+static void on_hotkey_status(const char* line, void* userdata)
+{
+  struct intf_sys_t* session = userdata;
+  const char* text = line ? line : "";
+  if (strncmp(text, "ready ", 6) == 0) {
+    msg_Info(session->intf, "global shortcut bound to %s", text + 6);
+  } else if (strncmp(text, "unavailable ", 12) == 0) {
+    msg_Warn(session->intf, "global shortcut unavailable (%s)", text + 12);
+  } else if (text[0] != '\0') {
+    msg_Info(session->intf, "hotkey helper: %s", text);
+  }
+}
+
+/* Looks @p name up on $PATH. Returns false and writes "" when nothing
+ * executable was found. */
+static bool lx_find_program(const char* name, char* path, size_t path_size)
+{
   const char* search = getenv("PATH");
   if (search == NULL) {
     path[0] = '\0';
     return false;
   }
+  const size_t name_size = strlen(name) + 1;
   for (const char* dir = search; *dir;) {
     const char* end = strchr(dir, ':');
     size_t dir_len = (end != NULL) ? (size_t)(end - dir) : strlen(dir);
-    if (dir_len > 0 && dir_len + 1 + sizeof(LX_APP_NAME) <= path_size) {
+    if (dir_len > 0 && dir_len + 1 + name_size <= path_size) {
       memcpy(path, dir, dir_len);
       path[dir_len] = '/';
-      memcpy(path + dir_len + 1, LX_APP_NAME, sizeof(LX_APP_NAME));
+      memcpy(path + dir_len + 1, name, name_size);
       if (access(path, X_OK) == 0) {
         return true;
       }
@@ -320,11 +356,107 @@ static bool lx_resolve_app_path(intf_thread_t* intf, char* path, size_t path_siz
   return false;
 }
 
+/* $LX_CONF_APP_PATH when set, otherwise lx-lyrics-app on $PATH. */
+static bool lx_resolve_app_path(intf_thread_t* intf, char* path, size_t path_size)
+{
+  char* configured = var_InheritString(intf, LX_CONF_APP_PATH);
+  if (configured != NULL && *configured != '\0') {
+    snprintf(path, path_size, "%s", configured);
+    free(configured);
+    return true;
+  }
+  free(configured);
+  return lx_find_program(LX_APP_NAME, path, path_size);
+}
+
+/* The helper sits next to the installed app (tools/install.sh puts both in
+ * <prefix>/bin); a non-standard app placement falls back to $PATH. */
+static bool lx_resolve_hotkey_helper(const struct intf_sys_t* session, char* path, size_t path_size)
+{
+  const char* slash = strrchr(session->app_path, '/');
+  const size_t dir_len = slash ? (size_t)(slash - session->app_path) : 0;
+  if (dir_len > 0 && dir_len + 1 + sizeof(LX_HOTKEY_NAME) <= path_size) {
+    memcpy(path, session->app_path, dir_len);
+    path[dir_len] = '/';
+    memcpy(path + dir_len + 1, LX_HOTKEY_NAME, sizeof(LX_HOTKEY_NAME));
+    if (access(path, X_OK) == 0) {
+      return true;
+    }
+  }
+  return lx_find_program(LX_HOTKEY_NAME, path, path_size);
+}
+
+/* Starts the helper whenever the module is loaded — including while the window
+ * is hidden, which is the point of the key. A missing helper or a failed spawn
+ * is one warning; the adapter keeps working without a shortcut. Called from
+ * Open(), i.e. VLC's own (uncloned) thread, so the helper does not inherit the
+ * signal mask vlc_clone() gives the session thread. */
+static void lx_start_hotkey(intf_thread_t* intf, struct intf_sys_t* session)
+{
+  char helper[LX_PATH_MAX];
+  if (!lx_resolve_hotkey_helper(session, helper, sizeof(helper))) {
+    msg_Warn(intf, "%s not found; the global shortcut is unavailable", LX_HOTKEY_NAME);
+    return;
+  }
+
+  const lx_hotkey_config_t config = {
+    .helper_path = helper,
+    .accelerator = LX_HOTKEY_DEFAULT,
+    .on_toggle = on_hotkey_toggle,
+    .on_status = on_hotkey_status,
+    .userdata = session,
+  };
+  session->hotkey = lx_hotkey_start(&config);
+  if (session->hotkey == NULL) {
+    msg_Warn(intf, "cannot spawn %s; the global shortcut is unavailable", helper);
+  }
+}
+
+/* Applies the wanted state to the child: starts the app when the key says on
+ * and nothing runs, stops it when the key says off and something does. Called
+ * on the session thread only. */
+static void lx_reconcile(struct intf_sys_t* session, lx_feed_t** feed,
+                         const lx_feed_callbacks_t* callbacks)
+{
+  const bool wanted = config_GetInt(session->intf, LX_CONF_ENABLED) != 0;
+  if (wanted && *feed == NULL) {
+    /* The new feed's prime tick pushes the initial snapshot (feed.h); the
+     * mapper must forget the previous session or that prime would diff as
+     * "nothing changed". */
+    lx_mapper_init(&session->mapper);
+    *feed = lx_feed_spawn(session->app_path, LX_HOST_NAME, callbacks, session);
+    if (*feed == NULL) {
+      msg_Err(session->intf, "cannot spawn %s; clearing \"%s\"", session->app_path,
+              LX_CONF_ENABLED);
+      config_PutInt(session->intf, LX_CONF_ENABLED, 0);
+    } else {
+      msg_Info(session->intf, "starting the desktop-lyrics session (%s)", session->app_path);
+    }
+  } else if (!wanted && *feed != NULL) {
+    lx_feed_stop(*feed);
+    *feed = NULL;
+    msg_Info(session->intf, "desktop lyrics are off (\"%s\" is false)", LX_CONF_ENABLED);
+  }
+}
+
 /*
- * The session thread: it spawns the app, waits for the session to end (the
- * feed's callbacks, or Close()), and then stops the feed. Keeping the spawn and
- * the stop on one thread satisfies feed.h's contract and keeps VLC's main thread
- * out of the feed's stop grace.
+ * The session thread: the only thread that spawns and stops the feed (feed.h),
+ * which keeps VLC's main thread out of the feed's stop grace. It runs one
+ * session at a time and, between sessions, keeps the child reconciled with the
+ * wanted state — the `lxlyrics-enabled` key — so the key and the window always
+ * agree:
+ *
+ * - a "toggle" line only sets toggle_requested (on_hotkey_toggle); this thread
+ *   flips the key and applies it, exactly like the preferences checkbox;
+ * - close_requested, a protocol error or the app exiting ends the child and
+ *   clears the key, but the module (and this thread) stay loaded and idle;
+ * - a preferences write of the key is noticed by the 500 ms poll, because VLC
+ *   does not signal a loaded module when its own option changes.
+ *
+ * Open() starts the thread whether the key is on or off: with it off the
+ * module sits idle with the helper still running, which is what lets the key
+ * open the window. Close() flags quit_requested; the wanted state is kept then,
+ * so the next VLC start restores the window.
  */
 static void* lx_session_run(void* data)
 {
@@ -335,45 +467,64 @@ static void* lx_session_run(void* data)
     .child_exited = on_child_exited,
     .sample_status = on_sample_status,
   };
+  lx_feed_t* feed = NULL;
 
-  /* The initial snapshot is pushed by the feed's prime tick, before
-   * lx_feed_spawn() returns (feed.h). */
-  lx_feed_t* feed = lx_feed_spawn(session->app_path, LX_HOST_NAME, &callbacks, session);
+  /* The usual case is a module loaded with the window wanted: start it now
+   * rather than after the poll's first timeout. */
+  lx_reconcile(session, &feed, &callbacks);
 
-  vlc_mutex_lock(&session->lock);
-  session->feed = feed;
-  if (feed == NULL) {
-    /* No session exists to wait for: this thread's job is done, and the wanted
-     * state below has to be turned off. */
-    session->end_requested = true;
+  for (;;) {
+    vlc_mutex_lock(&session->lock);
+    if (!session->quit_requested && !session->toggle_requested && !session->end_requested) {
+      /* Timed, not indefinite: the timeout is the poll that sees a
+       * preferences write of the wanted state. Everything else signals. */
+      vlc_cond_timedwait(&session->wait, &session->lock,
+                         mdate() + VLC_TICK_FROM_MS(LX_SESSION_POLL_MS));
+    }
+    const bool quit = session->quit_requested;
+    const bool ended = session->end_requested;
+    session->end_requested = false;
+    /* A toggle that races the session's own end stays queued: the next pass
+     * applies it to the now-hidden window instead of dropping the press. */
+    bool toggle = false;
+    if (!(ended && feed != NULL)) {
+      toggle = session->toggle_requested;
+      session->toggle_requested = false;
+    }
+    vlc_mutex_unlock(&session->lock);
+
+    if (quit) {
+      break;
+    }
+
+    if (ended && feed != NULL) {
+      /* The app ended the session on its own (user close, protocol error, the
+       * app quitting): stop it and turn the wanted state off. The module stays
+       * loaded; the next toggle starts a fresh session. */
+      lx_feed_stop(feed);
+      feed = NULL;
+      config_PutInt(session->intf, LX_CONF_ENABLED, 0);
+      msg_Info(session->intf,
+               "desktop lyrics are off; press the shortcut to show the window again");
+      continue;
+    }
+
+    if (toggle) {
+      /* The same switch the preferences checkbox drives: flip the wanted state,
+       * then let the reconcile below start or stop the child. */
+      const bool on = config_GetInt(session->intf, LX_CONF_ENABLED) != 0;
+      config_PutInt(session->intf, LX_CONF_ENABLED, on ? 0 : 1);
+    }
+
+    lx_reconcile(session, &feed, &callbacks);
   }
-  while (!session->end_requested) {
-    vlc_cond_wait(&session->wait, &session->lock);
-  }
-  const bool keep_enabled = session->keep_enabled;
-  session->feed = NULL;
-  vlc_mutex_unlock(&session->lock);
 
   if (feed != NULL) {
-    /* Not under `lock`: lx_feed_stop() joins the feed's reader thread, whose
-     * callbacks take that same lock (lx_end_session). */
-    lx_feed_stop(feed);
-  } else {
-    msg_Err(session->intf, "cannot spawn %s", session->app_path);
-  }
-
-  if (!keep_enabled) {
-    /* The wanted state lives in the config key, so it must honestly read off: a
-     * session that ended (user close, protocol error, the app quitting, a failed
-     * spawn) turns the key off, exactly like the DeaDBeeF adapter clears
-     * lxlyrics.enabled. Only a VLC shutdown keeps it, which is what the next VLC
-     * start restores. config_PutInt() marks the configuration dirty and VLC
+    /* Close(): stop the child but keep the wanted state, which is what the next
+     * VLC start restores. config_PutInt() marks the configuration dirty and VLC
      * writes it to vlcrc on exit (src/config/core.c:241, src/config/file.c:525,
      * src/libvlc.c:422). */
-    config_PutInt(session->intf, LX_CONF_ENABLED, 0);
-    msg_Info(session->intf,
-             "desktop lyrics are off; set \"%s\" back to true and restart VLC to show them again",
-             LX_CONF_ENABLED);
+    lx_feed_stop(feed);
   }
   return NULL;
 }
@@ -381,11 +532,6 @@ static void* lx_session_run(void* data)
 static int Open(vlc_object_t* obj)
 {
   intf_thread_t* intf = (intf_thread_t*)obj;
-
-  if (!var_InheritBool(intf, LX_CONF_ENABLED)) {
-    msg_Info(intf, "desktop lyrics are off (\"%s\" is false)", LX_CONF_ENABLED);
-    return VLC_SUCCESS; /* loaded, but idle: the key is the wanted state */
-  }
 
   struct intf_sys_t* session = calloc(1, sizeof(*session));
   if (session == NULL) {
@@ -406,13 +552,23 @@ static int Open(vlc_object_t* obj)
     return VLC_SUCCESS;
   }
 
+  /* Both the helper and the session thread start whether the window is wanted
+   * or not: the module being loaded is the adapter being on, and the window
+   * follows the key (and the shortcut) from here on. The helper is spawned on
+   * this thread — VLC's own, not one vlc_clone() created — so it does not
+   * inherit the blocked signal mask described in the README. */
+  lx_start_hotkey(intf, session);
+
   if (vlc_clone(&session->thread, lx_session_run, session, VLC_THREAD_PRIORITY_LOW) != 0) {
     msg_Err(intf, "cannot start the session thread");
+    lx_hotkey_stop(session->hotkey);
+    session->hotkey = NULL;
     config_PutInt(intf, LX_CONF_ENABLED, 0);
     return VLC_SUCCESS;
   }
   session->thread_started = true;
-  msg_Info(intf, "starting the desktop-lyrics session (%s)", session->app_path);
+  msg_Info(intf, "the desktop-lyrics module is loaded (\"%s\" decides whether the window shows)",
+           LX_CONF_ENABLED);
   return VLC_SUCCESS;
 }
 
@@ -426,12 +582,17 @@ static void Close(vlc_object_t* obj)
   intf->p_sys = NULL;
 
   vlc_mutex_lock(&session->lock);
-  /* VLC is shutting down: keep the wanted state, so the next VLC start restores
-   * the session instead of silently turning the user's desktop lyrics off. */
-  session->keep_enabled = true;
-  session->end_requested = true;
+  /* VLC is shutting down: stop the child but keep the wanted state, so the next
+   * VLC start restores the session instead of turning the user's desktop lyrics
+   * off. A toggle is refused from here on. */
+  session->quit_requested = true;
   vlc_cond_signal(&session->wait);
   vlc_mutex_unlock(&session->lock);
+
+  /* Stop the helper before the session it toggles: lx_hotkey_stop() joins its
+   * reader thread, and from then on nothing can flag a new toggle. */
+  lx_hotkey_stop(session->hotkey);
+  session->hotkey = NULL;
 
   if (session->thread_started) {
     /* Waits for the app to quit on the EOF its stdin just got (protocol §2) —

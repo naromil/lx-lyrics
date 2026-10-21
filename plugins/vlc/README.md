@@ -9,8 +9,9 @@ and rendering.
 It is loaded as a *background interface* with `--extraintf=lxlyrics` (Preferences → Interface →
 "Extra interface modules"), so it runs with or without a GUI and starts with the player. Closing
 the lyric window sends `close_requested`; the adapter ends the session, the app exits on stdin EOF,
-and the module's own "Desktop lyrics" setting turns itself off (a restart brings it back — see
-[Use](#use)).
+and the module's own "Desktop lyrics" setting turns itself off. The module itself stays loaded, so
+the global shortcut (see [Global shortcut](#global-shortcut)) or the same setting brings the window
+back without restarting VLC.
 
 ## Requirements
 
@@ -33,6 +34,10 @@ and the module's own "Desktop lyrics" setting turns itself off (a restart brings
   as C11; the hermetic sources (`feed.c`, `json.c`, `mapper.c`) stay strict C99.
 - `lx-lyrics-app` installed (e.g. by `../../tools/install.sh`), findable on `$PATH` (or set
   `lxlyrics-app-path`).
+- `lx-lyrics-hotkey`, the global-shortcut helper (`../../lyrics-app/src/hotkey/`, built when GIO is
+  present and installed next to `lx-lyrics-app` by `../../tools/install.sh`). It is looked up next
+  to the resolved app, then on `$PATH`; without it the adapter logs one warning and everything
+  except the shortcut works.
 
 ### Upstream facts this module depends on
 
@@ -81,21 +86,22 @@ CMake (headers via pkg-config, or explicitly):
 cmake -B build -G Ninja                      # uses pkg-config vlc-plugin
 cmake -B build -G Ninja -DVLC_INCLUDE_DIR=/tmp/vlc-src/include   # or a source checkout
 cmake --build build                          # -> build/liblxlyrics_plugin.so
-ctest --test-dir build                       # hermetic protocol + mapping tests, no VLC needed
+ctest --test-dir build                       # hermetic protocol + mapping + shortcut tests, no VLC needed
 ```
 
 A bare `cmake` configures **Debug** (the same default the app project uses); pass
 `-DCMAKE_BUILD_TYPE=Release` for the plugin you install. The VLC headers are a **hard requirement**
 for the module target (the configure step fails with instructions when they are missing), while the
-two test targets never see a VLC header.
+three test targets never see a VLC header.
 
-Or directly, with the same four sources and the flags VLC's own build uses:
+Or directly, with the same five sources and the flags VLC's own build uses:
 
 ```sh
 cc -std=gnu11 -fPIC -fvisibility=hidden -Wall -Wextra -O2 \
    -DMODULE_STRING='"lxlyrics"' -D__PLUGIN__ -D_FILE_OFFSET_BITS=64 -D_REENTRANT -D_THREAD_SAFE \
    -I/usr/include/vlc/plugins \
-   -shared -o liblxlyrics_plugin.so src/plugin.c src/feed.c src/json.c src/mapper.c -lvlccore
+   -shared -o liblxlyrics_plugin.so src/plugin.c src/feed.c src/hotkey.c src/json.c src/mapper.c \
+   -lvlccore -lpthread
 ```
 
 Both forms were verified: the module compiles warning-free against the installed 3.0.23 headers
@@ -167,22 +173,59 @@ VLC has to be **restarted** to pick the module up — `extraintf` is read once, 
    **Path to lx-lyrics-app**, and on the command line as `--lxlyrics-enabled` /
    `--lxlyrics-app-path` — the boolean takes VLC's bare `--lxlyrics-enabled` /
    `--no-lxlyrics-enabled` form (`--lxlyrics-enabled=0` is rejected by VLC's option parser).
-2. The lyric window appears with the session. It follows the playing track, the pause/seek/stop
-   state, and VLC's fullscreen state (with `desktopLyric.fullscreenHide` the app hides itself while
-   VLC is fullscreen).
+2. The lyric window appears while `lxlyrics-enabled` is true. It follows the playing track, the
+   pause/seek/stop state, and VLC's fullscreen state (with `desktopLyric.fullscreenHide` the app
+   hides itself while VLC is fullscreen). The global shortcut flips the same state (see
+   [Global shortcut](#global-shortcut)).
 3. **Closing the lyric window** (its control-bar close button or the WM close) sends
    `close_requested`: the adapter ends the session, the app quits, and `lxlyrics-enabled` is turned
-   **off** — persisted, so a later VLC start does not bring the window back unasked.
-4. **To bring it back**, set `lxlyrics-enabled` to true again (Preferences → All → Interface →
-   "Desktop lyrics", or `lxlyrics-enabled=1` in `vlcrc`, or `--lxlyrics-enabled` on the command
-   line) and **restart VLC**. There is no in-process re-enable: `extraintf` modules are created once
-   during libvlc startup (`src/interface/interface.c:198`), so a restart is inherent — which is also
-   why this is the honest documented path rather than a menu item that could not work.
+   **off** — persisted, so a later VLC start does not bring the window back unasked. The module
+   itself stays loaded and idle, and nothing respawns on a playback event.
+4. **To bring it back**, press the global shortcut, or set `lxlyrics-enabled` to true again
+   (Preferences → All → Interface → "Desktop lyrics", or `lxlyrics-enabled=1` in `vlcrc`). The
+   session thread re-reads the key every 500 ms, so a preferences save takes effect without a
+   restart. Only loading or unloading the **module** needs a restart: `extraintf` modules are
+   created once during libvlc startup (`src/interface/interface.c:198`).
 
 | Config key | Default | Meaning |
 |---|---|---|
-| `lxlyrics-enabled` | `1` | Wanted desktop-lyrics state. Read when the module is created; turned off when a session ends (user close, protocol error, the app quitting, a failed spawn) and kept when VLC itself shuts down, so a restart restores it. |
+| `lxlyrics-enabled` | `1` | **The lyrics window should be showing.** The shortcut and the preferences checkbox flip it; a session that ends on its own turns it off and a VLC shutdown keeps it. Re-read every 500 ms while the module is loaded. |
 | `lxlyrics-app-path` | *(empty)* | Path to `lx-lyrics-app`; empty means "search `$PATH`". |
+
+## Global shortcut
+
+VLC exposes no hotkey API an out-of-tree interface module can use, so the key never passes through
+the host and the module carries no portal/D-Bus code. `Open()` spawns `lx-lyrics-hotkey` (built from
+`../../lyrics-app/src/hotkey/`, installed next to `lx-lyrics-app`) with the write end of a pipe on
+**fd 3** and reads a private one-line protocol: `ready <trigger>` once the binding exists,
+`unavailable <reason>` when it does not, and `toggle` for every press. The helper's reader thread
+only sets a mutex-guarded flag and signals the session thread; the **session thread** flips
+`lxlyrics-enabled` and spawns/stops the app in its poll loop, so no VLC state is touched from the
+helper thread. The helper starts with the module — whether the window is wanted or not — and is
+reaped in `Close()`.
+
+The helper is spawned from `Open()`, i.e. VLC's own thread, not from the session thread:
+`vlc_clone()` blocks `SIGHUP`/`SIGINT`/`SIGQUIT`/`SIGTERM`/`SIGPIPE` around `pthread_create()`, and
+a child inherits that mask through `exec()` (see *The trap worth knowing about*). A helper spawned
+from the session thread would ignore the SIGTERM that `lx_hotkey_stop()` sends; the feed's child
+resets its mask itself, the hotkey transport does not.
+
+The helper holds the key through the XDG desktop portal
+(`org.freedesktop.portal.GlobalShortcuts`). The module asks for **`CTRL+ALT+L`** as the
+`preferred_trigger`; the desktop assigns the real combination and reports it back, and the adapter
+logs `global shortcut bound to <trigger>`.
+
+**The app id comes from the systemd user unit.** The portal only accepts a shortcut for a caller
+whose unit is named `app-<app-id>@<uuid>.service`. A player started from the KDE launcher has one;
+a player started from a terminal has none, so the portal answers
+`org.freedesktop.portal.Error.NotAllowed: An app id is required`. The helper reports
+`unavailable ...` on the pipe and exits 0 — a normal outcome, not a failure: the adapter logs it
+once, the shortcut is simply absent, and the preferences and the window keep working.
+
+**Re-binding.** `CTRL+ALT+L` is only the *preferred* trigger offered when the helper starts. The
+binding belongs to the desktop: open **System Settings → Shortcuts** (KDE), find VLC under its own
+application group, and change or clear the key there. The helper exits with VLC; the binding is
+re-established on the next start.
 
 ## How the session works
 
@@ -240,12 +283,17 @@ VLC has to be **restarted** to pick the module up — `extraintf` is read once, 
   *loudly* (one bounded log line) and the session continues.
 - **Threading and lifetimes.** VLC's main thread runs `Open()`/`Close()` (`intf_Create()` at
   `src/interface/interface.c:71`, `intf_DestroyAll()` at `:238`). `Open()` starts the adapter's
-  **session thread**, which spawns the app and — because `lx_feed_stop()` joins the feed's reader
-  thread — is also the only thread that stops it (`src/feed.h`); keeping that off VLC's main thread
-  is what stops a slow app from blocking VLC. `Close()` flags the end and joins it. The feed's
-  **reader thread** runs the sampler and the end-of-session callbacks and touches VLC only through
-  the thread-safe getters above; the mapper belongs to it alone. `Close()` keeps the wanted state
-  (`keep_enabled`), a session that ends by itself turns the key off.
+  **session thread**, which owns the child: it spawns the app, runs one session at a time, and —
+  because `lx_feed_stop()` joins the feed's reader thread — is also the only thread that stops it
+  (`src/feed.h`); keeping that off VLC's main thread is what stops a slow app from blocking VLC.
+  Between sessions the thread waits on a condition with a 500 ms timeout, and that timeout is the
+  poll which re-reads `lxlyrics-enabled`, so a preferences write reaches an already-loaded module.
+  The helper's **reader thread** only sets `toggle_requested` under the session lock and signals; the
+  session thread consumes it, flips the key, and spawns/stops the child. The feed's **reader
+  thread** runs the sampler and the end-of-session callbacks and touches VLC only through the
+  thread-safe getters above; the mapper belongs to it alone. `Close()` sets `quit_requested`, stops
+  the helper and joins the session thread; the wanted state is kept then, while a session that
+  ended by itself turned the key off earlier.
 - **No lyric logic anywhere.** The module sends `path` + display metadata and leaves the lyric keys
   empty; acquisition, parsing, selection and rendering are the app's (`docs/protocol.md` §1).
 
@@ -262,20 +310,24 @@ without leaking a descriptor, that a wedged app which ignores `SIGTERM` is still
 that the app is spawned with an **empty signal mask** even when the spawning thread carries VLC's.
 `tests/mapper_test.c` covers the mapping decisions: prime, steady playback, metadata edit, track
 change, pause/resume/stop, the seek heuristic (tolerance edges, backwards clock, doubled/halved and
-invalid rates), fullscreen changes and stream inputs.
+invalid rates), fullscreen changes and stream inputs. `tests/hotkey_test.c` compiles `hotkey.c` on
+its own and drives it with `/bin/sh` stand-ins that speak the helper protocol on fd 3
+(`--pipe-fd`, `ready`/`unavailable` status lines, repeated `toggle` presses, a helper that never
+answers, a missing/throwing helper, stop while the reader is busy).
 
 No VLC, player or display server is needed:
 
 ```sh
 cmake -B build -G Ninja && cmake --build build
-ctest --test-dir build --output-on-failure
+ctest --test-dir build --output-on-failure   # feed_test + mapper_test + hotkey_test
 ```
 
 The concurrency cases (a writer hammering a session that is stopped from another thread; the
-spawning thread carrying VLC's signal mask) are worth running under sanitizers:
-`-DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"` plus the matching
-`CMAKE_EXE_LINKER_FLAGS`/`CMAKE_SHARED_LINKER_FLAGS`; they report a heap-use-after-free if a session
-object is freed while a writer still holds a reference to it. Both suites pass clean that way.
+spawning thread carrying VLC's signal mask; hotkey stop while the reader is mid-line) are worth
+running under sanitizers: `-DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"`
+plus the matching `CMAKE_EXE_LINKER_FLAGS`/`CMAKE_SHARED_LINKER_FLAGS`; they report a
+heap-use-after-free if a session object is freed while a writer still holds a reference to it. All
+three suites pass clean that way.
 
 ## Live end-to-end
 
@@ -298,17 +350,19 @@ feed: track "lx-smoke-track.flac" "" "[/tmp/lx-smoke-track.flac]" playing: true 
 ```
 
 — the module was selected by name, spawned the app as its child, and pushed the track with its
-decoded local path and `isPlay: true` as soon as playback started. Killing the app (or quitting VLC)
-then produced:
+decoded local path and `isPlay: true` as soon as playback started. Closing the window (or killing
+the app) then produced:
 
 ```
-lxlyrics interface: ending the session (the app exited)
-lxlyrics interface: desktop lyrics are off; set "lxlyrics-enabled" back to true and restart VLC …
+lxlyrics interface: ending the session (the lyric window was closed)
+lxlyrics interface: desktop lyrics are off; press the shortcut to show the window again
 ```
 
-and `vlcrc` gained `[lxlyrics] lxlyrics-enabled=0` — the honest off state, as documented above.
-Starting VLC again with the key at `0` logged `desktop lyrics are off ("lxlyrics-enabled" is false)`
-and spawned nothing, while a normal VLC shutdown left the key at `1` for the next start.
+and `vlcrc` gained `[lxlyrics] lxlyrics-enabled=0` — the honest off state for the *window*, while
+the module stays loaded: the shortcut (or setting the key back on) starts a new session without
+restarting VLC. Starting VLC again with the key at `0` loads the module with the window hidden and
+spawns nothing (the helper still starts, so the shortcut can open it); a normal VLC shutdown stops
+the child and leaves the key unchanged for the next start.
 
 Two environment notes from that run: VLC 3.0.23 with `-I dummy` does not exit by itself after the
 playlist ends on this box (the same command *without* the plugin behaves identically — verified), so
