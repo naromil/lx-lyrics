@@ -10,7 +10,9 @@
 #include <cstdio>
 #include <cstring>
 
-#include <csignal>
+// <sys/wait.h> includes <signal.h> on glibc, but POSIX does not require that
+// transitive include; keep the direct one.
+#include <csignal> // NOLINT(misc-include-cleaner): see the comment above.
 #include <fcntl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -146,8 +148,7 @@ pid_t spawnLiveChild(const char* script)
 {
   const pid_t child = ::fork();
   if (child == 0) {
-    ::execl("/bin/sh", "lx-lyrics-app", "-c", script, "--player-feed",
-            static_cast<char*>(nullptr));
+    ::execl("/bin/sh", "lx-lyrics-app", "-c", script, "--player-feed", static_cast<char*>(nullptr));
     _exit(127);
   }
   return child;

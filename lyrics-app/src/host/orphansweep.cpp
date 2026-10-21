@@ -12,12 +12,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <string_view>
 #include <utility>
 #include <vector>
 
+#include <csignal>
 #include <dirent.h>
 #include <fcntl.h>
-#include <csignal>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -88,7 +89,7 @@ bool sameRealUid(pid_t pid)
 {
   std::array<char, kPathSize> path{};
   std::snprintf(path.data(), path.size(), "/proc/%ld", static_cast<long>(pid));
-  struct stat info {};
+  struct stat info{};
   if (::stat(path.data(), &info) != 0) {
     return false;
   }
@@ -109,8 +110,7 @@ bool readParentPid(pid_t pid, pid_t* parent)
   const char* const buffer_end = buffer.data() + length;
   while (line < buffer_end) {
     const char* end = std::strchr(line, '\n');
-    const std::size_t line_length =
-      end ? static_cast<std::size_t>(end - line) : std::strlen(line);
+    const std::size_t line_length = end ? static_cast<std::size_t>(end - line) : std::strlen(line);
     if (line_length > 5 && std::strncmp(line, "PPid:", 5) == 0) {
       errno = 0;
       char* number_end = nullptr;
@@ -188,7 +188,7 @@ bool isOrphan(pid_t pid, pid_t* parent_out)
   }
   std::array<char, kPathSize> path{};
   std::snprintf(path.data(), path.size(), "/proc/%ld", static_cast<long>(parent));
-  struct stat info {};
+  struct stat info{};
   if (::stat(path.data(), &info) != 0) {
     // Only a missing parent directory means "gone"; an unreadable one is not
     // evidence of an orphan, so leave that process alone.
@@ -208,8 +208,7 @@ bool hasFeedFlag(const char* cmdline, std::size_t length)
   while (offset < length) {
     const char* argument = cmdline + offset;
     const std::size_t argument_length = std::strlen(argument);
-    if (argument_length == std::strlen(kFeedFlag) &&
-        std::strcmp(argument, kFeedFlag) == 0) {
+    if (argument_length == std::strlen(kFeedFlag) && std::strcmp(argument, kFeedFlag) == 0) {
       return true;
     }
     offset += argument_length + 1;
@@ -234,12 +233,11 @@ bool isAppProcess(pid_t pid, const char* cmdline)
   }
   exe[static_cast<std::size_t>(count)] = '\0';
   // A replaced or deleted binary still reads `<path> (deleted)`.
-  static constexpr char kDeletedSuffix[] = " (deleted)";
-  const std::size_t suffix_length = sizeof(kDeletedSuffix) - 1;
+  static constexpr std::string_view kDeletedSuffix = " (deleted)";
   const std::size_t exe_length = static_cast<std::size_t>(count);
-  if (exe_length > suffix_length &&
-      std::strcmp(exe.data() + exe_length - suffix_length, kDeletedSuffix) == 0) {
-    exe[exe_length - suffix_length] = '\0';
+  if (exe_length > kDeletedSuffix.size() &&
+      std::string_view(exe.data() + exe_length - kDeletedSuffix.size()) == kDeletedSuffix) {
+    exe[exe_length - kDeletedSuffix.size()] = '\0';
   }
   return std::strcmp(baseName(exe.data()), kAppName) == 0;
 }
@@ -307,8 +305,7 @@ int reapOrphanFeeds()
     if (::kill(pid, SIGTERM) != 0) {
       if (errno == EPERM) {
         qWarning("cannot signal orphaned lyrics feed pid=%lld (ppid=%lld): %s",
-                 static_cast<long long>(pid), static_cast<long long>(parent),
-                 std::strerror(errno));
+                 static_cast<long long>(pid), static_cast<long long>(parent), std::strerror(errno));
       }
       continue; // ESRCH (gone between scan and kill) and EPERM are both non-fatal.
     }
