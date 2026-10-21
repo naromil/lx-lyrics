@@ -7,7 +7,8 @@ feeds it the player state over the **protocol v2 stdin/stdout player feed**
 + embedded tags), parsing and rendering.
 
 Closing the lyric window sends `close_requested`; the adapter ends the session, the app exits on
-stdin EOF, and the toggle clears itself.
+stdin EOF, and the toggle clears itself. The plugin (and its global-shortcut helper) stays loaded,
+so the shortcut or **View → LX Lyrics** reopens the window without restarting DeaDBeeF.
 
 ## Requirements
 
@@ -29,6 +30,10 @@ stdin EOF, and the toggle clears itself.
   ```
   (its `include/deadbeef/deadbeef.h` is API 1.19 and contains everything 1.16 needs).
 - `lx-lyrics-app` installed (e.g. by `../../tools/install.sh`), findable on `$PATH`.
+- `lx-lyrics-hotkey`, the global-shortcut helper (`../../lyrics-app/src/hotkey/`, built when GIO is
+  present and installed next to `lx-lyrics-app` by `../../tools/install.sh`). It is looked up next
+  to the resolved app, then on `$PATH`; without it the adapter logs one warning and everything
+  except the shortcut works.
 
 ## Build
 
@@ -38,17 +43,18 @@ installed):
 ```sh
 cmake -B build -G Ninja -DDEADBEEF_INCLUDE_DIR=/path/to/deadbeef/include
 cmake --build build          # -> build/ddb_lxlyrics.so
-ctest --test-dir build       # hermetic protocol tests, no DeaDBeeF needed
+ctest --test-dir build       # hermetic protocol + shortcut tests, no DeaDBeeF needed
 ```
 
 A bare `cmake` configures **Debug** (the same default the app project uses); pass
 `-DCMAKE_BUILD_TYPE=Release` for the plugin you install.
 
-Or directly, with the same four sources:
+Or directly, with the same five sources:
 
 ```sh
-cc -std=c99 -fPIC -shared -O2 -I/path/to/deadbeef/include \
-   -o ddb_lxlyrics.so src/plugin.c src/feed.c src/json.c src/spectrum.c -lpthread -lm
+cc -std=c11 -fPIC -shared -O2 -I/path/to/deadbeef/include \
+   -o ddb_lxlyrics.so src/plugin.c src/feed.c src/hotkey.c src/json.c src/spectrum.c \
+   -lpthread -lm
 ```
 
 `src/plugin.c` and `src/spectrum.c` pin `#define DDB_API_LEVEL 16` before including the header, so
@@ -76,14 +82,17 @@ afterwards).
 ## Use
 
 1. Start playback.
-2. **View → LX Lyrics** spawns the lyric window; the same item ends the session. DeaDBeeF's
-   action API has no checkable flag, so the item carries no tick — the wanted state lives in
-   `lxlyrics.enabled`, and the plugin keeps that key, the item and the actual child in agreement.
+2. **View → LX Lyrics** spawns the lyric window; the same item ends the session, and the global
+   shortcut (see *Global shortcut*) is the second way to flip it. DeaDBeeF's action API has no
+   checkable flag, so the item carries no tick — the wanted state lives in `lxlyrics.enabled`, and
+   the plugin keeps that key, the item, the shortcut and the actual child in agreement.
    The Configuration panel's checkbox is the host's own widget rather than a mirror of the key:
    gtkui does not re-read it after a config write, so a start that fails leaves the key at 0 with
    the tick still drawn, and the panel stays able to write that tick back (see *Configuration*).
    Reopen the panel to see the stored state.
-3. Closing the lyric window ends the session and clears the wanted state.
+3. Closing the lyric window ends the session and clears the wanted state, but the plugin and its
+   helper stay loaded: the next **View → LX Lyrics** or shortcut press starts a fresh session.
+   A session that ends by itself never respawns on a playback event.
 4. The wanted state is **restored at player start**: when `lxlyrics.enabled` is set, the plugin
    spawns the session on the first `DB_EV_PLUGINSLOADED` (after the streamer is up), the same way
    Fooyin's `RememberState` path does. If that restore cannot spawn the app (missing binary, exec
@@ -104,7 +113,7 @@ makes the plugin configurable in the GUI. The host re-applies the whole dialog o
 
 | Key | Default | Meaning |
 |---|---|---|
-| `lxlyrics.enabled` | `0` | Wanted desktop-lyrics state — the **Show desktop lyrics** checkbox. Restored at the next player start. |
+| `lxlyrics.enabled` | `0` | **The lyrics window should be showing** — the **Show desktop lyrics** checkbox, and the state the menu item and the global shortcut flip. Restored at the next player start. |
 | `lxlyrics.app_path` | *(empty)* | Path to `lx-lyrics-app` (the **lx-lyrics-app binary** entry); empty means "search `$PATH`". |
 
 The host broadcasts `DB_EV_CONFIGCHANGED` after every config write, and the plugin follows it:
@@ -117,6 +126,33 @@ again, so the key converges to 0 rather than resting on a child that does not ex
 `lxlyrics.app_path` is deliberately **not** acted on there — the dialog re-applies itself on every
 keystroke, so restarting a session per character would respawn the app — hence an app-path edit
 takes effect at the **next** session start, never mid-session.
+
+## Global shortcut
+
+DeaDBeeF has no hotkey API a plugin can use for this, so the key never passes through the host, and
+the adapter carries no portal/D-Bus code. It spawns `lx-lyrics-hotkey` (built from
+`../../lyrics-app/src/hotkey/`, installed next to `lx-lyrics-app`) with the write end of a pipe on
+**fd 3** and reads a private one-line protocol: `ready <trigger>` once the binding exists,
+`unavailable <reason>` when it does not, and `toggle` for every press. A `toggle` only queues a
+plugin-private message; the flip happens on DeaDBeeF's **player thread**, exactly like the View/LX
+Lyrics action, so the helper's reader thread never touches the session or the GTK side.
+
+The helper holds the key through the XDG desktop portal
+(`org.freedesktop.portal.GlobalShortcuts`). The adapter asks for **`CTRL+ALT+L`** as the
+`preferred_trigger`; the desktop assigns the real combination and reports it back, and the adapter
+logs `lx-lyrics: global shortcut bound to <trigger>`.
+
+**The app id comes from the systemd user unit.** The portal only accepts a shortcut for a caller
+whose unit is named `app-<app-id>@<uuid>.service`. A player started from the KDE launcher has one;
+a player started from a terminal has none, so the portal answers
+`org.freedesktop.portal.Error.NotAllowed: An app id is required`. The helper reports
+`unavailable ...` on the pipe and exits 0 — a normal outcome, not a failure: the adapter logs it
+once, the shortcut is simply absent, and the menu item and settings page keep working.
+
+**Re-binding.** `CTRL+ALT+L` is only the *preferred* trigger offered when the helper starts. The
+binding belongs to the desktop: open **System Settings → Shortcuts** (KDE), find DeaDBeeF under its
+own application group, and change or clear the key there. The helper exits with the player; the
+binding is re-established on the next start.
 
 ## How the session works
 
@@ -144,6 +180,11 @@ takes effect at the **next** session start, never mid-session.
   the initial snapshot right after the spawn, so the app renders what is already playing. The feed
   thread's notifications (`close_requested`, protocol error, child exit) are marshalled to the
   player thread through plugin-private message ids.
+- **Global shortcut** (`src/hotkey.c`, pure POSIX C, no DeaDBeeF header): started with the plugin
+  and stopped in its `stop()` callback before the session is torn down, so the key works while the
+  window is hidden and cannot outlive the player. Its reader thread only logs the status line and
+  calls `deadbeef->sendmessage(LX_EV_HOTKEY_TOGGLE)`; the player thread applies the toggle through
+  the same switch as the menu item (a queued toggle is ignored once shutdown has started).
 - **Spectrum** (`src/spectrum.c`, protocol §5): `vis_spectrum_listen2` frames are planar floats with
   a stride of `nframes` (4096 bins); the audio thread only copies the first channel into a
   mutex-guarded, preallocated buffer, and the feed thread band-averages it into 128 log-spaced bands
@@ -159,11 +200,16 @@ non-JSON tolerance, the 128-byte spectrum rule, the no-session/exec-failure path
 protocol-error case (unsupported `v`, unknown action, over-1 MiB line → reported once and the
 session ends, with the app quitting on the EOF it was sent), that a failed write closes the app's
 stdin without leaking a descriptor, and that a writer thread keeps working (as a no-op) while
-another thread stops the session. No DeaDBeeF headers, player or display server needed:
+another thread stops the session.
+
+`tests/hotkey_test.c` is hermetic too: it compiles `hotkey.c` on its own and drives it with `/bin/sh`
+stand-ins that speak the helper protocol on fd 3 (the `--pipe-fd` argument, `ready`/`unavailable`
+status lines, repeated `toggle` presses, a helper that never answers, a missing/throwing helper,
+stop while the reader is busy). Both suites need no DeaDBeeF headers, player or display server:
 
 ```sh
 cmake -B build -G Ninja -DDEADBEEF_INCLUDE_DIR=/path/to/deadbeef/include && cmake --build build
-ctest --test-dir build --output-on-failure
+ctest --test-dir build --output-on-failure   # feed_test + hotkey_test
 ```
 
 The concurrency case is worth running under sanitizers:
@@ -173,7 +219,9 @@ object is freed while a writer still holds a reference to it.
 
 A live end-to-end run needs DeaDBeeF installed (`command -v deadbeef`): start playback, toggle
 **View → LX Lyrics**, and confirm the window follows the track, the seek/pause/stop mapping, the
-visualizer (analyser available) and that closing the window ends the session.
+visualizer (analyser available) and that closing the window ends the session. With `lx-lyrics-hotkey`
+installed and the desktop granting the binding, the same run should show a `global shortcut bound
+to ...` log line and the key should open and close the window.
 
 ## License
 

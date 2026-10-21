@@ -3,8 +3,10 @@
  * Copyright (c) 2026 LX Lyrics contributors.
  * DeaDBeeF adapter for the standalone lx-lyrics display: the plugin lives in the
  * player process, spawns the app as its direct child (feed.c) and pushes the
- * protocol v2 player feed described in docs/protocol.md. It reads no lyrics -
- * the app owns acquisition, parsing and rendering.
+ * protocol v2 player feed described in docs/protocol.md. It also owns the
+ * global-shortcut helper (hotkey.c), which flips the same on/off state the
+ * View/LX Lyrics menu item does. It reads no lyrics - the app owns acquisition,
+ * parsing and rendering.
  */
 
 /*
@@ -26,10 +28,12 @@
 #include <deadbeef/deadbeef.h>
 
 #include "feed.h"
+#include "hotkey.h"
 #include "spectrum.h"
 
 #include <limits.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -45,6 +49,10 @@
 #define LX_HOST_NAME "deadbeef"
 /** The display app, resolved on $PATH when LX_CONF_APP_PATH is empty. */
 #define LX_APP_NAME "lx-lyrics-app"
+/** The global-shortcut helper, resolved next to the app then on $PATH. */
+#define LX_HOTKEY_NAME "lx-lyrics-hotkey"
+/** Preferred trigger handed to the helper; the desktop owns the real binding. */
+#define LX_HOTKEY_DEFAULT "CTRL+ALT+l"
 /** Metadata values are copied out of the playlist lock into buffers this big. */
 #define LX_META_SIZE 1024
 
@@ -57,8 +65,21 @@
 #define LX_EV_FEED_CLOSE_REQUESTED 0x4c590001u
 #define LX_EV_FEED_CHILD_EXITED 0x4c590002u
 #define LX_EV_FEED_PROTOCOL_ERROR 0x4c590003u
+/* A "toggle" line from the global-shortcut helper, queued by its reader thread
+ * for the player thread (the helper thread itself must not touch the session). */
+#define LX_EV_HOTKEY_TOGGLE 0x4c590004u
 
 static DB_functions_t* deadbeef;
+
+/* The helper runs for as long as the plugin is loaded, not only while a window
+ * is showing: that is what lets the key reopen a window that was closed. It is
+ * only touched by lxlyrics_start()/lxlyrics_stop(). */
+static lx_hotkey_t* lx_hotkey;
+
+/* Set by lxlyrics_stop() before the helper is stopped, so a toggle that was
+ * already queued cannot start a session while the player shuts down. Written on
+ * the plugin-stop thread, read on the player thread. */
+static atomic_bool lx_shutting_down = false;
 
 /*
  * The running session.
@@ -199,6 +220,31 @@ static void on_child_exited(lx_feed_t* feed, void* userdata)
   deadbeef->sendmessage(LX_EV_FEED_CHILD_EXITED, 0, 0, 0);
 }
 
+/* A "toggle" line arrives on the helper's reader thread, just like the feed's
+ * callbacks: only queue a player-thread message here, never touch the session
+ * (start_session/end_session call the host's config API) or the GTK side. */
+static void on_hotkey_toggle(void* userdata)
+{
+  (void)userdata;
+  deadbeef->sendmessage(LX_EV_HOTKEY_TOGGLE, 0, 0, 0);
+}
+
+/* One status line ("ready <trigger>" or "unavailable <reason>"). Logging from
+ * the reader thread is what the feed callbacks already do; the helper writes
+ * each line once, so an unavailable shortcut is logged once. */
+static void on_hotkey_status(const char* line, void* userdata)
+{
+  (void)userdata;
+  const char* text = line ? line : "";
+  if (strncmp(text, "ready ", 6) == 0) {
+    deadbeef->log("lxlyrics: global shortcut bound to %s", text + 6);
+  } else if (strncmp(text, "unavailable ", 12) == 0) {
+    deadbeef->log("lxlyrics: global shortcut unavailable (%s)", text + 12);
+  } else if (text[0] != '\0') {
+    deadbeef->log("lxlyrics: hotkey helper: %s", text);
+  }
+}
+
 /* Runs on the feed thread every LX_FEED_STATUS_INTERVAL_MS: the periodic
  * set_status that keeps the app's line in sync while the track plays. */
 static bool on_sample_status(lx_feed_t* feed, void* userdata, bool* is_play,
@@ -261,24 +307,22 @@ static void end_session(const char* reason)
   }
 }
 
-/* $LX_CONF_APP_PATH when set, otherwise lx-lyrics-app on $PATH. */
-static bool resolve_app_path(char* path, size_t path_size)
+/* Looks @p name up on $PATH. Returns false and writes "" when nothing
+ * executable was found. */
+static bool find_on_path(const char* name, char* path, size_t path_size)
 {
-  deadbeef->conf_get_str(LX_CONF_APP_PATH, "", path, (int)path_size);
-  if (path[0] != '\0') {
-    return true;
-  }
   const char* search = getenv("PATH");
   if (!search) {
     return false;
   }
+  const size_t name_size = strlen(name) + 1;
   for (const char* dir = search; *dir;) {
     const char* end = strchr(dir, ':');
     size_t dir_len = end ? (size_t)(end - dir) : strlen(dir);
-    if (dir_len > 0 && dir_len + 1 + sizeof(LX_APP_NAME) <= path_size) {
+    if (dir_len > 0 && dir_len + 1 + name_size <= path_size) {
       memcpy(path, dir, dir_len);
       path[dir_len] = '/';
-      memcpy(path + dir_len + 1, LX_APP_NAME, sizeof(LX_APP_NAME));
+      memcpy(path + dir_len + 1, name, name_size);
       if (access(path, X_OK) == 0) {
         return true;
       }
@@ -290,6 +334,60 @@ static bool resolve_app_path(char* path, size_t path_size)
   }
   path[0] = '\0';
   return false;
+}
+
+/* $LX_CONF_APP_PATH when set, otherwise lx-lyrics-app on $PATH. */
+static bool resolve_app_path(char* path, size_t path_size)
+{
+  deadbeef->conf_get_str(LX_CONF_APP_PATH, "", path, (int)path_size);
+  if (path[0] != '\0') {
+    return true;
+  }
+  return find_on_path(LX_APP_NAME, path, path_size);
+}
+
+/* The helper sits next to the installed app (tools/install.sh puts both in
+ * <prefix>/bin); a non-standard app placement falls back to $PATH. */
+static bool resolve_hotkey_helper(char* path, size_t path_size)
+{
+  char app[PATH_MAX];
+  if (resolve_app_path(app, sizeof(app))) {
+    const char* slash = strrchr(app, '/');
+    const size_t dir_len = slash ? (size_t)(slash - app) : 0;
+    if (dir_len > 0 && dir_len + 1 + sizeof(LX_HOTKEY_NAME) <= path_size) {
+      memcpy(path, app, dir_len);
+      path[dir_len] = '/';
+      memcpy(path + dir_len + 1, LX_HOTKEY_NAME, sizeof(LX_HOTKEY_NAME));
+      if (access(path, X_OK) == 0) {
+        return true;
+      }
+    }
+  }
+  return find_on_path(LX_HOTKEY_NAME, path, path_size);
+}
+
+/* Starts the helper whenever the plugin is loaded — including while the window
+ * is hidden, which is the point of the key. A missing helper or a failed spawn
+ * is one warning; the adapter keeps working without a shortcut. */
+static void start_hotkey(void)
+{
+  char helper[PATH_MAX];
+  if (!resolve_hotkey_helper(helper, sizeof(helper))) {
+    deadbeef->log("lxlyrics: %s not found; the global shortcut is unavailable", LX_HOTKEY_NAME);
+    return;
+  }
+
+  const lx_hotkey_config_t config = {
+    .helper_path = helper,
+    .accelerator = LX_HOTKEY_DEFAULT,
+    .on_toggle = on_hotkey_toggle,
+    .on_status = on_hotkey_status,
+    .userdata = NULL,
+  };
+  lx_hotkey = lx_hotkey_start(&config);
+  if (!lx_hotkey) {
+    deadbeef->log("lxlyrics: cannot spawn %s; the global shortcut is unavailable", helper);
+  }
 }
 
 /* Starts the session when the wanted state says so, and sets the wanted state
@@ -447,19 +545,28 @@ static void sync_session_with_conf(void)
   }
 }
 
+/* The one switch behind the menu item and the global shortcut. start_session()
+ * sets the key when the child is up, end_session() clears it when the session
+ * ends, so the key always describes the real child. Called on the GTK main
+ * thread (the action) and on the player thread (LX_EV_HOTKEY_TOGGLE); both
+ * paths only borrow the session through the locks the start/stop functions
+ * take, and neither touches GTK state. */
+static void toggle_session(const char* reason)
+{
+  if (deadbeef->conf_get_int(LX_CONF_ENABLED, 0) != 0) {
+    end_session(reason);
+    return;
+  }
+  start_session(); /* the key follows the child; a failure leaves it off */
+}
+
 /* The persisted wanted state is restored by restore_session() on
- * DB_EV_PLUGINSLOADED (below); this action only flips it. start_session() sets
- * the key when the child is up, end_session() clears it when the session ends,
- * so the key always describes the real child. */
+ * DB_EV_PLUGINSLOADED (below); this action only flips it. */
 static int lxlyrics_toggle_action(DB_plugin_action_t* action, ddb_action_context_t context)
 {
   (void)action;
   (void)context;
-  if (deadbeef->conf_get_int(LX_CONF_ENABLED, 0) != 0) {
-    end_session("the menu item was toggled off");
-    return 0;
-  }
-  start_session(); /* the key follows the child; a failure leaves it off */
+  toggle_session("the menu item was toggled off");
   return 0;
 }
 
@@ -532,6 +639,15 @@ static int lxlyrics_message(uint32_t id, uintptr_t ctx, uint32_t p1, uint32_t p2
   case LX_EV_FEED_CHILD_EXITED:
     end_session("the app exited");
     return 0;
+  case LX_EV_HOTKEY_TOGGLE:
+    /* The helper's reader thread only queued this line; the flip happens here,
+     * on the player thread, exactly like the GTK menu item. A toggle queued
+     * just before shutdown must not resurrect the session. */
+    if (atomic_load(&lx_shutting_down)) {
+      return 0;
+    }
+    toggle_session("the global shortcut was pressed");
+    return 0;
   case DB_EV_PLUGINSLOADED:
     restore_session();
     return 0;
@@ -591,17 +707,24 @@ static const char lxlyrics_config_dialog[] =
 
 static int lxlyrics_start(void)
 {
-  /* Nothing is started here: the GTK side does not exist yet at load time. The
-   * persisted wanted state is honoured by restore_session(), on the first
-   * DB_EV_PLUGINSLOADED. */
+  /* The helper needs no GTK side, so it starts at load — before any session, so
+   * the key can open a window that starts hidden. The persisted wanted state is
+   * honoured by restore_session(), on the first DB_EV_PLUGINSLOADED. */
+  atomic_store(&lx_shutting_down, false);
+  start_hotkey();
   return 0;
 }
 
 static int lxlyrics_stop(void)
 {
-  /* Player shutting down: end the session and KEEP the wanted state, which is
+  /* Refuse a toggle that is already queued, then stop the helper before the
+   * session it toggles: lx_hotkey_stop() joins its reader thread. Player
+   * shutting down also ends the session and KEEPS the wanted state, which is
    * what the next process restores (restore_session()). Clearing it here would
    * silently turn the user's desktop lyrics off across every restart. */
+  atomic_store(&lx_shutting_down, true);
+  lx_hotkey_stop(lx_hotkey);
+  lx_hotkey = NULL;
   stop_session();
   return 0;
 }
