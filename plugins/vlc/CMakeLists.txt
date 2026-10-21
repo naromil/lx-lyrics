@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 project(lx-lyrics-vlc-plugin C)
 
-set(CMAKE_C_STANDARD 99)
+# C11 for src/hotkey.c's <stdatomic.h> reader-stop flag (C99 is a subset).
+set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 # Support Debug and Release single-config generators, matching the app project:
@@ -55,6 +56,7 @@ find_package(Threads REQUIRED)
 add_library(lxlyrics_plugin MODULE
   src/plugin.c
   src/feed.c
+  src/hotkey.c
   src/json.c
   src/mapper.c
 )
@@ -62,8 +64,8 @@ set_target_properties(lxlyrics_plugin PROPERTIES
   OUTPUT_NAME "lxlyrics_plugin"
   # VLC 3.0's headers require C11 (its configure selects a C11 compiler —
   # upstream configure.ac:48 `VLC_PROG_CC_C11`, m4/c11.m4:12-29 — and
-  # vlc_common.h:480 is built on _Generic). The hermetic sources below stay
-  # strict C99; only this target sees VLC's headers.
+  # vlc_common.h:480 is built on _Generic), which is also the project-wide
+  # standard src/hotkey.c needs for <stdatomic.h>.
   C_STANDARD 11
   # Upstream restricts the exported symbols to the entry points
   # (`-export-symbols-regex ^vlc_entry`, modules/common.am:37-43). __PLUGIN__
@@ -95,3 +97,12 @@ add_executable(mapper_test tests/mapper_test.c src/mapper.c)
 target_include_directories(mapper_test PRIVATE src)
 target_compile_options(mapper_test PRIVATE -Wall -Wextra)
 add_test(NAME mapper_test COMMAND mapper_test)
+
+# Hermetic global-shortcut transport tests: hotkey.c only, with /bin/sh
+# stand-ins speaking the helper protocol on fd 3 (no VLC headers, no player,
+# no display server).
+add_executable(hotkey_test tests/hotkey_test.c src/hotkey.c)
+target_include_directories(hotkey_test PRIVATE src)
+target_compile_options(hotkey_test PRIVATE -Wall -Wextra)
+target_link_libraries(hotkey_test PRIVATE Threads::Threads)
+add_test(NAME hotkey_test COMMAND hotkey_test)

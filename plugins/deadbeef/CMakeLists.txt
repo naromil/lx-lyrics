@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 project(lx-lyrics-deadbeef-plugin C)
 
-set(CMAKE_C_STANDARD 99)
+# C11 for src/hotkey.c's <stdatomic.h> reader-stop flag (C99 is a subset).
+set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 # Support Debug and Release single-config generators, matching the app project:
@@ -31,6 +32,7 @@ find_package(Threads REQUIRED)
 add_library(ddb_lxlyrics MODULE
   src/plugin.c
   src/feed.c
+  src/hotkey.c
   src/json.c
   src/spectrum.c
 )
@@ -46,3 +48,12 @@ target_include_directories(feed_test PRIVATE src)
 target_compile_options(feed_test PRIVATE -Wall -Wextra)
 target_link_libraries(feed_test PRIVATE Threads::Threads)
 add_test(NAME feed_test COMMAND feed_test)
+
+# Hermetic global-shortcut transport tests: hotkey.c only, with /bin/sh
+# stand-ins speaking the helper protocol on fd 3 (no DeaDBeeF headers, no
+# player, no display server).
+add_executable(hotkey_test tests/hotkey_test.c src/hotkey.c)
+target_include_directories(hotkey_test PRIVATE src)
+target_compile_options(hotkey_test PRIVATE -Wall -Wextra)
+target_link_libraries(hotkey_test PRIVATE Threads::Threads)
+add_test(NAME hotkey_test COMMAND hotkey_test)
