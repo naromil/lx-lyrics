@@ -1,9 +1,12 @@
 cmake_minimum_required(VERSION 3.19)
 
-project(lxlyrics VERSION 0.1.0 LANGUAGES CXX)
+project(lxlyrics VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# C11 for src/hotkey.c's <stdatomic.h> reader-stop flag (C99 is a subset).
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
@@ -14,6 +17,9 @@ find_package(Fooyin REQUIRED)
 # FooyinConfig does NOT propagate Qt modules (it only finds Core/Widgets/Sql/
 # Concurrent/Network), so declare the plugin's own components here explicitly.
 find_package(Qt6 6.4 REQUIRED COMPONENTS Core Widgets)
+# src/hotkey.c reads the helper's pipe on a pthread; the plugin's Qt dependency
+# would pull pthread in anyway, but the hermetic test target links only this.
+find_package(Threads REQUIRED)
 
 # Macro signature (Fooyin 0.11.1): create_fooyin_plugin(name [NO_INSTALL]
 # [JSON_IN <file>] [DEPENDS <libs...>] [SOURCES <files...>]).
@@ -36,4 +42,20 @@ create_fooyin_plugin(lxlyrics
         src/spectrumsource.h
         src/lxlyricssettings.cpp
         src/lxlyricssettings.h
+        src/hotkey.c
+        src/hotkey.h
 )
+
+# The helper transport (src/hotkey.c) uses pthread directly.
+target_link_libraries(lxlyrics PRIVATE Threads::Threads)
+
+# Hermetic global-shortcut transport tests: hotkey.c only, with /bin/sh
+# stand-ins speaking the helper protocol on fd 3 (no Fooyin headers, no player,
+# no display server). The same test builds standalone:
+#   cc -Wall -Wextra -I src src/hotkey.c tests/hotkey_test.c -lpthread
+enable_testing()
+add_executable(hotkey_test tests/hotkey_test.c src/hotkey.c)
+target_include_directories(hotkey_test PRIVATE src)
+target_compile_options(hotkey_test PRIVATE -Wall -Wextra)
+target_link_libraries(hotkey_test PRIVATE Threads::Threads)
+add_test(NAME hotkey_test COMMAND hotkey_test)
