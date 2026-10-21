@@ -9,9 +9,10 @@ embedded tags), parsing and rendering.
 Closing the lyric window sends `close_requested`; the adapter ends the session, the app exits on
 stdin EOF, and the plugin stays **enabled but idle** — the Plugins page still reads on. The lyrics
 window is its own switch: the settings page's **Show or hide the lyrics window** button starts or
-stops it without touching the plugin's enable state, and nothing is respawned on its own. (A global
-shortcut is planned for a later round; libaudcore has no hotkey registration API, so it will live
-outside the plugin.)
+stops it without touching the plugin's enable state, and nothing is respawned on its own. A global
+shortcut (default **Ctrl+Alt+L**) drives the same switch from any application; it comes from the
+XDG desktop portal through the `lx-lyrics-hotkey` helper, because libaudcore has no hotkey API
+(see *Global shortcut*).
 
 ## Requirements
 
@@ -31,11 +32,15 @@ outside the plugin.)
   no libaudqt, no GTK/Qt** — the plugin has no window and no menu item, and its one preferences
   page is plain declarative data (`PreferencesWidget`/`PluginPreferences`) that the host's own
   frontend renders (see *Configuration*).
-- **C++17** for the glue and **C99** for the transport: libaudcore's plugin API is a C++ class
+- **C++17** for the glue and **C11** for the transport: libaudcore's plugin API is a C++ class
   hierarchy (`plugin.h:119` `class LIBAUDCORE_PUBLIC Plugin`, `:498`
   `class LIBAUDCORE_PUBLIC GeneralPlugin`), and upstream builds with `cpp_std=gnu++17`
-  (`meson.build:6`).
+  (`meson.build:6`); `src/hotkey.c` uses C11 `<stdatomic.h>`.
 - `lx-lyrics-app` installed (e.g. by `../../tools/install.sh`), findable on `$PATH`.
+- Optional, for the global shortcut: `lx-lyrics-hotkey` next to the app (installed by the same
+  script) and a desktop portal implementing `org.freedesktop.portal.GlobalShortcuts` (KDE Plasma 6
+  here; GNOME has the interface too). The helper is built only when `gio-2.0` is present; without it
+  the app and this plugin keep working and the adapter logs that the shortcut is unavailable.
 
 ## Build
 
@@ -45,22 +50,22 @@ CMake (headers via pkg-config, or an explicit include dir):
 cmake -B build -G Ninja                                        # pkg-config audacious
 cmake -B build -G Ninja -DAUDACIOUS_INCLUDE_DIR=/path/to/include
 cmake --build build          # -> build/lxlyrics.so
-ctest --test-dir build       # hermetic feed + state-machine tests, no Audacious needed
+ctest --test-dir build       # hermetic feed + state-machine + hotkey-transport tests
 ```
 
 A bare `cmake` configures **Debug** (the same default the app project uses); pass
 `-DCMAKE_BUILD_TYPE=Release` for the plugin you install. The configure step **requires** the
 Audacious headers — a bare `cmake -B build -G Ninja` FATAL_ERRORs when they are missing — while the
-`feed_test` target builds only `feed.c` + `json.c` and `session_test` only `session.c`, so `ctest`
-runs with no Audacious installed.
+`feed_test` target builds only `feed.c` + `json.c`, `session_test` only `session.c` and
+`hotkey_test` only `hotkey.c`, so `ctest` runs with no Audacious installed.
 
-Or directly, with the same five sources:
+Or directly, with the same six sources:
 
 ```sh
 INC=$(pkg-config --variable=audacious_include_dir audacious)   # or a checkout's src/
-cc  -std=c99  -fPIC -O2 -I"$INC" -Isrc -c src/feed.c src/json.c src/session.c
+cc  -std=c11  -fPIC -O2 -I"$INC" -Isrc -c src/feed.c src/hotkey.c src/json.c src/session.c
 c++ -std=gnu++17 -fPIC -O2 -I"$INC" -Isrc -c src/plugin.cc src/spectrum.cc
-c++ -shared -o lxlyrics.so feed.o json.o session.o plugin.o spectrum.o $(pkg-config --libs audacious) -lpthread -lm
+c++ -shared -o lxlyrics.so feed.o hotkey.o json.o session.o plugin.o spectrum.o $(pkg-config --libs audacious) -lpthread -lm
 ```
 
 The module name matters: the loader looks up `aud_plugin_instance` inside every scanned file
@@ -120,12 +125,13 @@ non-zero.
 
 The plugin's settings page is its 4th `PluginInfo` field — a declarative
 `const PluginPreferences*` (libaudcore's `preferences.h`) that both frontends build with no toolkit
-code here: one `WidgetLabel`, one `WidgetEntry("Application:", WidgetString("lx-lyrics",
-"app_path"))`, one `WidgetCheck("Remember the desktop lyrics state from the last session",
-WidgetBool("lx-lyrics", "remember_state"))`, and two `WidgetButton`s — **Open lyrics settings** and
-**Show or hide the lyrics window**. The entry writes the key as the user types
-(`WidgetConfig::set_string()` → `aud_set_str()`) and it is the same `[lx-lyrics] app_path`
-`resolve_app_path()` reads; an empty value is the documented "search `$PATH`" state. The checkbox
+code here: two `WidgetLabel`s, two `WidgetEntry`s — `WidgetString("lx-lyrics", "app_path")` and
+`WidgetString("lx-lyrics", "hotkey")` — one `WidgetCheck("Remember the desktop lyrics state from
+the last session", WidgetBool("lx-lyrics", "remember_state"))`, and two `WidgetButton`s — **Open
+lyrics settings** and **Show or hide the lyrics window**. The entries write their keys as the user
+types (`WidgetConfig::set_string()` → `aud_set_str()`); `app_path` is what `resolve_app_path()`
+reads, an empty value being the documented "search `$PATH`" state, while `hotkey` is only the
+preferred trigger (see *Global shortcut*). The checkbox
 is the same kind of binding over `aud_get_bool()` / `aud_set_bool()` (`preferences.cc:25-48`), and
 the plugin registers `remember_state=TRUE` as the section default at `init()`
 (`aud_config_set_defaults()`, read back through `aud_get_str()`'s defaults fallback at
@@ -157,8 +163,8 @@ The **Show or hide the lyrics window** button is the adapter's own session switc
 the initial snapshot), hiding closes the app's stdin and joins/reaps it; a second click toggles
 back. Playback events never respawn a hidden window because the hooks are attached only while a
 session is showing. A show that cannot spawn (the app is missing) logs the failure and leaves the
-state hidden. (The global shortcut is a later round: libaudcore exposes no hotkey registration API,
-so it will live outside the plugin.)
+state hidden. (The same switch is reachable from any application through the global shortcut; see
+*Global shortcut*.)
 
 The **Open lyrics settings** button is the route to the app's **own** settings: the app owns its 37
 config keys and renders them in its dialog, so the page does not duplicate them — it sends
@@ -198,7 +204,38 @@ The keys themselves, in `$XDG_CONFIG_HOME/audacious/config` (`config.cc:259`, IN
 | Section / key | Default | Meaning |
 |---|---|---|
 | `[lx-lyrics] app_path` | *(empty)* | Path to `lx-lyrics-app`; empty means "search `$PATH`". |
+| `[lx-lyrics] hotkey` | `CTRL+ALT+l` | Preferred global-shortcut trigger passed to the helper at the next player start. The desktop owns the real binding and re-binds it in its own shortcut settings. |
+| `[lx-lyrics] hotkey_helper` | *(empty)* | Path to `lx-lyrics-hotkey`; empty means "next to the resolved app, then `$PATH`". |
 | `[lx-lyrics] remember_state` | `TRUE` | Start the next player run with the lyrics window visible; `FALSE` starts the plugin enabled with the window hidden. Either way the plugin is enabled and the settings-page toggle can show the window. |
+
+## Global shortcut
+
+libaudcore has no hotkey API, so the key never passes through the host. The plugin spawns
+`lx-lyrics-hotkey` (built from `../../lyrics-app/src/hotkey/`, installed next to `lx-lyrics-app`) and
+speaks a private one-line protocol with it over fd 3: `ready <trigger>` once the binding exists,
+`unavailable <reason>` when it does not, and `toggle` for every key press. The adapter treats
+`toggle` exactly like the settings page's button — `lx_session_toggle()` on the player's main thread
+— so it opens a hidden window, closes a showing one, and needs no session to start one.
+
+The helper holds the key through the XDG desktop portal
+(`org.freedesktop.portal.GlobalShortcuts`): `CreateSession`, then `BindShortcuts` with
+`[lx-lyrics] hotkey` as the `preferred_trigger`. The portal decides the real binding and reports it
+back (KDE normalises `CTRL+ALT+l` to `Ctrl+Alt+L`); the adapter logs `lx-lyrics: global shortcut
+bound to <trigger>`.
+
+**The app id comes from the systemd user unit.** The portal accepts a shortcut only for a caller
+whose unit is named `app-<app-id>@<uuid>.service`. A player started from the KDE launcher has one,
+so the shortcut is associated with the player's own app id. A player started from a terminal has no
+unit name, and the portal answers `org.freedesktop.portal.Error.NotAllowed: An app id is required`;
+the helper reports `unavailable ...` on the pipe, exits 0, and the adapter logs it once. That is a
+normal outcome, not a failure — everything except the shortcut still works, and the settings-page
+toggle remains.
+
+**Re-binding.** The entry on the settings page is only the *preferred* trigger offered at the next
+player start. The binding belongs to the desktop: open **System Settings → Shortcuts** (KDE), find
+the player under its own application group, and change or clear the key there. A combination that is
+already taken is reassigned by the desktop, which is why the helper reports the trigger it actually
+got. The binding follows the helper process and is re-established on the next player start.
 
 ## How the session works
 
@@ -300,6 +337,13 @@ the new state, `app_ended()` records its reason and drops to hidden, a refused s
 state hidden, and `free()` stops a session that is still showing. It compiles `session.c` alone and
 includes the same dictated `session.h`, so it needs no host headers either.
 
+`tests/hotkey_test.c` covers the helper transport with `/bin/sh` stand-ins: the child receives the
+pipe on fd 3 and the expected `--pipe-fd 3` / `--accelerator …` argv, complete lines arrive
+verbatim, only the exact line `toggle` calls the toggle callback (a `toggle now` line is a status
+line), a helper that exits on its own ends the reader without spinning, `stop()` terminates and
+reaps a helper that never wrote, is idempotent, and a missing or non-executable helper is refused
+instead of crashing. It compiles `hotkey.c` alone; no GLib, player or display server is involved.
+
 The concurrency case is worth running under sanitizers:
 `-DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"` plus the matching
 `CMAKE_EXE_LINKER_FLAGS`/`CMAKE_SHARED_LINKER_FLAGS`; it reports a heap-use-after-free if a session
@@ -329,6 +373,10 @@ The normal check needs an Audacious ≥ 4.6.1 with the plugin installed (`comman
 5. Close the lyric window: the adapter logs `lx-lyrics: the lyrics window is no longer showing (the
    lyric window was closed)`, but the plugin stays **enabled and idle** — the Plugins page still
    reads on, and no window comes back until the toggle or the next player start.
+6. With the plugin enabled (the window may be hidden), press the global shortcut: the window appears
+   or disappears. A player started from the KDE launcher logs `lx-lyrics: global shortcut bound to
+   Ctrl+Alt+L`; one started from a terminal logs `lx-lyrics: global shortcut unavailable (An app id
+   is required)` and has no key (see *Global shortcut*).
 
 Without touching the system installation (no root) the same thing can be driven end to end: copy
 `/usr/bin/audacious` and `/usr/lib/audacious/` into a scratch prefix, drop `lxlyrics.so` into its

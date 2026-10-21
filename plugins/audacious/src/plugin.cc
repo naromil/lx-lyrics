@@ -24,6 +24,7 @@
 #include <libaudcore/tuple.h>
 
 #include "feed.h"
+#include "hotkey.h"
 #include "session.h"
 #include "spectrum.h"
 
@@ -42,10 +43,20 @@
  * lyrics window at the next player start; off starts the plugin enabled with
  * the window hidden (see init()). */
 #define LX_CONF_REMEMBER_STATE "remember_state"
+/** The preferred global-shortcut trigger handed to the helper at player start.
+ * The desktop owns the real binding (KDE: System Settings -> Shortcuts). */
+#define LX_CONF_HOTKEY "hotkey"
+/** Optional override for where lx-lyrics-hotkey lives; empty means "next to
+ * the app, then $PATH". */
+#define LX_CONF_HOTKEY_HELPER "hotkey_helper"
 /** Name reported in `hello.host`. */
 #define LX_HOST_NAME "audacious"
 /** The display app, resolved on $PATH when the config key is empty. */
 #define LX_APP_NAME "lx-lyrics-app"
+/** The global-shortcut helper, resolved next to the app then on $PATH. */
+#define LX_HOTKEY_NAME "lx-lyrics-hotkey"
+/** The registered default for the preferred trigger. */
+#define LX_HOTKEY_DEFAULT "CTRL+ALT+l"
 /** Metadata values are copied out of the playback tuple into buffers this big. */
 #define LX_META_SIZE 1024
 /** The session-end reason the feed thread hands to the main thread. */
@@ -159,24 +170,33 @@ static const char lx_about[] = N_(
  * The buttons are the non-config widgets. "Show or hide the lyrics window" is
  * this adapter's own session switch: the plugin no longer disables itself when
  * the app goes away (§4), so this page is the explicit way back to a visible
- * window (the global shortcut is a later round). "Open lyrics settings" reaches
- * the app's own configuration dialog (37 keys) over the feed instead of
- * duplicating it. A button is declarative too — WidgetButton carries the
- * callback (preferences.h:299) — but the callback itself must be a plain
- * function, so both are declared here (the array needs their addresses) and
- * defined below the plugin class, which owns the session.
+ * window (the global shortcut does the same from any application). "Open
+ * lyrics settings" reaches the app's own configuration dialog (37 keys) over
+ * the feed instead of duplicating it. A button is declarative too — WidgetButton
+ * carries the callback (preferences.h:299) — but the callback itself must be a
+ * plain function, so both are declared here (the array needs their addresses)
+ * and defined below the plugin class, which owns the session.
  */
 static void lx_open_settings_clicked();
 static void lx_toggle_clicked();
 
-/* Registered so a config that never saw the key reads "remember" — aud_get_str()
- * falls back to these defaults (config.cc:402-412), which is what the checkbox
- * then shows and what init() reads. */
-static const char* const lx_config_defaults[] = {LX_CONF_REMEMBER_STATE, "TRUE", nullptr};
+/* Registered so an untouched config reads "remember" and the reference
+ * CTRL+ALT+l — aud_get_str() falls back to these defaults (config.cc:402-412),
+ * which is what the page shows and what init() reads. */
+static const char* const lx_config_defaults[] = {
+  LX_CONF_REMEMBER_STATE, "TRUE", LX_CONF_HOTKEY, LX_HOTKEY_DEFAULT, nullptr,
+};
 
 static const PreferencesWidget lx_widgets[] = {
   WidgetLabel(N_("Path to the lx-lyrics-app executable; empty means search $PATH.")),
   WidgetEntry(N_("Application:"), WidgetString(LX_CONF_SECTION, LX_CONF_APP_PATH)),
+  /* The shortcut is bound by the desktop (KDE: System Settings -> Shortcuts),
+   * which is also where it is re-bound; this key is only the preferred trigger
+   * sent to the helper at the next player start. */
+  WidgetLabel(N_("Global shortcut: the preferred trigger (e.g. CTRL+ALT+l). The desktop assigns "
+                 "the key and it is re-bound in the desktop's own shortcut settings (KDE: System "
+                 "Settings -> Shortcuts); this value is used at the next player start.")),
+  WidgetEntry(N_("Shortcut:"), WidgetString(LX_CONF_SECTION, LX_CONF_HOTKEY)),
   /* Off: a player start begins with the plugin enabled and the lyrics window
    * hidden instead of restoring one (see init()); the box only ever gates that
    * restore, a session the user asks for is always shown. */
@@ -275,6 +295,10 @@ private:
   static void on_child_exited(lx_feed_t* feed, void* userdata);
   static bool on_sample_status(lx_feed_t* feed, void* userdata, bool* is_play,
                                int64_t* played_time_ms);
+  /* The global-shortcut helper's callbacks. Both arrive on its reader thread;
+   * toggle hops to the main thread before touching the session. */
+  static void on_hotkey_toggle(void* userdata);
+  static void on_hotkey_status(const char* line, void* userdata);
 
   void refresh();
   void push_info();
@@ -284,6 +308,10 @@ private:
   void attach_hooks();
   void detach_hooks();
   bool resolve_app_path(char* path, size_t path_size);
+  /* Spawns the helper when the plugin is enabled, even when no window is
+   * showing — the key must work while the window is hidden. */
+  void start_hotkey();
+  bool resolve_hotkey_helper(char* path, size_t path_size);
 
   /* Both prefs-page buttons (lx_widgets) have to be plain functions — a
    * declarative PreferencesWidget holds a `void (*)()` — so they are declared
@@ -293,8 +321,12 @@ private:
 
   Timer<LxLyrics> m_timer;
   QueuedFunc m_end_queued;
+  /* A helper "toggle" pressing the key: hops off the reader thread to this
+   * (main-loop) queue, exactly like request_end(). */
+  QueuedFunc m_toggle_queued;
   LxSpectrum m_spectrum;
   lx_feed_t* m_feed = nullptr;
+  lx_hotkey_t* m_hotkey = nullptr;
   lx_session_t* m_session = nullptr;
   char m_app_path[PATH_MAX] = {0};
   /* Guards m_ending/m_end_reason, which the feed's reader thread writes through
@@ -327,7 +359,8 @@ static void lx_open_settings_clicked()
  * "Show or hide the lyrics window" (the prefs page's second button): the
  * explicit session switch. The window used to come and go with the plugin's
  * own enable state; now the plugin stays enabled, so this is the way back
- * without disabling anything (a global shortcut is a later round).
+ * without disabling anything. The global shortcut drives the same switch from
+ * any application (see on_hotkey_toggle()).
  */
 static void lx_toggle_clicked()
 {
@@ -534,6 +567,40 @@ bool LxLyrics::on_sample_status(lx_feed_t* feed, void* userdata, bool* is_play,
   return true;
 }
 
+/* ---------------------------------------------------------- hotkey callbacks */
+
+/* One "toggle" line from the helper: the same switch the settings page's
+ * button drives. The helper's reader thread only queues; the state machine and
+ * every aud_* call stay on the main thread (the request_end() idiom). */
+void LxLyrics::on_hotkey_toggle(void* userdata)
+{
+  (void)userdata;
+  aud_plugin_instance.m_toggle_queued.queue([]() {
+    LxLyrics* self = &aud_plugin_instance;
+    if (!self->m_session) {
+      AUDWARN("lx-lyrics: the session state is not ready; not toggling the window\n");
+      return;
+    }
+    const bool showing = lx_session_toggle(self->m_session);
+    AUDINFO("lx-lyrics: the lyrics window is now %s\n", showing ? "visible" : "hidden");
+  });
+}
+
+/* One status line ("ready <trigger>" or "unavailable <reason>"). Logging from
+ * the reader thread matches the feed callbacks, which already do it. */
+void LxLyrics::on_hotkey_status(const char* line, void* userdata)
+{
+  (void)userdata;
+  const char* text = line ? line : "";
+  if (strncmp(text, "ready ", 6) == 0) {
+    AUDINFO("lx-lyrics: global shortcut bound to %s\n", text + 6);
+  } else if (strncmp(text, "unavailable ", 12) == 0) {
+    AUDWARN("lx-lyrics: global shortcut unavailable (%s)\n", text + 12);
+  } else if (text[0] != '\0') {
+    AUDINFO("lx-lyrics: hotkey helper: %s\n", text);
+  }
+}
+
 /* -------------------------------------------------------------- session I/O */
 
 void LxLyrics::request_end(const char* reason)
@@ -668,27 +735,22 @@ void LxLyrics::detach_hooks()
   hook_dissociate("tuple change", on_tuple_change);
 }
 
-/* The "[lx-lyrics] app_path" config key when set, otherwise lx-lyrics-app on
- * $PATH. Main thread only (aud_get_str() is part of the host's config API). */
-bool LxLyrics::resolve_app_path(char* path, size_t path_size)
+/* Looks @p name up on $PATH. Main thread only (getenv()); returns false and
+ * writes "" when nothing executable was found. */
+static bool find_on_path(const char* name, char* path, size_t path_size)
 {
-  const String configured = aud_get_str(LX_CONF_SECTION, LX_CONF_APP_PATH);
-  const char* text = configured;
-  if (text && text[0] != '\0') {
-    snprintf(path, path_size, "%s", text);
-    return true;
-  }
   const char* search = getenv("PATH");
   if (!search) {
     return false;
   }
+  const size_t name_size = strlen(name) + 1;
   for (const char* dir = search; *dir;) {
     const char* end = strchr(dir, ':');
     const size_t dir_len = end ? (size_t)(end - dir) : strlen(dir);
-    if (dir_len > 0 && dir_len + 1 + sizeof(LX_APP_NAME) <= path_size) {
+    if (dir_len > 0 && dir_len + 1 + name_size <= path_size) {
       memcpy(path, dir, dir_len);
       path[dir_len] = '/';
-      memcpy(path + dir_len + 1, LX_APP_NAME, sizeof(LX_APP_NAME));
+      memcpy(path + dir_len + 1, name, name_size);
       if (access(path, X_OK) == 0) {
         return true;
       }
@@ -700,6 +762,74 @@ bool LxLyrics::resolve_app_path(char* path, size_t path_size)
   }
   path[0] = '\0';
   return false;
+}
+
+/* The "[lx-lyrics] app_path" config key when set, otherwise lx-lyrics-app on
+ * $PATH. Main thread only (aud_get_str() is part of the host's config API). */
+bool LxLyrics::resolve_app_path(char* path, size_t path_size)
+{
+  const String configured = aud_get_str(LX_CONF_SECTION, LX_CONF_APP_PATH);
+  const char* text = configured;
+  if (text && text[0] != '\0') {
+    snprintf(path, path_size, "%s", text);
+    return true;
+  }
+  return find_on_path(LX_APP_NAME, path, path_size);
+}
+
+/* The "[lx-lyrics] hotkey_helper" key when set, otherwise lx-lyrics-hotkey
+ * next to the resolved app (tools/install.sh puts both in <prefix>/bin), then
+ * on $PATH. Main thread only. */
+bool LxLyrics::resolve_hotkey_helper(char* path, size_t path_size)
+{
+  const String configured = aud_get_str(LX_CONF_SECTION, LX_CONF_HOTKEY_HELPER);
+  const char* text = configured;
+  if (text && text[0] != '\0') {
+    snprintf(path, path_size, "%s", text);
+    return access(path, X_OK) == 0;
+  }
+
+  char app[PATH_MAX];
+  if (resolve_app_path(app, sizeof(app))) {
+    const char* slash = strrchr(app, '/');
+    const size_t dir_len = slash ? (size_t)(slash - app) : 0;
+    if (dir_len > 0 && dir_len + 1 + sizeof(LX_HOTKEY_NAME) <= path_size) {
+      memcpy(path, app, dir_len);
+      path[dir_len] = '/';
+      memcpy(path + dir_len + 1, LX_HOTKEY_NAME, sizeof(LX_HOTKEY_NAME));
+      if (access(path, X_OK) == 0) {
+        return true;
+      }
+    }
+  }
+  return find_on_path(LX_HOTKEY_NAME, path, path_size);
+}
+
+/* Starts the helper whenever the plugin is enabled — including when the
+ * lyrics window stays hidden, which is the point of the key. A missing helper
+ * or a failed spawn is one warning; the adapter keeps working without a
+ * shortcut. */
+void LxLyrics::start_hotkey()
+{
+  char helper[PATH_MAX];
+  if (!resolve_hotkey_helper(helper, sizeof(helper))) {
+    AUDWARN("lx-lyrics: %s not found; the global shortcut is unavailable\n", LX_HOTKEY_NAME);
+    return;
+  }
+
+  const String preferred = aud_get_str(LX_CONF_SECTION, LX_CONF_HOTKEY);
+  const char* trigger = preferred;
+  const lx_hotkey_config_t config = {
+    .helper_path = helper,
+    .accelerator = (trigger && trigger[0] != '\0') ? trigger : nullptr,
+    .on_toggle = on_hotkey_toggle,
+    .on_status = on_hotkey_status,
+    .userdata = this,
+  };
+  m_hotkey = lx_hotkey_start(&config);
+  if (!m_hotkey) {
+    AUDWARN("lx-lyrics: cannot spawn %s; the global shortcut is unavailable\n", helper);
+  }
 }
 
 /* ------------------------------------------------------------- plugin entry */
@@ -718,6 +848,10 @@ bool LxLyrics::init()
     AUDERR("lx-lyrics: cannot allocate the session state; staying enabled and idle\n");
     return true;
   }
+
+  /* Before the remember_state restore below: enabled is enough for the key,
+   * and its whole point is to open a window that starts hidden. */
+  start_hotkey();
 
   /* The settings page's remember-state checkbox gates the player-start restore
    * only — the same shape as Fooyin's LxLyrics/RememberState. What tells that
@@ -756,6 +890,13 @@ void LxLyrics::cleanup()
   m_ending = true;
   pthread_mutex_unlock(&m_request_lock);
   m_end_queued.stop();
+
+  /* Stop the helper before the session it toggles: lx_hotkey_stop() joins the
+   * reader thread, and a toggle it had already queued must not run against a
+   * freed session. */
+  lx_hotkey_stop(m_hotkey);
+  m_hotkey = nullptr;
+  m_toggle_queued.stop();
 
   /* lx_session_free() runs the stop target when the window is still showing:
    * detach the hooks, close stdin, join the reader and reap the app
