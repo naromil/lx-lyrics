@@ -116,6 +116,13 @@ private:
   /// The helper's reader thread: "ready <trigger>", "unavailable <reason>" or
   /// any other status line, logged once each. Touches no plugin state.
   static void onHotkeyStatus(const char* line, void* userdata);
+  /// A "toggle" line from the helper. The reader thread only queues; the
+  /// action flip happens on the Qt main thread in toggleFromHotkey().
+  static void onHotkeyToggle(void* userdata);
+  /// Queued main-thread half of onHotkeyToggle(): flips the checked action
+  /// exactly like the View-menu item, so toggled() runs the normal
+  /// start/stop path (no second implementation of the session switch).
+  void toggleFromHotkey();
   /// Wires windowStateChanged on EVERY window in QGuiApplication::allWindows()
   /// (Qt::UniqueConnection + this as context: destroyed windows auto-clean,
   /// repeated connects dedupe), plus a visibleChanged re-scan hook and a

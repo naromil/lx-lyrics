@@ -486,7 +486,7 @@ void LxLyricsPlugin::startHotkey()
   const lx_hotkey_config_t config = {
     .helper_path = helperPath.constData(),
     .accelerator = accelerator.isEmpty() ? nullptr : accelerator.constData(),
-    .on_toggle = nullptr,
+    .on_toggle = onHotkeyToggle,
     .on_status = onHotkeyStatus,
     .userdata = this,
   };
@@ -559,4 +559,34 @@ void LxLyricsPlugin::onHotkeyStatus(const char* line, void* userdata)
   } else if (!text.isEmpty()) {
     qInfo() << "[LX Lyrics] hotkey helper:" << text;
   }
+}
+
+void LxLyricsPlugin::onHotkeyToggle(void* userdata)
+{
+  auto* self = static_cast<LxLyricsPlugin*>(userdata);
+  if (self == nullptr) {
+    return;
+  }
+  // The helper's reader thread must never touch the action or the session:
+  // queue the flip onto the Qt main thread, where a View-menu click runs.
+  QMetaObject::invokeMethod(
+    self,
+    [self] {
+      self->toggleFromHotkey();
+    },
+    Qt::QueuedConnection);
+}
+
+void LxLyricsPlugin::toggleFromHotkey()
+{
+  if (m_toggleAction == nullptr) {
+    qWarning() << "[LX Lyrics] global shortcut pressed before the GUI initialised; ignored";
+    return;
+  }
+
+  // Exactly what clicking View → Desktop Lyrics does: flip the checked action
+  // and let its toggled() signal run the normal start/stop path.
+  m_toggleAction->setChecked(!m_toggleAction->isChecked());
+  qInfo() << "[LX Lyrics] desktop lyrics" << (m_toggleAction->isChecked() ? "enabled" : "disabled")
+          << "from the global shortcut";
 }
