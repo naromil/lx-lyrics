@@ -17,6 +17,7 @@
 #include "app/spectrumbridge.h"
 #include "app/spectrumtransport.h"
 #include "host/feedreader.h"
+#include "host/orphansweep.h"
 #include "host/pipeio.h"
 #include "i18n/translationmanager.h"
 #include "window/lyricwindow.h"
@@ -122,6 +123,12 @@ int main(int argc, char* argv[])
   // machine: the lyric pipeline in LyricController, the play boolean into
   // PauseHide, the spectrum frames into SpectrumBridge.
   if (cli.playerFeed) {
+    // A player that died before closing our stdin leaves this session with no
+    // EOF, and the never-closed window would sit on screen forever. Sweep our
+    // own previous sessions before opening a new one; a no-op when there are
+    // none (and in --demo / inert mode, which never runs this branch).
+    reapOrphanFeeds();
+
     auto* stdinDevice = new PipeReadDevice(0, &appContext);
     auto* stdoutDevice = new PipeWriteDevice(1, &appContext);
     appContext.feedReader = std::make_unique<FeedReader>(stdinDevice, stdoutDevice, &appContext);

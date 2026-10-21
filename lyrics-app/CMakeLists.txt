@@ -61,6 +61,8 @@ add_executable(lx-lyrics-app
     src/host/feedreader.cpp
     src/host/feedreader.h
     src/host/feedtypes.h
+    src/host/orphansweep.cpp
+    src/host/orphansweep.h
     src/host/pipeio.cpp
     src/host/pipeio.h
     src/host/tracklyrics.cpp
@@ -233,3 +235,19 @@ target_link_libraries(lyrics-app-controller-tests PRIVATE
 )
 
 add_test(NAME controller COMMAND lyrics-app-controller-tests)
+
+# Tests for the orphan sweep (src/host/orphansweep.{h,cpp}): real forked decoys
+# prove a sweep kills only orphaned `lx-lyrics-app --player-feed` processes.
+add_executable(lyrics-app-orphan-tests
+    tests/tst_orphan.cpp
+    src/host/orphansweep.cpp
+    src/host/orphansweep.h
+)
+
+target_include_directories(lyrics-app-orphan-tests PRIVATE src/)
+
+target_link_libraries(lyrics-app-orphan-tests PRIVATE
+    Qt6::Test
+)
+
+add_test(NAME orphan COMMAND lyrics-app-orphan-tests)
