@@ -538,7 +538,7 @@ QString LxLyricsPlugin::resolveHotkeyHelper() const
       QCoreApplication::applicationDirPath() + QLatin1Char('/') + QStringLiteral("lx-lyrics-app");
   }
 
-  const QString beside =
+  QString beside =
     QFileInfo(app).absolutePath() + QLatin1Char('/') + QStringLiteral("lx-lyrics-hotkey");
   if (QFileInfo(beside).isExecutable()) {
     return beside;
