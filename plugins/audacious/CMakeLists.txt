@@ -50,6 +50,7 @@ add_library(lxlyrics MODULE
   src/plugin.cc
   src/feed.c
   src/json.c
+  src/session.c
   src/spectrum.cc
 )
 set_target_properties(lxlyrics PROPERTIES PREFIX "" OUTPUT_NAME "lxlyrics")
@@ -65,3 +66,10 @@ target_include_directories(feed_test PRIVATE src)
 target_compile_options(feed_test PRIVATE -Wall -Wextra)
 target_link_libraries(feed_test PRIVATE Threads::Threads)
 add_test(NAME feed_test COMMAND feed_test)
+
+# Hermetic state-machine tests: session.c only (no Audacious headers, no player,
+# no display server). Same dictated header as the supervisor's contract test.
+add_executable(session_test tests/session_test.c src/session.c)
+target_include_directories(session_test PRIVATE src)
+target_compile_options(session_test PRIVATE -Wall -Wextra)
+add_test(NAME session_test COMMAND session_test)

@@ -80,7 +80,7 @@ typedef struct {
    * with a missing/unsupported `v`, an unknown action, or a line over
    * LX_FEED_MAX_LINE. The session is already over when this is called (the
    * app's stdin was closed, so it quits on EOF per §2) and it is never
-   * respawned: the host ends its session and turns its toggle off.
+   * respawned: the host ends its session and stays loaded and idle.
    */
   void (*protocol_error)(lx_feed_t* feed, void* userdata, const char* reason);
   /** The app's stdout reached EOF (or the stop grace expired): the session is over. */

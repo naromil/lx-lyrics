@@ -24,6 +24,7 @@
 #include <libaudcore/tuple.h>
 
 #include "feed.h"
+#include "session.h"
 #include "spectrum.h"
 
 #include <limits.h>
@@ -37,9 +38,9 @@
 /** Config section/key overriding where lx-lyrics-app lives (audacious.conf). */
 #define LX_CONF_SECTION "lx-lyrics"
 #define LX_CONF_APP_PATH "app_path"
-/** The settings page's "remember the state" checkbox: off makes the plugin drop
- * its own enable state at the next player start instead of restoring a session
- * (see init()). */
+/** The settings page's "remember the state" checkbox: on restores a visible
+ * lyrics window at the next player start; off starts the plugin enabled with
+ * the window hidden (see init()). */
 #define LX_CONF_REMEMBER_STATE "remember_state"
 /** Name reported in `hello.host`. */
 #define LX_HOST_NAME "audacious"
@@ -132,10 +133,12 @@ static const char lx_about[] = N_(
   "window). The app acquires the lyrics itself (the sidecar .lrc next to the file, then the file's "
   "embedded tag), parses them and renders the window; no lyric is read, parsed or rendered "
   "here.\n\n"
-  "Settings: the app-path entry says which binary to spawn (empty searches $PATH), \"Open lyrics "
-  "settings\" raises the app's own configuration dialog over the same pipe, and the remember-state "
-  "checkbox decides whether a session that is running when the player exits is restored at the "
-  "next player start.");
+  "Settings: the app-path entry says which binary to spawn (empty searches $PATH), \"Show or "
+  "hide the lyrics window\" starts or stops the display without disabling this plugin, \"Open "
+  "lyrics settings\" raises the app's own configuration dialog over the same pipe, and the "
+  "remember-state checkbox decides whether the lyrics window is shown again at the next player "
+  "start. A hidden lyrics window is not the plugin being off: playback is reported only while "
+  "the window is showing, and the settings-page button brings it back.");
 
 /*
  * The plugin's preferences page — the app path, a "remember the state" checkbox
@@ -153,15 +156,18 @@ static const char lx_about[] = N_(
  * is read/written with aud_get_bool()/aud_set_bool() (preferences.cc:25-48),
  * and the defaults registered below decide what an untouched config shows.
  *
- * The button is the one non-config widget, and its label is the whole point:
- * the app's own settings (37 keys) are edited in the app's dialog, which this
- * page reaches over the feed instead of duplicating them. A button is
- * declarative too — WidgetButton carries the callback (preferences.h:299) — but
- * the callback itself must be a plain function, so it is declared here (the
- * array needs its address) and defined below the plugin class, which owns the
- * session.
+ * The buttons are the non-config widgets. "Show or hide the lyrics window" is
+ * this adapter's own session switch: the plugin no longer disables itself when
+ * the app goes away (§4), so this page is the explicit way back to a visible
+ * window (the global shortcut is a later round). "Open lyrics settings" reaches
+ * the app's own configuration dialog (37 keys) over the feed instead of
+ * duplicating it. A button is declarative too — WidgetButton carries the
+ * callback (preferences.h:299) — but the callback itself must be a plain
+ * function, so both are declared here (the array needs their addresses) and
+ * defined below the plugin class, which owns the session.
  */
 static void lx_open_settings_clicked();
+static void lx_toggle_clicked();
 
 /* Registered so a config that never saw the key reads "remember" — aud_get_str()
  * falls back to these defaults (config.cc:402-412), which is what the checkbox
@@ -171,11 +177,13 @@ static const char* const lx_config_defaults[] = {LX_CONF_REMEMBER_STATE, "TRUE",
 static const PreferencesWidget lx_widgets[] = {
   WidgetLabel(N_("Path to the lx-lyrics-app executable; empty means search $PATH.")),
   WidgetEntry(N_("Application:"), WidgetString(LX_CONF_SECTION, LX_CONF_APP_PATH)),
-  /* Off: a player start refuses to restore a session instead of starting one
-   * (see init()); the box only ever gates that restore. */
+  /* Off: a player start begins with the plugin enabled and the lyrics window
+   * hidden instead of restoring one (see init()); the box only ever gates that
+   * restore, a session the user asks for is always shown. */
   WidgetCheck(N_("Remember the desktop lyrics state from the last session"),
               WidgetBool(LX_CONF_SECTION, LX_CONF_REMEMBER_STATE)),
   WidgetButton(N_("Open lyrics settings"), WidgetVButton{lx_open_settings_clicked, nullptr}),
+  WidgetButton(N_("Show or hide the lyrics window"), WidgetVButton{lx_toggle_clicked, nullptr}),
 };
 
 static constexpr PluginPreferences lx_prefs = {
@@ -188,14 +196,17 @@ static constexpr PluginPreferences lx_prefs = {
 /*
  * The plugin.
  *
- * There is no toggle of its own: Audacious' Plugins settings page enables and
- * disables plugins, and an enabled general plugin is started at every player
- * start (plugin-init.cc:156-176 start_plugins -> start_plugins_two, called from
+ * Enabled is not the same as showing. Audacious' Plugins page enables and
+ * disables plugins; an enabled general plugin is started at every player start
+ * (plugin-init.cc:156-176 start_plugins -> start_plugins_two, called from
  * aud_run() at runtime.cc:343) and stopped on disable and at shutdown
- * (plugin-init.cc:31-43, :305-306). init() therefore starts the session and
- * cleanup() ends it, and turning the plugin's own enable state off is how this
- * adapter reports "no session" (§4/§7) — the same decision the Rhythmbox
- * adapter documents for its host.
+ * (plugin-init.cc:31-43, :305-306). init() therefore prepares the session
+ * state machine and cleanup() frees it, while the app itself is spawned only
+ * when the window should be visible: a user toggle on this page, or the
+ * remember-state restore at player start. When the app ends on its own (§4
+ * close_requested, §7 protocol error, or an exit) the state machine drops to
+ * hidden and the plugin stays enabled and idle — the playback hooks are
+ * dissociated, so nothing respawns the window until the user asks again.
  *
  * The page `info.prefs` points at below is the one place the app path is
  * editable in the host's UI: Settings -> Plugins -> the settings icon in the LX
@@ -210,6 +221,8 @@ static constexpr PluginPreferences lx_prefs = {
  * (plugin-prefs.cc:174) — and both are reachable only while the plugin is
  * enabled, because the host gates them on `aud_plugin_has_configure(p) &&
  * aud_plugin_get_enabled(p)` (plugin-view.cc:170-175, prefs-window-qt.cc:627-628).
+ * Keeping the plugin enabled while the window is hidden therefore also keeps
+ * this page — and the toggle on it — reachable.
  *
  * `info.about` (lx_about) is the row's separate information button: the Qt list
  * paints an information icon in that column and the GTK/skins view adds an
@@ -232,12 +245,19 @@ public:
   void cleanup() override;
 
   /**
-   * The session ended somewhere else: the user closed the lyric window
+   * The app ended somewhere else: the user closed the lyric window
    * (`close_requested`, §4), the app violated the protocol (§7), or the app
    * exited. Called from the feed's reader thread; hops to the main thread and
-   * turns the plugin's enable state off, so nothing is respawned.
+   * tells the session state machine the window is gone. The plugin stays
+   * enabled and idle, so nothing is respawned.
    */
   void request_end(const char* reason);
+
+  /* lx_session_ops_t targets (the ops struct is built in init()). start()
+   * resolves the app path and spawns the feed; stop() detaches the host hooks
+   * and tears that feed down. Main thread only. */
+  static void* session_start(void* userdata);
+  static void session_stop(void* handle, void* userdata);
 
 private:
   /* Playback hooks. All of them are delivered on the main thread. */
@@ -259,19 +279,23 @@ private:
   void refresh();
   void push_info();
   void push_state();
-  void end_session();
+  /* Host hooks + snapshot clock + analyser: registered only while the window
+   * is showing, so a playback event can never respawn a hidden session. */
+  void attach_hooks();
+  void detach_hooks();
   bool resolve_app_path(char* path, size_t path_size);
 
-  /* The prefs page's button (lx_widgets) has to be a plain function — a
-   * declarative PreferencesWidget holds a `void (*)()` — so it is declared at
-   * file scope and friend of the session it pushes to. */
+  /* Both prefs-page buttons (lx_widgets) have to be plain functions — a
+   * declarative PreferencesWidget holds a `void (*)()` — so they are declared
+   * at file scope and friends of the session they drive. */
   friend void lx_open_settings_clicked();
+  friend void lx_toggle_clicked();
 
   Timer<LxLyrics> m_timer;
   QueuedFunc m_end_queued;
   LxSpectrum m_spectrum;
   lx_feed_t* m_feed = nullptr;
-  PluginHandle* m_self = nullptr;
+  lx_session_t* m_session = nullptr;
   char m_app_path[PATH_MAX] = {0};
   /* Guards m_ending/m_end_reason, which the feed's reader thread writes through
    * request_end() while the main thread reads them. */
@@ -291,12 +315,28 @@ __attribute__((visibility("default"))) LxLyrics aud_plugin_instance;
  * on the program's main thread — the frontends connect the widget's own clicked
  * signal (prefs-widget-qt.cc / plugin-prefs.cc), the same thread that spawns,
  * pushes and stops the session — and lx_feed_send_open_settings() is a no-op
- * with no session, so a click while the app is gone does nothing instead of
- * needing an enable/disable dance.
+ * with no session, so a click while the window is hidden does nothing instead
+ * of needing a session just to reach the app's dialog.
  */
 static void lx_open_settings_clicked()
 {
   lx_feed_send_open_settings(aud_plugin_instance.m_feed);
+}
+
+/*
+ * "Show or hide the lyrics window" (the prefs page's second button): the
+ * explicit session switch. The window used to come and go with the plugin's
+ * own enable state; now the plugin stays enabled, so this is the way back
+ * without disabling anything (a global shortcut is a later round).
+ */
+static void lx_toggle_clicked()
+{
+  if (!aud_plugin_instance.m_session) {
+    AUDWARN("lx-lyrics: the session state is not ready; not toggling the window\n");
+    return;
+  }
+  const bool showing = lx_session_toggle(aud_plugin_instance.m_session);
+  AUDINFO("lx-lyrics: the lyrics window is now %s\n", showing ? "visible" : "hidden");
 }
 
 LxLyrics::LxLyrics()
@@ -514,25 +554,118 @@ void LxLyrics::request_end(const char* reason)
    * (eventqueue.cc:71-78) — and its registry is a mutex-guarded hash table
    * (mainloop.cc:70-71). */
   m_end_queued.queue([]() {
-    aud_plugin_instance.end_session();
+    LxLyrics* self = &aud_plugin_instance;
+    char reason[LX_REASON_SIZE * 2];
+    pthread_mutex_lock(&self->m_request_lock);
+    snprintf(reason, sizeof(reason), "%s", self->m_end_reason);
+    pthread_mutex_unlock(&self->m_request_lock);
+    const char* text = reason[0] ? reason : "the session ended";
+    AUDWARN("lx-lyrics: the lyrics window is no longer showing (%s)\n", text);
+    lx_session_app_ended(self->m_session, text);
   });
 }
 
-/* Turns the plugin's own enable state off, which is what makes the Plugins page
- * honestly read off (§4/§7: end the session, never respawn). aud_plugin_enable()
- * then runs cleanup() — the single teardown path — and is a no-op when the
- * plugin is already disabled (plugin-init.cc:313-317). */
-void LxLyrics::end_session()
+/* The session state machine's start target: resolve the app path, register the
+ * host hooks for a visible window, spawn the feed and push the first snapshot
+ * (protocol.md §3). Returns the feed handle (the state machine's opaque
+ * handle), or nullptr when no session could be started. Main thread only. */
+void* LxLyrics::session_start(void* userdata)
 {
-  char reason[LX_REASON_SIZE];
-  pthread_mutex_lock(&m_request_lock);
-  snprintf(reason, sizeof(reason), "%s", m_end_reason);
-  pthread_mutex_unlock(&m_request_lock);
-  AUDWARN("lx-lyrics: ending the session (%s)\n", reason[0] ? reason : "the session ended");
-  if (!m_self) {
-    return;
+  auto* self = static_cast<LxLyrics*>(userdata);
+
+  /* A new session invalidates every end request from the previous one; a
+   * queued app_ended must not hide the window we are about to show. */
+  self->m_end_queued.stop();
+  pthread_mutex_lock(&self->m_request_lock);
+  self->m_end_reason[0] = '\0';
+  pthread_mutex_unlock(&self->m_request_lock);
+
+  if (!self->resolve_app_path(self->m_app_path, sizeof(self->m_app_path))) {
+    AUDERR("lx-lyrics: %s not found; install it or set \"%s\" in the [%s] section of "
+           "$XDG_CONFIG_HOME/audacious/config\n",
+           LX_APP_NAME, LX_CONF_APP_PATH, LX_CONF_SECTION);
+    return nullptr;
   }
-  aud_plugin_enable(m_self, false);
+
+  /* Hooks and the snapshot clock first: they are all delivered on this thread,
+   * so none can fire before the spawn below returns. They come straight back
+   * off again if the spawn fails, leaving the plugin idle. */
+  self->attach_hooks();
+
+  const lx_feed_callbacks_t callbacks = {
+    .analyser_data_requested = on_analyser_data_requested,
+    .close_requested = on_close_requested,
+    .protocol_error = on_protocol_error,
+    .child_exited = on_child_exited,
+    .sample_status = on_sample_status,
+  };
+  self->m_feed = lx_feed_spawn(self->m_app_path, LX_HOST_NAME, true, &callbacks, nullptr);
+  if (!self->m_feed) {
+    AUDERR("lx-lyrics: cannot spawn %s\n", self->m_app_path);
+    self->detach_hooks();
+    return nullptr;
+  }
+  AUDINFO("lx-lyrics: session started (%s)\n", self->m_app_path);
+
+  /* The initial snapshot right after the spawn, so showing the window during
+   * playback displays the current track at once. */
+  self->refresh();
+  self->push_info();
+  self->push_state();
+  return self->m_feed;
+}
+
+/* The session state machine's stop target: dissociate the host hooks before
+ * the feed goes away (no frame or playback event may arrive mid-teardown),
+ * then close the app's stdin and join/reap it (protocol.md §2). */
+void LxLyrics::session_stop(void* handle, void* userdata)
+{
+  auto* self = static_cast<LxLyrics*>(userdata);
+  self->detach_hooks();
+
+  /* The reader thread reports child_exited while lx_feed_stop() joins it; that
+   * is this teardown, not a new session end, so request_end() must ignore it.
+   * cleanup() may already have set the flag, so restore what was there. */
+  pthread_mutex_lock(&self->m_request_lock);
+  const bool ending_before = self->m_ending;
+  self->m_ending = true;
+  pthread_mutex_unlock(&self->m_request_lock);
+
+  lx_feed_t* feed = static_cast<lx_feed_t*>(handle);
+  lx_feed_stop(feed);
+  if (self->m_feed == feed) {
+    self->m_feed = nullptr;
+  }
+
+  pthread_mutex_lock(&self->m_request_lock);
+  self->m_ending = ending_before;
+  pthread_mutex_unlock(&self->m_request_lock);
+}
+
+void LxLyrics::attach_hooks()
+{
+  hook_associate("playback begin", on_playback_begin, nullptr);
+  hook_associate("playback stop", on_playback_stop, nullptr);
+  hook_associate("playback pause", on_playback_pause, nullptr);
+  hook_associate("playback unpause", on_playback_unpause, nullptr);
+  hook_associate("playback seek", on_playback_seek, nullptr);
+  hook_associate("tuple change", on_tuple_change, nullptr);
+  m_timer.start();
+  m_spectrum.start();
+}
+
+void LxLyrics::detach_hooks()
+{
+  /* Unregister the analyser before the feed goes away, so no frame can arrive
+   * while the feed is released. Both stop paths are no-ops when hidden. */
+  m_spectrum.stop();
+  m_timer.stop();
+  hook_dissociate("playback begin", on_playback_begin);
+  hook_dissociate("playback stop", on_playback_stop);
+  hook_dissociate("playback pause", on_playback_pause);
+  hook_dissociate("playback unpause", on_playback_unpause);
+  hook_dissociate("playback seek", on_playback_seek);
+  hook_dissociate("tuple change", on_tuple_change);
 }
 
 /* The "[lx-lyrics] app_path" config key when set, otherwise lx-lyrics-app on
@@ -573,16 +706,18 @@ bool LxLyrics::resolve_app_path(char* path, size_t path_size)
 
 bool LxLyrics::init()
 {
-  m_self = aud_plugin_by_header(&aud_plugin_instance);
-  if (!m_self) {
-    AUDERR("lx-lyrics: cannot resolve our own plugin handle; not starting a session\n");
-    return true;
-  }
   aud_config_set_defaults(LX_CONF_SECTION, lx_config_defaults);
   pthread_mutex_lock(&m_request_lock);
   m_ending = false;
   m_end_reason[0] = '\0';
   pthread_mutex_unlock(&m_request_lock);
+
+  const lx_session_ops_t ops = {.start = session_start, .stop = session_stop};
+  m_session = lx_session_new(&ops, this);
+  if (!m_session) {
+    AUDERR("lx-lyrics: cannot allocate the session state; staying enabled and idle\n");
+    return true;
+  }
 
   /* The settings page's remember-state checkbox gates the player-start restore
    * only — the same shape as Fooyin's LxLyrics/RememberState. What tells that
@@ -592,88 +727,41 @@ bool LxLyrics::init()
    * restores LX Lyrics, while the Plugins page — and audtool, and D-Bus — can
    * only ever enable it with one already running. A session the user asks for is
    * therefore always honoured, this run or after the box was flipped.
-   * With remembering off, the restore turns the plugin's own enable state off
-   * instead of starting a session: this adapter has no "enabled but idle" state
-   * (the toggle *is* the session switch, §4/§7), so the next player start begins
-   * disabled and nothing is spawned on its own. A headless run starts no
-   * interface at all, so there is nothing to tell the two apart by there and the
-   * checkbox stays inert. */
+   * With remembering off, the restore starts the plugin enabled with the lyrics
+   * window hidden (no spawn) instead of turning the plugin off: the user brings
+   * it back with the settings page's toggle. A headless run starts no interface
+   * at all, so there is nothing to tell the two apart by there and the checkbox
+   * stays inert. */
   const bool restoring =
     !aud_get_headless_mode() && aud_plugin_get_current(PluginType::Iface) == nullptr;
   if (restoring && !aud_get_bool(LX_CONF_SECTION, LX_CONF_REMEMBER_STATE)) {
-    request_end("the last session is not remembered");
+    AUDINFO("lx-lyrics: not restoring the lyrics window (remember_state is off); "
+            "the plugin stays enabled and idle\n");
     return true;
   }
 
-  if (!resolve_app_path(m_app_path, sizeof(m_app_path))) {
-    AUDERR("lx-lyrics: %s not found; install it or set \"%s\" in the [%s] section of "
-           "$XDG_CONFIG_HOME/audacious/config\n",
-           LX_APP_NAME, LX_CONF_APP_PATH, LX_CONF_SECTION);
-    /* No session, so the toggle must not claim one: end_session() is queued
-     * because we are inside start_plugin() right now. */
-    request_end("the display app was not found");
-    return true;
+  if (!lx_session_show(m_session)) {
+    AUDERR("lx-lyrics: the lyrics window could not be started; the plugin stays enabled and "
+           "idle\n");
   }
-
-  /* Hooks and the snapshot clock first: they are all delivered on this thread,
-   * so they cannot fire before the spawn below returns. */
-  hook_associate("playback begin", on_playback_begin, nullptr);
-  hook_associate("playback stop", on_playback_stop, nullptr);
-  hook_associate("playback pause", on_playback_pause, nullptr);
-  hook_associate("playback unpause", on_playback_unpause, nullptr);
-  hook_associate("playback seek", on_playback_seek, nullptr);
-  hook_associate("tuple change", on_tuple_change, nullptr);
-  m_timer.start();
-  m_spectrum.start();
-
-  const lx_feed_callbacks_t callbacks = {
-    .analyser_data_requested = on_analyser_data_requested,
-    .close_requested = on_close_requested,
-    .protocol_error = on_protocol_error,
-    .child_exited = on_child_exited,
-    .sample_status = on_sample_status,
-  };
-  m_feed = lx_feed_spawn(m_app_path, LX_HOST_NAME, true, &callbacks, nullptr);
-  if (!m_feed) {
-    AUDERR("lx-lyrics: cannot spawn %s\n", m_app_path);
-    request_end("the display app could not be spawned");
-    return true;
-  }
-  AUDINFO("lx-lyrics: session started (%s)\n", m_app_path);
-
-  /* Push the initial snapshot right after the spawn (protocol.md §3), so
-   * enabling the plugin during playback shows the current track at once. */
-  refresh();
-  push_info();
-  push_state();
   return true;
 }
 
 void LxLyrics::cleanup()
 {
-  /* Stop accepting session-end requests first: lx_feed_stop() below makes the
-   * reader thread report child_exited, which must not queue another teardown. */
+  /* Stop accepting session-end requests first: freeing the session below tears
+   * the feed down, which makes the reader thread report child_exited; that must
+   * not queue another teardown. */
   pthread_mutex_lock(&m_request_lock);
   m_ending = true;
   pthread_mutex_unlock(&m_request_lock);
   m_end_queued.stop();
 
-  /* Unregister the analyser before the child goes away, so no frame can arrive
-   * while the feed is released. */
-  m_spectrum.stop();
-  m_timer.stop();
-  hook_dissociate("playback begin", on_playback_begin);
-  hook_dissociate("playback stop", on_playback_stop);
-  hook_dissociate("playback pause", on_playback_pause);
-  hook_dissociate("playback unpause", on_playback_unpause);
-  hook_dissociate("playback seek", on_playback_seek);
-  hook_dissociate("tuple change", on_tuple_change);
-
-  /* protocol.md §2: closing the app's stdin is how it is told the player is
-   * gone. lx_feed_stop() joins the reader thread, gives the app
-   * LX_FEED_STOP_GRACE_MS to leave on its own and reaps it. */
-  lx_feed_stop(m_feed);
-  m_feed = nullptr;
+  /* lx_session_free() runs the stop target when the window is still showing:
+   * detach the hooks, close stdin, join the reader and reap the app
+   * (protocol.md §2). Safe when the session is already hidden. */
+  lx_session_free(m_session);
+  m_session = nullptr;
 
   pthread_mutex_lock(&m_request_lock);
   m_ending = false;
