@@ -18,9 +18,12 @@
 
 #include <QAction>
 #include <QDebug>
+#include <QFile>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QPointer>
 #include <QSignalBlocker>
+#include <QStandardPaths>
 #include <QTimer>
 #include <QWindow>
 
@@ -38,11 +41,17 @@ void LxLyricsPlugin::initialise(const Fooyin::CorePluginContext& context)
   m_settingsManager->createSetting(LxLyrics::appPathKey, QString());
   m_settingsManager->createSetting(LxLyrics::rememberStateKey, true);
   m_settingsManager->createSetting(LxLyrics::enabledKey, false);
+  m_settingsManager->createSetting(LxLyrics::hotkeyKey, QStringLiteral("CTRL+ALT+l"));
+  m_settingsManager->createSetting(LxLyrics::hotkeyHelperKey, QString());
 
   const bool spectrumAvailable = m_engineController && m_engineController->visualisationService();
 
   qInfo() << "[LX Lyrics] CorePlugin initialised; playerController, settingsManager, engine stored"
           << "| visualisationService:" << (spectrumAvailable ? "available" : "unavailable");
+
+  // The helper needs no player interface and no window session: it is started
+  // here so the key exists for the plugin's whole lifetime (enabled ≠ showing).
+  startHotkey();
 }
 
 void LxLyricsPlugin::initialise(const Fooyin::GuiPluginContext& context)
@@ -141,6 +150,10 @@ std::unique_ptr<Fooyin::PluginSettingsProvider> LxLyricsPlugin::settingsProvider
 void LxLyricsPlugin::shutdown()
 {
   qInfo() << "[LX Lyrics] shutdown";
+
+  // The helper goes first: its reader thread must not queue a toggle into a
+  // session that is being torn down.
+  stopHotkey();
 
   // Stopping the feed terminates the child lyrics-app: the lyric window lives
   // and dies with the session, never as an orphan. The spectrum source is
@@ -450,5 +463,100 @@ void LxLyricsPlugin::updateFullscreen(bool force)
   m_lastFullscreenSent = isFullscreen;
   if (m_feedWriter != nullptr) {
     m_feedWriter->sendSetFullscreen(isFullscreen);
+  }
+}
+
+void LxLyricsPlugin::startHotkey()
+{
+  if (m_hotkey != nullptr || m_settingsManager == nullptr) {
+    return;
+  }
+
+  const QString helper = resolveHotkeyHelper();
+  if (helper.isEmpty()) {
+    qWarning() << "[LX Lyrics] lx-lyrics-hotkey not found; the global shortcut is unavailable";
+    return;
+  }
+
+  // lx_hotkey_start() forks/execs synchronously, so the encoded strings only
+  // need to outlive the call.
+  const QByteArray helperPath = QFile::encodeName(helper);
+  const QByteArray accelerator =
+    m_settingsManager->value(LxLyrics::hotkeyKey).toString().trimmed().toUtf8();
+  const lx_hotkey_config_t config = {
+    .helper_path = helperPath.constData(),
+    .accelerator = accelerator.isEmpty() ? nullptr : accelerator.constData(),
+    .on_toggle = nullptr,
+    .on_status = onHotkeyStatus,
+    .userdata = this,
+  };
+  m_hotkey = lx_hotkey_start(&config);
+  if (m_hotkey == nullptr) {
+    qWarning() << "[LX Lyrics] cannot spawn" << helper << "; the global shortcut is unavailable";
+    return;
+  }
+
+  qInfo() << "[LX Lyrics] global-shortcut helper started:" << helper;
+}
+
+void LxLyricsPlugin::stopHotkey()
+{
+  if (m_hotkey == nullptr) {
+    return;
+  }
+  // Stops the reader, closes the pipe, then SIGTERM→SIGKILL and reaps the
+  // helper; the handle has no destroy call (the transport's contract).
+  lx_hotkey_stop(m_hotkey);
+  m_hotkey = nullptr;
+}
+
+QString LxLyricsPlugin::resolveHotkeyHelper() const
+{
+  if (m_settingsManager == nullptr) {
+    return {};
+  }
+
+  // A configured value is the user's explicit choice: a path, or a bare name
+  // looked up on PATH. A value that cannot run is reported as "not found".
+  const QString configured =
+    m_settingsManager->value(LxLyrics::hotkeyHelperKey).toString().trimmed();
+  if (!configured.isEmpty()) {
+    const QString resolved = configured.contains(QLatin1Char('/'))
+                               ? configured
+                               : QStandardPaths::findExecutable(configured);
+    return QFileInfo(resolved).isExecutable() ? resolved : QString();
+  }
+
+  // Otherwise next to the app (the installer puts both into <prefix>/bin),
+  // using the same AppPath resolution the feed writer uses, then PATH.
+  QString app = m_settingsManager->value(LxLyrics::appPathKey).toString().trimmed();
+  if (app.isEmpty()) {
+    app = QStandardPaths::findExecutable(QStringLiteral("lx-lyrics-app"));
+  }
+  if (app.isEmpty()) {
+    app =
+      QCoreApplication::applicationDirPath() + QLatin1Char('/') + QStringLiteral("lx-lyrics-app");
+  }
+
+  const QString beside =
+    QFileInfo(app).absolutePath() + QLatin1Char('/') + QStringLiteral("lx-lyrics-hotkey");
+  if (QFileInfo(beside).isExecutable()) {
+    return beside;
+  }
+  return QStandardPaths::findExecutable(QStringLiteral("lx-lyrics-hotkey"));
+}
+
+void LxLyricsPlugin::onHotkeyStatus(const char* line, void* userdata)
+{
+  (void)userdata;
+  // Runs on the helper's reader thread; logging is thread-safe and this
+  // touches no plugin state. The helper writes each status line once.
+  const QString text = QString::fromLocal8Bit(line != nullptr ? line : "");
+  if (text.startsWith(QLatin1String("ready "))) {
+    qInfo() << "[LX Lyrics] global shortcut bound to" << text.mid(6);
+  } else if (text.startsWith(QLatin1String("unavailable "))) {
+    qWarning() << "[LX Lyrics] global shortcut unavailable" << text.mid(12);
+  } else if (!text.isEmpty()) {
+    qInfo() << "[LX Lyrics] hotkey helper:" << text;
   }
 }

@@ -8,6 +8,7 @@
 #pragma once
 
 #include "feedwriter.h"
+#include "hotkey.h"
 #include "playerbridge.h"
 #include "spectrumsource.h"
 
@@ -99,6 +100,22 @@ private:
   /// whenever `force` is set (a freshly started child must receive the
   /// current state even if it has not changed).
   void updateFullscreen(bool force = false);
+  /// Spawns the lx-lyrics-hotkey helper for the plugin's lifetime: the
+  /// shortcut must work while the lyrics window is hidden, so this is NOT
+  /// session-scoped. A missing helper or a failed spawn is one warning; the
+  /// plugin keeps working without a shortcut.
+  void startHotkey();
+  /// Stops the helper's reader and reaps the process (SIGTERM, then SIGKILL
+  /// after the transport's grace). Idempotent; main thread only.
+  void stopHotkey();
+  /// HotkeyHelper when set (a path, or a bare name looked up on PATH),
+  /// otherwise lx-lyrics-hotkey next to the resolved lx-lyrics-app (the
+  /// installer puts both in <prefix>/bin), then on PATH. Empty when nothing
+  /// executable was found.
+  [[nodiscard]] QString resolveHotkeyHelper() const;
+  /// The helper's reader thread: "ready <trigger>", "unavailable <reason>" or
+  /// any other status line, logged once each. Touches no plugin state.
+  static void onHotkeyStatus(const char* line, void* userdata);
   /// Wires windowStateChanged on EVERY window in QGuiApplication::allWindows()
   /// (Qt::UniqueConnection + this as context: destroyed windows auto-clean,
   /// repeated connects dedupe), plus a visibleChanged re-scan hook and a
@@ -140,4 +157,10 @@ private:
   // current state is forced). The per-window observation lives in
   // watchAllWindows(), driven from GuiPlugin::initialise.
   std::optional<bool> m_lastFullscreenSent;
+
+  // The global-shortcut helper (src/hotkey.c), spawned once at plugin
+  // initialisation and stopped in shutdown(). Not session-scoped: the key
+  // must be able to open a window that is not showing. Null when the helper
+  // is missing or could not be spawned.
+  lx_hotkey_t* m_hotkey = nullptr;
 };

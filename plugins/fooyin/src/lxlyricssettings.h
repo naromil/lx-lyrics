@@ -23,12 +23,16 @@ namespace LxLyrics {
 
 // Registered settings keys (Fooyin::SettingsManager::createSetting).
 // User-editable, read/written by the settings dialog: AppPath (empty means the
-// feed writer auto-detects via PATH / the app's own directory) and
-// RememberState (restore the last desktop-lyrics state across sessions).
-// Enabled is the plugin-written remembered state — never shown in the dialog.
+// feed writer auto-detects via PATH / the app's own directory), RememberState
+// (restore the last desktop-lyrics state across sessions), Hotkey (preferred
+// global-shortcut trigger offered to the helper) and HotkeyHelper (empty means
+// next to the resolved app, then PATH). Enabled is the plugin-written
+// remembered state — never shown in the dialog.
 inline const QString appPathKey = QStringLiteral("LxLyrics/AppPath");
 inline const QString rememberStateKey = QStringLiteral("LxLyrics/RememberState");
 inline const QString enabledKey = QStringLiteral("LxLyrics/Enabled");
+inline const QString hotkeyKey = QStringLiteral("LxLyrics/Hotkey");
+inline const QString hotkeyHelperKey = QStringLiteral("LxLyrics/HotkeyHelper");
 
 } // namespace LxLyrics
 
