@@ -265,8 +265,13 @@ static bool on_sample_status(lx_feed_t* feed, void* userdata, bool* is_play,
  * start_session() either publishes a whole session before this or after it.
  * lx_feed_stop() joins the reader thread and drops the session's reference; a
  * feed a message handler still holds stays alive until that handler releases
- * it. */
-static void stop_session(void)
+ * it.
+ *
+ * @p host_alive is false only from lxlyrics_stop(): the player has already
+ * destroyed its viz dispatcher by then, and vis_spectrum_unlisten() would
+ * dispatch_sync() onto the dead queue and crash the player on every quit with a
+ * live session (measured, see spectrum.h). */
+static void stop_session(bool host_alive)
 {
   pthread_mutex_lock(&session_lock);
   lx_feed_t* feed = session_feed;
@@ -276,8 +281,13 @@ static void stop_session(void)
   pthread_mutex_unlock(&session_lock);
 
   /* Unlisten before the child is torn down so no analyser frame can race the
-   * feed's release. */
-  lx_spectrum_stop(spectrum);
+   * feed's release; at player shutdown the registration is left to die with the
+   * process instead (see above). */
+  if (host_alive) {
+    lx_spectrum_stop(spectrum);
+  } else {
+    lx_spectrum_forget(spectrum);
+  }
   lx_feed_stop(feed);
 }
 
@@ -298,7 +308,7 @@ static void end_session(const char* reason)
   if (session_running()) {
     deadbeef->log("lxlyrics: ending the session (%s)", reason);
   }
-  stop_session();
+  stop_session(true);
   if (deadbeef->conf_get_int(LX_CONF_ENABLED, 0) != 0) {
     deadbeef->conf_set_int(LX_CONF_ENABLED, 0);
     /* The action API has no checkable flag, so the conf key IS the item's
@@ -725,7 +735,7 @@ static int lxlyrics_stop(void)
   atomic_store(&lx_shutting_down, true);
   lx_hotkey_stop(lx_hotkey);
   lx_hotkey = NULL;
-  stop_session();
+  stop_session(false);
   return 0;
 }
 

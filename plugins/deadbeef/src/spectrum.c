@@ -76,6 +76,17 @@ void lx_spectrum_stop(lx_spectrum_t* spectrum)
   free(spectrum);
 }
 
+void lx_spectrum_forget(lx_spectrum_t* spectrum)
+{
+  if (!spectrum) {
+    return;
+  }
+  /* See spectrum.h: the host's viz dispatcher is already gone at plugin stop,
+   * so unlistening there crashes. Nothing outlives the process anyway. */
+  pthread_mutex_destroy(&spectrum->lock);
+  free(spectrum);
+}
+
 /* Bin i of an nframes FFT covers ~(i + 1) * samplerate / (2 * nframes) Hz. */
 static void lx_spectrum_downsample(const float* bins, int nframes, int samplerate, uint8_t* out)
 {
