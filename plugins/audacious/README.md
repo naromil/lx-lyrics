@@ -7,8 +7,11 @@ and feeds it the player state over the **protocol v2 stdin/stdout player feed**
 embedded tags), parsing and rendering.
 
 Closing the lyric window sends `close_requested`; the adapter ends the session, the app exits on
-stdin EOF, and the plugin turns its **own** enable state off — Audacious' Plugins settings page is
-the toggle, so the page honestly reads off afterwards.
+stdin EOF, and the plugin stays **enabled but idle** — the Plugins page still reads on. The lyrics
+window is its own switch: the settings page's **Show or hide the lyrics window** button starts or
+stops it without touching the plugin's enable state, and nothing is respawned on its own. (A global
+shortcut is planned for a later round; libaudcore has no hotkey registration API, so it will live
+outside the plugin.)
 
 ## Requirements
 
@@ -42,21 +45,22 @@ CMake (headers via pkg-config, or an explicit include dir):
 cmake -B build -G Ninja                                        # pkg-config audacious
 cmake -B build -G Ninja -DAUDACIOUS_INCLUDE_DIR=/path/to/include
 cmake --build build          # -> build/lxlyrics.so
-ctest --test-dir build       # hermetic protocol tests, no Audacious needed
+ctest --test-dir build       # hermetic feed + state-machine tests, no Audacious needed
 ```
 
 A bare `cmake` configures **Debug** (the same default the app project uses); pass
 `-DCMAKE_BUILD_TYPE=Release` for the plugin you install. The configure step **requires** the
 Audacious headers — a bare `cmake -B build -G Ninja` FATAL_ERRORs when they are missing — while the
-`feed_test` target builds only `feed.c` + `json.c`, so `ctest` runs with no Audacious installed.
+`feed_test` target builds only `feed.c` + `json.c` and `session_test` only `session.c`, so `ctest`
+runs with no Audacious installed.
 
-Or directly, with the same four sources:
+Or directly, with the same five sources:
 
 ```sh
 INC=$(pkg-config --variable=audacious_include_dir audacious)   # or a checkout's src/
-cc  -std=c99  -fPIC -O2 -I"$INC" -Isrc -c src/feed.c src/json.c
+cc  -std=c99  -fPIC -O2 -I"$INC" -Isrc -c src/feed.c src/json.c src/session.c
 c++ -std=gnu++17 -fPIC -O2 -I"$INC" -Isrc -c src/plugin.cc src/spectrum.cc
-c++ -shared -o lxlyrics.so feed.o json.o plugin.o spectrum.o $(pkg-config --libs audacious) -lpthread -lm
+c++ -shared -o lxlyrics.so feed.o json.o session.o plugin.o spectrum.o $(pkg-config --libs audacious) -lpthread -lm
 ```
 
 The module name matters: the loader looks up `aud_plugin_instance` inside every scanned file
@@ -93,21 +97,24 @@ non-zero.
 ## Use
 
 1. Open the Settings dialog's Plugins page — **File → Settings... → Plugins** (Qt) or **File →
-   Settings → Plugins** (GTK); `Ctrl+P` opens the dialog — and enable **LX Lyrics**. That *is* the
-   toggle: Audacious starts every enabled general plugin at every player start and calls its
-   `init()`/`cleanup()` on enable/disable (`plugin-init.cc:31-43`, `:160-176`, `:285-308`, reached
-   from `aud_run()` at `runtime.cc:339-357`). The plugin adds no menu item — the host's Plugins
-   page is the enable/disable control, the same decision the Rhythmbox adapter documents for its
-   host — and its one settings page (the app path, the remember-state checkbox and the button that
-   raises the app's own settings dialog) is the host's own dialog, reached from that page (see
-   *Configuration*). The row's separate information icon opens the plugin's own *About* text.
-2. Start playback: enabling the plugin during playback shows the current track immediately (the
-   full `set_info` + state snapshot is pushed right after the spawn, protocol §3/§5).
-3. Closing the lyric window ends the session and turns the plugin's enable state off, so the
-   Plugins page reads off and nothing is respawned (§4).
+   Settings → Plugins** (GTK); `Ctrl+P` opens the dialog — and enable **LX Lyrics**. Audacious
+   starts every enabled general plugin at every player start and calls its `init()`/`cleanup()` on
+   enable/disable (`plugin-init.cc:31-43`, `:160-176`, `:285-308`, reached from `aud_run()` at
+   `runtime.cc:339-357`). Enabling the plugin is *not* the same as showing the window: `init()`
+   restores a visible session only when `remember_state` says so, and the settings page's **Show or
+   hide the lyrics window** button is the explicit switch from then on. The plugin adds no menu
+   item — the host's Plugins page enables/disables the *adapter*, while the window has its own
+   switch on the settings page (see *Configuration*). The row's separate information icon opens the
+   plugin's own *About* text.
+2. Start playback: a visible session shows the current track immediately (the full `set_info` +
+   state snapshot is pushed right after the spawn, protocol §3/§5). A hidden session attaches no
+   playback hooks, so playback events cannot spawn it.
+3. Closing the lyric window ends the session: the app exits on stdin EOF, the plugin stays enabled
+   and idle, and the Plugins page still reads on (§4). Press **Show or hide the lyrics window** to
+   bring it back; nothing respawns on its own.
 4. If `lx-lyrics-app` cannot be found, or the app dies or breaks the protocol, the plugin logs it
-   loudly and turns its own enable state off rather than claiming a session that does not exist
-   (§7). Nothing is ever respawned automatically; re-enable it in the Plugins page to retry.
+   loudly and drops to enabled-but-idle rather than claiming a session that does not exist (§7).
+   Nothing is respawned automatically; press the toggle (or restart the player) to retry.
 
 ## Configuration
 
@@ -115,48 +122,57 @@ The plugin's settings page is its 4th `PluginInfo` field — a declarative
 `const PluginPreferences*` (libaudcore's `preferences.h`) that both frontends build with no toolkit
 code here: one `WidgetLabel`, one `WidgetEntry("Application:", WidgetString("lx-lyrics",
 "app_path"))`, one `WidgetCheck("Remember the desktop lyrics state from the last session",
-WidgetBool("lx-lyrics", "remember_state"))`, and one `WidgetButton("Open lyrics settings")`. The
-entry writes the key as the user types (`WidgetConfig::set_string()` → `aud_set_str()`) and it is
-the same `[lx-lyrics] app_path` `resolve_app_path()` reads; an empty value is the documented
-"search `$PATH`" state. The checkbox is the same kind of binding over `aud_get_bool()` /
-`aud_set_bool()` (`preferences.cc:25-48`), and the plugin registers `remember_state=TRUE` as the
-section default at `init()` (`aud_config_set_defaults()`, read back through `aud_get_str()`'s
-defaults fallback at `config.cc:402-412`), so the box reads checked on an untouched config.
+WidgetBool("lx-lyrics", "remember_state"))`, and two `WidgetButton`s — **Open lyrics settings** and
+**Show or hide the lyrics window**. The entry writes the key as the user types
+(`WidgetConfig::set_string()` → `aud_set_str()`) and it is the same `[lx-lyrics] app_path`
+`resolve_app_path()` reads; an empty value is the documented "search `$PATH`" state. The checkbox
+is the same kind of binding over `aud_get_bool()` / `aud_set_bool()` (`preferences.cc:25-48`), and
+the plugin registers `remember_state=TRUE` as the section default at `init()`
+(`aud_config_set_defaults()`, read back through `aud_get_str()`'s defaults fallback at
+`config.cc:402-412`), so the box reads checked on an untouched config.
 
 What the checkbox means here (it mirrors Fooyin's `LxLyrics/RememberState`, and this is the one
-place the host's model differs): Audacious' Plugins page toggle **is** this plugin's session switch,
-so "restore the last state" and "the plugin is still enabled at the next player start" are the same
-question. What identifies that restore is the interface, which the host starts *after* the general
-plugins — `start_plugins_two()` runs Vis, General, Iface in that order (`plugin-init.cc:205-210`) —
-so no interface is current in that one `init()`, while the Plugins page (and `audtool`, and D-Bus)
-can only ever enable LX Lyrics with one already running. A session the user asks for is therefore
-never gated, not even the very first click after a start in which the plugin was disabled.
+place the host's model differs): it decides whether the **lyrics window** is restored at the next
+player start — not whether the plugin is enabled. What identifies that restore is the interface,
+which the host starts *after* the general plugins — `start_plugins_two()` runs Vis, General, Iface
+in that order (`plugin-init.cc:205-210`) — so no interface is current in that one `init()`, while
+the Plugins page (and `audtool`, and D-Bus) can only ever enable LX Lyrics with one already
+running. A session the user asks for is therefore never gated, not even the very first click after
+a start in which the plugin was disabled.
 
-- **Checked** (the default): nothing extra happens — the host's own registry keeps the enable state
-  and a session that was running comes back at the next start.
-- **Unchecked**: that restore turns the plugin's own enable state off *instead of* starting a
-  session, so the next player start begins disabled (the same "no session ⇒ toggle off" shape the
-  app-not-found path uses, §4/§7), the row's checkbox reads off, and the lyrics window does not
-  come back on its own — not after a clean exit, and not after a run that was killed outright
-  (its saved enable state just makes the next start refuse again, before anything is spawned).
-  The user re-enables LX Lyrics in the Plugins page when they want lyrics again.
+- **Checked** (the default): a visible session that was running comes back at the next player
+  start; the plugin is enabled either way.
+- **Unchecked**: the restore starts the plugin **enabled with the window hidden** — nothing is
+  spawned, the Plugins page still reads on, and the settings page's toggle brings the window back
+  whenever the user wants it. This is a hidden window, not a disabled plugin: the adapter keeps
+  running and the window does not come back on its own (not after a clean exit, and not after a run
+  that was killed outright — the next start is simply hidden again). The user brings it back with
+  the settings page's **Show or hide the lyrics window** button.
 
 A `--headless` run starts no interface at all, so there is nothing to tell the restore apart by
 there: the check is skipped (`aud_get_headless_mode()`) and the box has no effect.
 
-The button is the route to the app's **own** settings: the app owns its 37 config keys and renders
-them in its dialog, so the page does not duplicate them — it sends `{"v":2,"action":"open_settings"}`
-(protocol §5) instead, the same call the host makes from the feed, leaving the dialog (Ctrl+, /
-control-bar gear) to the app. `WidgetButton` carries the callback declaratively
-(`WidgetVButton{...}`, `preferences.h:299`; upstream uses it the same way for "Restart in GTK
-mode"), and both frontends invoke it on click — Qt through a `QPushButton`
+The **Show or hide the lyrics window** button is the adapter's own session switch. It calls
+`lx_session_toggle()`: showing resolves the app path and spawns the same feed as the restore (with
+the initial snapshot), hiding closes the app's stdin and joins/reaps it; a second click toggles
+back. Playback events never respawn a hidden window because the hooks are attached only while a
+session is showing. A show that cannot spawn (the app is missing) logs the failure and leaves the
+state hidden. (The global shortcut is a later round: libaudcore exposes no hotkey registration API,
+so it will live outside the plugin.)
+
+The **Open lyrics settings** button is the route to the app's **own** settings: the app owns its 37
+config keys and renders them in its dialog, so the page does not duplicate them — it sends
+`{"v":2,"action":"open_settings"}` (protocol §5) instead, the same call the host makes from the
+feed, leaving the dialog (Ctrl+, / control-bar gear) to the app. `WidgetButton` carries the callback
+declaratively (`WidgetVButton{...}`, `preferences.h:299`; upstream uses it the same way for
+"Restart in GTK mode"), and both frontends invoke it on click — Qt through a `QPushButton`
 (`ButtonWidget` → `clicked` → `data.button.callback`, `libaudqt/prefs-widget-qt.cc:55-63`), the
 libaudgui frontends (GTK and Audacious' skins interface, which delegates its Preferences window to
 `audgui_show_prefs_window()`, `skins/plugin.cc:84-85`) through
 `audgui_button_new(label, icon, callback)` (`libaudgui/prefs-widget.cc:544-547`,
-`libaudgui/util.cc:161-176`; a null icon yields a plain text button). The callback runs on the
-program's main thread, where the session pointer is written, and it is a no-op while no session is
-running — so it needs no enable/disable state of its own.
+`libaudgui/util.cc:161-176`; a null icon yields a plain text button). Both callbacks run on the
+program's main thread, where the session state lives; the open-settings callback is a no-op while
+no session is running, and the toggle is a no-op only before the state machine exists.
 
 The row also carries an **information button**: `PluginInfo.about` is the non-null text that gates
 it (`aud_plugin_has_about()` is literally `about != nullptr`), painted as a "dialog-information"
@@ -182,7 +198,7 @@ The keys themselves, in `$XDG_CONFIG_HOME/audacious/config` (`config.cc:259`, IN
 | Section / key | Default | Meaning |
 |---|---|---|
 | `[lx-lyrics] app_path` | *(empty)* | Path to `lx-lyrics-app`; empty means "search `$PATH`". |
-| `[lx-lyrics] remember_state` | `TRUE` | Restore the last session at the next player start; `FALSE` makes the plugin drop its own enable state on that restore instead. |
+| `[lx-lyrics] remember_state` | `TRUE` | Start the next player run with the lyrics window visible; `FALSE` starts the plugin enabled with the window hidden. Either way the plugin is enabled and the settings-page toggle can show the window. |
 
 ## How the session works
 
@@ -197,11 +213,12 @@ The keys themselves, in `$XDG_CONFIG_HOME/audacious/config` (`config.cc:259`, IN
   `close_requested`, tolerating/skipping non-JSON lines loudly (a stray Qt stdout write must not
   break the feed). A *well-formed* v2 violation is a protocol error instead (§7): a
   missing/unsupported `v`, an unknown action or a line over 1 MiB is logged loudly and ends the
-  session — the app's stdin is closed so it quits on EOF, the plugin's enable state goes off, and
-  nothing is respawned. Every write end is non-blocking with a bounded wait, so a stalled app can
-  never wedge Audacious, and `SIGPIPE` is blocked around writes instead of being ignored
-  process-wide. The feed object is reference-counted (`lx_feed_acquire`/`lx_feed_release`), because
-  the app's analyser request is answered from the reader thread while the main thread writes.
+  session — the app's stdin is closed so it quits on EOF, the session drops to hidden and the
+  plugin stays enabled and idle, and nothing is respawned. Every write end is non-blocking with a
+  bounded wait, so a stalled app can never wedge Audacious, and `SIGPIPE` is blocked around writes
+  instead of being ignored process-wide. The feed object is reference-counted
+  (`lx_feed_acquire`/`lx_feed_release`), because the app's analyser request is answered from the
+  reader thread while the main thread writes.
 - **Message mapping** (`src/plugin.cc`). Every hook is delivered on the program's **main thread**
   (see below), so no marshalling is needed for them:
 
@@ -213,6 +230,7 @@ The keys themselves, in `$XDG_CONFIG_HOME/audacious/config` (`config.cc:259`, IN
   | `"playback seek"` (`playback.cc:268`, and the A-B/repeat loop at `:326`) | `set_play(ms)`, plus `set_pause` when the player is paused |
   | `"tuple change"` (`playback.cc:146`) | a fresh `set_info` for the playing track |
   | (spawn, §3) | `set_info` + state snapshot right after `hello` |
+  | the settings page's **Show or hide the lyrics window** button | no feed line: starts or stops the session (start pushes the snapshot above) |
   | the settings page's **Open lyrics settings** button | `open_settings` (no session → no-op) |
 
   A seek needs no heuristic: Audacious reports the event (`playback.cc:268`), unlike Rhythmbox. The
@@ -232,6 +250,9 @@ The keys themselves, in `$XDG_CONFIG_HOME/audacious/config` (`config.cc:259`, IN
   The session-end notifications from the reader thread hop back to the main thread through a
   `QueuedFunc` (`mainloop.h:29-45`), the host's own cross-thread mechanism — `event_queue()` is
   built on it (`eventqueue.cc:77`) and its registry is mutex-guarded (`mainloop.cc:39-45`).
+  The state machine itself (`src/session.c`) is main-thread only: `init()`, the settings-page
+  callbacks and the queued session-end handler all run there, and it never touches the feed from
+  another thread.
 - **`path`** is the playing entry's URI converted with `uri_to_filename(uri, false)`
   (`audstrings.h:95`), which yields the local path for a `file://` URI and *nothing* for any other
   scheme (`audstrings.cc:622-631`) — exactly the `""` of protocol §6 for a stream or a CD track.
@@ -273,6 +294,12 @@ cmake -B build -G Ninja -DAUDACIOUS_INCLUDE_DIR=/path/to/include && cmake --buil
 ctest --test-dir build --output-on-failure
 ```
 
+`tests/session_test.c` is the state-machine suite: a fake `start`/`stop` pair counts calls and
+asserts `show()` spawns exactly once, `hide()` stops exactly once, `toggle()` alternates and returns
+the new state, `app_ended()` records its reason and drops to hidden, a refused start leaves the
+state hidden, and `free()` stops a session that is still showing. It compiles `session.c` alone and
+includes the same dictated `session.h`, so it needs no host headers either.
+
 The concurrency case is worth running under sanitizers:
 `-DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"` plus the matching
 `CMAKE_EXE_LINKER_FLAGS`/`CMAKE_SHARED_LINKER_FLAGS`; it reports a heap-use-after-free if a session
@@ -290,16 +317,18 @@ The normal check needs an Audacious ≥ 4.6.1 with the plugin installed (`comman
    spectrum: true`, `feed: track "…"`), because the child's stderr is inherited.
 3. Open the LX Lyrics row's settings page (**File → Settings... → Plugins → General →** the gear
    icon on **LX Lyrics**) — it holds the app path, the **Remember the desktop lyrics state from the
-   last session** checkbox and **Open lyrics settings**, which raises the running app's own
-   *Desktop Lyric Settings* dialog (`open_settings` on the wire; a silent no-op with no session).
-   The row's separate information icon opens *About LX Lyrics* with the plugin text
-   (`PluginInfo.about`).
-4. Uncheck that checkbox and quit the player while the lyric window is up: the next start has no
-   window and the row reads off — the restore is refused before anything is spawned, which is how
-   "don't remember" is expressed on this host (see *Configuration*). Enabling the row by hand then
-   starts a session as usual, remember-state or not.
-5. Close the lyric window: the adapter logs `lx-lyrics: ending the session (the lyric window was
-   closed)`, the Plugins page flips off, and no window comes back until you re-enable it.
+   last session** checkbox, **Open lyrics settings** (raises the running app's own *Desktop Lyric
+   Settings* dialog, `open_settings` on the wire; a silent no-op with no session) and **Show or hide
+   the lyrics window** (the explicit session switch). The row's separate information icon opens
+   *About LX Lyrics* with the plugin text (`PluginInfo.about`).
+4. Uncheck that checkbox and quit the player while the lyric window is up: the next start keeps the
+   plugin enabled but begins with the window hidden — the log says `lx-lyrics: not restoring the
+   lyrics window (remember_state is off); the plugin stays enabled and idle`, and no child is
+   spawned. Press **Show or hide the lyrics window** and the session starts; the toggle is never
+   gated by `remember_state` (see *Configuration*).
+5. Close the lyric window: the adapter logs `lx-lyrics: the lyrics window is no longer showing (the
+   lyric window was closed)`, but the plugin stays **enabled and idle** — the Plugins page still
+   reads on, and no window comes back until the toggle or the next player start.
 
 Without touching the system installation (no root) the same thing can be driven end to end: copy
 `/usr/bin/audacious` and `/usr/lib/audacious/` into a scratch prefix, drop `lxlyrics.so` into its
@@ -320,25 +349,36 @@ down; 26 `get_analyser_data_array` requests were answered with 128-byte frames w
 the bands covering the 440 Hz test tone; with the **real** app as the child, the app logged
 `feed: connected to "audacious" spectrum: true` / `feed: track "…"` / `feed: host closed the pipe,
 exiting` and exited 0; and a stub that sent `close_requested` (or a `{"v":3,…}` violation) made the
-adapter log the reason, close the child's stdin and persist `enabled 0` for its own plugin entry.
+adapter log the reason, close the child's stdin, and leave its own plugin entry `enabled 1` — the
+idle state this round introduces — with no second spawn.
+
+Round 1 re-verified that idle behaviour through the scratch prefix: with the stub logging its argv
+and the `hello` line, the adapter logged `session started`, then `the lyrics window is no longer
+showing (the lyric window was closed)` (or `… (the app exited)`, or `… (the app violated the
+protocol)`) and stayed `enabled 1` with exactly one spawn. A GUI start (`-Q` under `xvfb-run`)
+with `[lx-lyrics] remember_state=FALSE` logged only `not restoring the lyrics window …; the plugin
+stays enabled and idle`, spawned nothing, and kept the registry entry enabled. The state machine's
+show/hide/toggle transitions are asserted hermetically by `session_test` (see *Tests*).
 
 The settings page was verified the same way, with the Qt frontend instead of `--headless` (a
 virtual display is enough: `QT_QPA_PLATFORM=xcb DISPLAY=:N … audacious -Q -m`): the **General → LX
 Lyrics** gear opened a *LX Lyrics Settings* window holding the label, the `Application:` entry, the
 **Remember the desktop lyrics state from the last session** checkbox and the **Open lyrics
 settings** button, and clicking the button made the real app open its *Desktop Lyric Settings*
-window — i.e. the same thing `open_settings` does from the feed. The row's information icon opened
-*About LX Lyrics* with the `lx_about` text, and the registry written for the plugin carries
-`about 1` (the host records `PluginInfo.about != nullptr`), which is what paints that icon.
+window — i.e. the same thing `open_settings` does from the feed. The **Show or hide the lyrics
+window** button is the same declarative `WidgetButton`; its show/hide/toggle transitions are
+asserted hermetically by `session_test`, and the spawn/stop work it triggers was exercised by the
+headless runs above. The row's information icon opened *About LX Lyrics* with the `lx_about` text,
+and the registry written for the plugin carries `about 1` (the host records
+`PluginInfo.about != nullptr`), which is what paints that icon.
 
 The remember-state checkbox was driven through the same GUI: on an untouched config it reads
-**checked** (`aud_config_set_defaults` registers `TRUE`), unchecking it wrote
-`[lx-lyrics] remember_state=FALSE` into `audacious/config`, and with that key set the next GUI start
-logged only `lx-lyrics: ending the session (the last session is not remembered)` — no session, no
-child, `enabled 0` saved for the plugin's own registry entry — while unchecking it in a run whose
-plugin was **disabled at startup** and then enabling it by hand *did* start a session (a user enable
-is never gated), and checking the box again removed the key from the file — `config_save()` writes
-nothing for a value that equals the registered default, and the box still reads checked.
+**checked** (`aud_config_set_defaults` registers `TRUE`). In round 1, with
+`[lx-lyrics] remember_state=FALSE` written into `audacious/config`, the next GUI start logged only
+`lx-lyrics: not restoring the lyrics window (remember_state is off); the plugin stays enabled and
+idle` — no session, no child, and the plugin's own registry entry still reads `enabled 1`. A session
+the user asks for (the settings-page toggle, or enabling the plugin by hand) is never gated: the
+restore check only matches the one `init()` that runs with no interface current yet.
 
 ## License
 

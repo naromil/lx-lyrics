@@ -77,7 +77,7 @@ Request one spectrum snapshot; the host answers with a `spectrum` line (§5). Se
 
 The user **intentionally closed** the desktop lyric window (control-bar close button or WM close/Alt+F4). No payload.
 
-The host ends its display session — unchecks its "Desktop Lyrics" toggle and stops its spawner — so the exit that follows is **never** treated as a crash and the app is **not** respawned. The handler is idempotent: a duplicate line or a toggle already off is a no-op.
+The host ends its display session — stops its spawner and does not respawn the app — so the exit that follows is **never** treated as a crash. The host MAY keep its own adapter loaded and idle: ending the session is not the adapter being disabled, and a hidden lyrics window is brought back by a user toggle (or a player restart), never by the adapter respawning it on its own. The handler is idempotent: a duplicate line, or a host with no session to end, is a no-op.
 
 The app reports only *this* close: when the **player** ends the session (stdin EOF, §2), the app quits silently and MUST NOT send `close_requested` — a player-initiated shutdown must never look like the user turning the feature off.
 
@@ -211,7 +211,8 @@ open settings (from the player's LX Lyrics Configure dialog):
            host → app   {"v":2,"action":"open_settings"}      # app opens/raises its config dialog
 
 user close (control-bar X or WM close):
-           app  → host  {"v":2,"action":"close_requested"}    # host stops its session; no respawn
+           app  → host  {"v":2,"action":"close_requested"}    # host ends its session; no respawn
+                                                            # (adapter may stay loaded and idle)
            app exits after its close animation
 
 player shutdown:
@@ -226,6 +227,6 @@ player shutdown:
 - **`tlrc` / `rlrc` / `lxlrc` are carried but normally empty.** v2 adapters send playing context (path, metadata, state, position) and let the app acquire lyrics; a host with lyric text of its own uses `set_lyric`/`set_info.lrc`, and the wire format already supports the richer fields so no protocol change is needed to enable them.
 - **`set_playbackRate` is reserved.** Adapters of players without a rate API send nothing; the field exists so rate-capable players can use it. The app only accepts finite rates in `0.25`–`4.0` (§5/§6); anything else is ignored and the current rate is kept.
 - **`open_settings` is a control message, not a state message.** It carries no payload and expects no reply; the app opens its configuration dialog, or raises an already-open one.
-- **`close_requested` is a control message, not a state message.** It carries no payload and expects no reply; the host ends its session without respawning (§4). It describes a *user* action only — see §4 for the EOF case.
+- **`close_requested` is a control message, not a state message.** It carries no payload and expects no reply; the host ends its session without respawning (§4) and may stay loaded and idle. It describes a *user* action only — see §4 for the EOF case.
 - **Spectrum availability is per-host, not per-protocol.** `hello.spectrum` is how a player without an analyser (Rhythmbox, for example) declares that there will be no frames; the app then never asks, and the visualizer simply stays idle.
 - **Wayland always-on-top caveat is app-level, not protocol.** Making the lyric window stay on top under Wayland compositors is entirely the display app's concern and out of scope for this wire contract.
