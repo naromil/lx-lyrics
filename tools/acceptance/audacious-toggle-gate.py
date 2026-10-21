@@ -45,6 +45,8 @@ def run(cmd, cwd=ROOT, timeout=TIMEOUT, env=None):
 # ---------------------------------------------------------------- processes
 
 def pids_by_pgrp(pgrp):
+    """Processes in @pgrp whose argv[0] basename is lx-lyrics-app. The decoy
+    spawns real children (sleep), so the process group is not enough."""
     out = []
     for entry in os.listdir("/proc"):
         if not entry.isdigit():
@@ -52,7 +54,11 @@ def pids_by_pgrp(pgrp):
         try:
             with open("/proc/%s/stat" % entry, "rb") as fh:
                 fields = fh.read().rsplit(b")", 1)[1].split()
-            if int(fields[2]) == pgrp:  # pgrp is field 5, third after comm
+            if int(fields[2]) != pgrp:  # pgrp is the third field after comm
+                continue
+            with open("/proc/%s/cmdline" % entry, "rb") as fh:
+                argv0 = fh.read().split(b"\0")[0]
+            if os.path.basename(argv0.decode("utf-8", "replace")) == "lx-lyrics-app":
                 out.append(int(entry))
         except (OSError, IndexError, ValueError):
             continue
@@ -79,16 +85,17 @@ def ppid_of(pid):
     return -1
 
 
-def spawn_orphan(script):
+def spawn_orphan(script, with_arg=True):
     """Double-fork + setsid so the grandchild is reparented away from us.
     Returns the pid of the (only) process in its new process group."""
+    argv = ["lx-lyrics-app", "-c", script] + (["--player-feed"] if with_arg else [])
     pid = os.fork()
     if pid == 0:
         try:
             os.setsid()
             if os.fork() > 0:
                 os._exit(0)
-            os.execv("/bin/sh", ["lx-lyrics-app", "-c", script, "--player-feed"])
+            os.execv("/bin/sh", argv)
         except BaseException:
             os._exit(127)
     os.waitpid(pid, 0)
@@ -166,13 +173,13 @@ def check_orphan_sweep():
     if not os.access(APP_BIN, os.X_OK):
         return check("app binary present", False, APP_BIN)
     deaf = "trap '' TERM; while :; do sleep 0.2; done"
-    polite = "exec sleep 300"
+    polite = "while :; do sleep 0.2; done"
     decoys = {}
     try:
         o1 = spawn_orphan(deaf)        # orphan, ignores SIGTERM -> needs SIGKILL
         o2 = spawn_orphan(polite)      # orphan, dies on SIGTERM
         live = _spawn_argv(["lx-lyrics-app", "-c", polite, "--player-feed"])  # live parent
-        wrong = _spawn_argv(["lx-lyrics-app", "-c", polite])                  # no --player-feed
+        wrong = spawn_orphan(polite, with_arg=False)  # orphan, but not a feed child
         decoys = dict(deaf=o1, polite=o2, live=live, wrong=wrong)
         time.sleep(0.3)
         for name, pid in decoys.items():
@@ -201,10 +208,10 @@ def check_orphan_sweep():
                    "pid %d was killed" % live) and ok
         ok = check("same name without --player-feed is left alone", alive(wrong),
                    "pid %d was killed" % wrong) and ok
-        ok = check("the sweep logs what it reaped",
-                   any(("pid %d" % o1) in line or ("pid %d" % o2) in line
-                       for line in err.splitlines()),
-                   err[-1000:]) and ok
+        reaped = [line for line in err.splitlines()
+                  if any(("pid=%d" % pid) in line or ("pid %d" % pid) in line
+                         for pid in (o1, o2))]
+        ok = check("the sweep logs what it reaped", bool(reaped), err[-1000:]) and ok
         return ok
     finally:
         for pid in decoys.values():
