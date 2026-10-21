@@ -49,6 +49,13 @@
 #define LX_TOKEN_SIZE 64
 #define LX_TRIGGER_SIZE 256
 #define LX_REASON_SIZE 1024
+/* How long the desktop gets to answer a portal request before the helper gives
+ * up. Measured (xdg-desktop-portal-kde 6.8): when the preferred trigger is
+ * already taken, the backend fails to build its own "shortcut is already in
+ * use" message (journal: `0 instead of 1 arguments to message ...`) and NEVER
+ * sends the Response signal, so without this the helper waits forever and the
+ * plugin hears nothing — not even "unavailable". */
+#define LX_PORTAL_TIMEOUT_S 10
 
 typedef struct {
   int pipe_fd;
@@ -62,6 +69,8 @@ typedef struct {
   char* session_handle;
   /* Set once an outcome was reported; later failures are ignored. */
   bool finished;
+  /* The pending portal request's watchdog (see LX_PORTAL_TIMEOUT_S). */
+  guint timeout_source;
 } LxHotkey;
 
 /* ---------------------------------------------------------------- the pipe */
@@ -95,8 +104,37 @@ static void report_unavailable(LxHotkey* app, const char* reason)
     return;
   }
   app->finished = true;
+  if (app->timeout_source) {
+    g_source_remove(app->timeout_source);
+    app->timeout_source = 0;
+  }
   emit_line(app, "unavailable %s", reason && reason[0] ? reason : "the shortcut is unavailable");
   g_main_loop_quit(app->loop);
+}
+
+/* The watchdog for a portal request that never answers (see LX_PORTAL_TIMEOUT_S). */
+static gboolean on_portal_timeout(gpointer userdata)
+{
+  LxHotkey* app = userdata;
+  app->timeout_source = 0;
+  report_unavailable(app, "the desktop did not answer the shortcut request");
+  return G_SOURCE_REMOVE;
+}
+
+static void arm_portal_timeout(LxHotkey* app)
+{
+  if (app->timeout_source) {
+    g_source_remove(app->timeout_source);
+  }
+  app->timeout_source = g_timeout_add_seconds(LX_PORTAL_TIMEOUT_S, on_portal_timeout, app);
+}
+
+static void cancel_portal_timeout(LxHotkey* app)
+{
+  if (app->timeout_source) {
+    g_source_remove(app->timeout_source);
+    app->timeout_source = 0;
+  }
 }
 
 /* A portal/GDBus error, with the remote error name and message preserved (the
@@ -241,6 +279,7 @@ static void on_bind_response(GDBusConnection* connection, const char* sender_nam
   (void)interface_name;
   (void)signal_name;
   LxHotkey* app = userdata;
+  cancel_portal_timeout(app);
 
   guint32 response = 2;
   GVariant* results = NULL;
@@ -308,6 +347,7 @@ static void bind_shortcuts(LxHotkey* app)
   subscribe_response(app, request_path, on_bind_response);
   g_free(request_path);
 
+  arm_portal_timeout(app);
   g_dbus_connection_call(
     app->connection, LX_PORTAL_BUS, LX_PORTAL_PATH, LX_PORTAL_SHORTCUTS, "BindShortcuts",
     g_variant_new("(o@a(sa{sv})s@a{sv})", app->session_handle, g_variant_builder_end(&shortcuts),
@@ -327,6 +367,7 @@ static void on_create_response(GDBusConnection* connection, const char* sender_n
   (void)interface_name;
   (void)signal_name;
   LxHotkey* app = userdata;
+  cancel_portal_timeout(app);
 
   guint32 response = 2;
   GVariant* results = NULL;
@@ -384,6 +425,7 @@ static void create_session(LxHotkey* app)
   subscribe_response(app, request_path, on_create_response);
   g_free(request_path);
 
+  arm_portal_timeout(app);
   g_dbus_connection_call(app->connection, LX_PORTAL_BUS, LX_PORTAL_PATH, LX_PORTAL_SHORTCUTS,
                          "CreateSession", g_variant_new("(a{sv})", &options), G_VARIANT_TYPE("(o)"),
                          G_DBUS_CALL_FLAGS_NONE, -1, NULL, on_create_called, app);
@@ -506,6 +548,7 @@ int main(int argc, char** argv)
     .description = g_strdup(description && description[0] ? description : LX_DEFAULT_DESCRIPTION),
     .session_handle = NULL,
     .finished = false,
+    .timeout_source = 0,
   };
 
   g_unix_signal_add(SIGTERM, on_terminate, &app);

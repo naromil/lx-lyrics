@@ -234,8 +234,13 @@ toggle remains.
 **Re-binding.** The entry on the settings page is only the *preferred* trigger offered at the next
 player start. The binding belongs to the desktop: open **System Settings → Shortcuts** (KDE), find
 the player under its own application group, and change or clear the key there. A combination that is
-already taken is reassigned by the desktop, which is why the helper reports the trigger it actually
-got. The binding follows the helper process and is re-established on the next player start.
+already taken is normally reassigned by the desktop, which is why the helper reports the trigger it
+actually got — but `xdg-desktop-portal-kde` 6.8 can also fail to build its own "shortcut is already
+in use" message and then send **no answer at all** (journal: `0 instead of 1 arguments to message
+"Shortcut '%1' is alr..."`). The helper therefore treats a request the desktop leaves unanswered for
+10 s (`LX_PORTAL_TIMEOUT_S`) as `unavailable the desktop did not answer the shortcut request`, logs
+it once, and exits 0, so nothing hangs. The binding follows the helper process and is re-established
+on the next player start.
 
 ## How the session works
 
