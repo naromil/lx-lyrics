@@ -35,9 +35,9 @@ else()
     set(LX_TAGLIB_TARGET TagLib::tag)
 endif()
 
-# The audacious adapter's global-shortcut helper. Optional on purpose: the
-# adapter treats a missing helper as "no shortcut" (one log line), so a system
-# without GIO must keep building the app and the plugin.
+# The adapters' global-shortcut helper (audacious, DeaDBeeF, VLC, Fooyin).
+# Optional on purpose: an adapter treats a missing helper as "no shortcut" (one
+# log line), so a system without GIO must keep building the app and the plugin.
 if(PkgConfig_FOUND)
     pkg_check_modules(GIO QUIET IMPORTED_TARGET gio-2.0)
 endif()
@@ -49,6 +49,18 @@ if(GIO_FOUND)
     )
     target_compile_options(lx-lyrics-hotkey PRIVATE -Wall -Wextra)
     target_link_libraries(lx-lyrics-hotkey PRIVATE PkgConfig::GIO)
+
+    # Drives the helper's real Activated handler with the portal's exact
+    # four-argument payload (tst_hotkey_helper.c includes the source).
+    add_executable(lyrics-app-hotkey-tests tests/tst_hotkey_helper.c)
+    set_target_properties(lyrics-app-hotkey-tests PROPERTIES
+        C_STANDARD 11
+        C_STANDARD_REQUIRED ON
+    )
+    target_compile_options(lyrics-app-hotkey-tests PRIVATE -Wall -Wextra)
+    target_link_libraries(lyrics-app-hotkey-tests PRIVATE PkgConfig::GIO)
+    add_test(NAME hotkey_helper COMMAND lyrics-app-hotkey-tests)
+
     message(STATUS "lx-lyrics-hotkey: enabled (gio-2.0 ${GIO_VERSION})")
 else()
     message(STATUS "lx-lyrics-hotkey: skipped (gio-2.0 not found)")

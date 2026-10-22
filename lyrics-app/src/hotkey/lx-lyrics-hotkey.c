@@ -4,8 +4,9 @@
  *
  * lx-lyrics-hotkey - the adapter-side global-shortcut helper.
  *
- * The Audacious plugin spawns this binary with the write end of a pipe on
- * --pipe-fd and reads one newline-terminated line per event:
+ * The audacious, DeaDBeeF, VLC and Fooyin adapters spawn this binary with the
+ * write end of a pipe on --pipe-fd and read one newline-terminated line per
+ * event:
  *
  *   ready <trigger_description>   the portal bound the shortcut; keep running
  *   unavailable <reason>          the binding failed; exit 0
@@ -214,12 +215,25 @@ static void on_activated(GDBusConnection* connection, const char* sender_name,
   const char* session = NULL;
   const char* shortcut_id = NULL;
   guint64 timestamp = 0;
-  g_variant_get(parameters, "(&o&st)", &session, &shortcut_id, &timestamp);
+  GVariant* options = NULL;
+  /* Activated is (o s t a{sv}), options included. The whole tuple must be
+   * consumed: GLib rejects a shorter format string, leaves every out
+   * parameter untouched, and the strcmp below then reads NULL (the helper
+   * segfaulted on the first key press before this was fixed). */
+  g_variant_get(parameters, "(&o&st@a{sv})", &session, &shortcut_id, &timestamp, &options);
   (void)timestamp;
+  if (options) {
+    g_variant_unref(options);
+  }
+  /* A signal that does not match the documented signature is ignored rather
+   * than trusted - never dereference what the portal did not send. */
+  if (!session || !shortcut_id) {
+    return;
+  }
   if (app->session_handle && strcmp(session, app->session_handle) != 0) {
     return;
   }
-  if (shortcut_id && strcmp(shortcut_id, LX_SHORTCUT_ID) != 0) {
+  if (strcmp(shortcut_id, LX_SHORTCUT_ID) != 0) {
     return;
   }
   if (!emit_line(app, "toggle")) {
