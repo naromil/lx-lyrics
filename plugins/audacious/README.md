@@ -253,7 +253,10 @@ on the next player start.
 - **Reader thread**: blocks in `poll()` on the app's stdout with a 500 ms timeout. On timeout it
   emits the periodic `set_status` while playing; on data it parses `get_analyser_data_array` and
   `close_requested`, tolerating/skipping non-JSON lines loudly (a stray Qt stdout write must not
-  break the feed). A *well-formed* v2 violation is a protocol error instead (§7): a
+  break the feed). An analyser request is answered only because this adapter's `hello.spectrum` is
+  `true`; the feed still guards it — a session spawned with `false` (the unit tests) treats the
+  request as the §4/§7 violation it is rather than ignoring it, since a broken app would otherwise
+  wait for a frame forever. Any other *well-formed* v2 violation is a protocol error too (§7): a
   missing/unsupported `v`, an unknown action or a line over 1 MiB is logged loudly and ends the
   session — the app's stdin is closed so it quits on EOF, the session drops to hidden and the
   plugin stays enabled and idle, and nothing is respawned. Every write end is non-blocking with a
@@ -306,7 +309,13 @@ on the next player start.
   `visualizer.h:38`). The frame pointer is only valid during the call, so the main-thread callback
   only copies it; the reader thread band-averages it into 128 log-spaced bands from 40 Hz to Nyquist
   and applies `byte = clamp(round(255 * log10(1 + magnitude * 255) / log10(256)), 0, 255)`.
-  `hello.spectrum` is `true` because this registration is real API, not a guess.
+  `hello.spectrum` is `true` because this registration is real API, not a guess. The declaration is
+  a *capability* claim, and it is honest: `aud_visualizer_add()` is a `void` function that cannot
+  fail, needs no playback running, and the session registers before it spawns. A frame can still be
+  missing for a moment after the spawn — `LxSpectrum::read()` returns `false` until the host's vis
+  runner has delivered a frame and the samplerate is known, and the request is then simply not
+  answered — but that transient absence of data is not a capability lie, so it does not gate the
+  declaration.
   Two consequences are worth knowing: registering a visualizer also switches the host's vis runner
   on for the whole session (`visualization.cc:34-41` → `vis-runner.cc:212-217`), and frames arrive
   from the host's 30 Hz vis timer (`vis-runner.cc:128`) on the main thread.
@@ -326,8 +335,10 @@ asserts the exact host→app bytes (`hello`, the snapshot, `set_info`, `set_stat
 read-back followed by the session ending with the child getting EOF and no respawn, the non-JSON
 tolerance (including that the log carries only a bounded printable prefix), the 128-byte spectrum
 rule, the no-session/exec-failure paths, each §7 protocol-error case (unsupported `v`, unknown
-action, over-1 MiB line → reported once and the session ends, with the app quitting on the EOF it
-was sent), that a failed write closes the app's stdin without leaking a descriptor, and that a
+action, over-1 MiB line, and `get_analyser_data_array` against a `spectrum: false` hello → reported
+once, the analyser callback never runs, the session ends with the app quitting on the EOF it was
+sent; the same request against `spectrum: true` reaches the callback once and is answered), that a
+failed write closes the app's stdin without leaking a descriptor, and that a
 writer thread keeps working (as a no-op) while another thread stops the session. No Audacious
 headers, player or display server needed:
 

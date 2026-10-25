@@ -15,6 +15,14 @@ app owns **all** lyric acquisition, parsing, line selection, and rendering.
 - **Line-by-line synchronized lyrics** with active-line highlight. Word-level karaoke fill is
   intentionally **not** rendered — `<start,duration>` word tags only set line mode and are
   stripped at paint time, where lx-music animates each word individually.
+- **Sidecar acquisition**: `<dir>/<completeBaseName>.lrc` first, then a Kugou
+  `<dir>/<completeBaseName>.krc` when the `.lrc` is absent, empty or undecodable (`krc1` header,
+  zlib stream XORed with the reference 16-byte key, timestamps rewritten to `[mm:ss.mmm]` so
+  millisecond starts are preserved). A usable `.lrc` always wins; every sidecar is capped at
+  10 MiB, and embedded tags (TagLib) are joined after the sidecar when both exist.
+- **Decimal LRC fractions**: `[00:01.5]`, `[00:01.50]` and `[00:01.500]` all mean 1500 ms, and
+  `[00:01.005]` means 1005 ms — a deliberate deviation from line-player.js, which reads the
+  fractional digits as whole milliseconds.
 - **Fully transparent when locked**: locking the window fades the background to fully
   transparent (no shading) over 400 ms; unlocking restores the normal shade.
 - **Smooth active-line color transition**: the active line cross-fades between the unplayed
@@ -46,6 +54,7 @@ Prerequisites:
 - Qt 6 >= 6.4 — Widgets
 - TagLib (2.x) — embedded lyric tags
 - ICU (`libicuuc`) — GB18030 / BIG5 decoding
+- zlib — inflating Kugou `.krc` sidecars
 - CMake >= 3.21 (as declared in `CMakeLists.txt`), Ninja
 - A C++23 compiler
 
@@ -74,9 +83,11 @@ installs all six).
   Playing context (path, metadata, state, position, optional spectrum) arrives as
   `hello`/`set_*` JSON lines; the app reads the lyrics for `set_info.path` itself.
 - `--demo` — no host. The app self-feeds a fake track through the **same** pipeline as a host
-  `set_info` message, so the full parse/render path is exercised. The visualizer is self-fed too
-  (a synthetic transport answers the same pull requests a host answers), so `--demo` with
-  `desktopLyric.audioVisualization` on renders animated bars with no host attached.
+  `set_info` message, so the full parse/render path is exercised. That snapshot carries the
+  playback state (`isPlay` + `played_time`), so playback starts from the snapshot with no extra
+  `play(0)`. The visualizer is self-fed too (a synthetic transport answers the same pull
+  requests a host answers), so `--demo` with `desktopLyric.audioVisualization` on renders
+  animated bars with no host attached.
 - With no flag the app opens an inert window — there is no host to feed it, so the lyric area
   stays blank.
 
@@ -102,6 +113,12 @@ There are 37 keys total — 31 `desktopLyric.*` keys plus 6 display-affecting `c
 
 Writes are debounced (500 ms) so rapid settings changes do not thrash the disk.
 
+Loading and setting are **type-strict**: a JSON value whose type does not match the key falls back
+to that key's default on load, and `set()` rejects it (no signal, no store change). The string
+`"false"` is not a boolean and `"middle"` is not an int; integral JSON numbers still coerce to Int
+(`300.0` → `300`, in range), while the null-default keys (`x`/`y`, `common.langId`) preserve the
+value's natural type so null round-trips.
+
 ## Settings dialog
 
 Press **`Ctrl+,`** to open the settings dialog (the control bar hides when the window is locked,
@@ -111,34 +128,44 @@ plugin's Configure dialog in its Plugins page or the Audacious plugin's settings
 
 ## Tests
 
-Six QTest suites (171 slots total), run with CTest:
+Eight QTest suites (186 slots total), run with CTest:
 
 ```sh
-ctest --test-dir build
+QT_QPA_PLATFORM=offscreen ctest --test-dir build
 ```
+
+The `config` suite constructs a `QApplication`; without `QT_QPA_PLATFORM=offscreen` it aborts on a
+headless box with no display server.
 
 | Suite | Binary | Slots |
 |---|---|---|
 | engine | `lyrics-app-tests` | 44 |
 | lyricplayer | `lyrics-app-lyricplayer-tests` | 33 |
-| feed | `lyrics-app-feed-tests` | 33 |
-| config | `lyrics-app-config-tests` | 8 |
+| feed | `lyrics-app-feed-tests` | 36 |
+| config | `lyrics-app-config-tests` | 10 |
 | renderer | `lyrics-app-renderer-tests` | 21 |
-| controller | `lyrics-app-controller-tests` | 32 |
+| controller | `lyrics-app-controller-tests` | 36 |
+| orphan | `lyrics-app-orphan-tests` | 5 |
+| hotkey_helper | `lyrics-app-hotkey-tests` | 1 |
 
 The `feed` suite compiles **both halves** of the wire contract — the app's `FeedReader` and the
 Fooyin adapter's Fooyin-free `FeedWriter` (`../plugins/fooyin/src/feedwriter.cpp`) — and asserts
 the strict v2 parse rules (including the integer-ms rule for `played_time`/`time`/`tempOffset`),
-`set_info` lyric precedence, the encoding fixtures, the 128-byte spectrum rule, `close_requested`,
-the stdin-EOF path, line reassembly across `readyRead` bursts (LF and CRLF), the 1 MiB cap on a
-line that never terminates, and that a sink which stops accepting lines (closed stdout pipe)
-degrades to dropped app→host lines instead of killing the app.
+`set_info` lyric precedence, the encoding fixtures, the Kugou `.krc` sidecar decode (plus `.lrc`
+precedence, corrupt/truncated input and the 10 MiB cap), the 128-byte spectrum rule,
+`close_requested`, the stdin-EOF path, line reassembly across `readyRead` bursts (LF and CRLF),
+the 1 MiB cap on a line that never terminates, and that a sink which stops accepting lines
+(closed stdout pipe) degrades to dropped app→host lines instead of killing the app.
 
 **Test fixtures**: `tests/fixtures/sample.lrc` (UTF-8) and `tests/fixtures/sample-gbk.lrc` (the
 same lyrics encoded as GBK bytes) are rerunnable e2e fixtures for the encoding path:
 `iconv -f GBK -t UTF-8 tests/fixtures/sample-gbk.lrc` must equal `tests/fixtures/sample.lrc`
 (the `feed` suite asserts exactly this). `tests/fixtures/embedded-lyrics.flac` carries
 `LYRICS=[00:00.00]Embedded line one\n[00:01.00]Embedded line two` for the embedded-tag path.
+`tests/fixtures/sample.krc` is a `krc1` header followed by a zlib stream XORed with the reference
+16-byte Kugou key; the `feed` suite asserts both the decoded text (with millisecond starts padded
+to `[mm:ss.mmm]`) and the `.lrc`-wins precedence, corruption/truncation handling and the 10 MiB
+cap.
 
 ## Wayland note
 

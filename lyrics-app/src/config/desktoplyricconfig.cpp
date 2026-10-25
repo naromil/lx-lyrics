@@ -18,6 +18,9 @@
 #include <QSaveFile>
 #include <QStandardPaths>
 
+#include <cmath>
+#include <limits>
+
 namespace {
 
 constexpr int kSaveDebounceMs = 500;
@@ -134,7 +137,9 @@ bool DesktopLyricConfig::set(const QString& key, const QVariant& value)
   if (it == m_values.constEnd() || !m_defaults.contains(key))
     return false; // Unknown key: fail fast, no silent typos.
 
-  const QVariant coerced = coerceToDefault(m_defaults.value(key), value);
+  QVariant coerced;
+  if (!coerceToDefault(m_defaults.value(key), value, &coerced))
+    return false; // Wrong type: reject, no signal, no store change.
   if (*it == coerced)
     return true; // No-op: keep signals and saves quiet.
 
@@ -181,9 +186,15 @@ void DesktopLyricConfig::load()
   for (auto it = obj.constBegin(); it != obj.constEnd(); ++it) {
     if (!m_defaults.contains(it.key()))
       continue; // Unknown JSON keys are ignored: forward-compatible.
-    const QVariant stored = it.value().isNull()
-                              ? QVariant()
-                              : coerceToDefault(m_defaults.value(it.key()), it.value().toVariant());
+    const QVariant defaultValue = m_defaults.value(it.key());
+    QVariant stored;
+    // Strict type check: a wrong-typed JSON value ("false" for a boolean,
+    // "middle" for an enum-like string, true for an int) must NOT be coerced
+    // by QVariant::toBool()/toInt() into a silently different setting; the
+    // key keeps its default instead. Null-default keys (x/y/common.langId)
+    // still keep their current natural-type behavior.
+    if (!coerceToDefault(defaultValue, it.value().toVariant(), &stored))
+      stored = defaultValue;
     m_values[it.key()] = stored;
   }
 }
@@ -306,24 +317,70 @@ QString DesktopLyricConfig::configFilePath()
   return base + QStringLiteral("/lx-lyrics/config.json");
 }
 
-QVariant DesktopLyricConfig::coerceToDefault(const QVariant& defaultValue, const QVariant& value)
+bool DesktopLyricConfig::coerceToDefault(const QVariant& defaultValue, const QVariant& value,
+                                         QVariant* coerced)
 {
   // Parse at the boundary: every stored value is typed to its key's default
-  // type, so internal consumers always read trusted QVariant types.
+  // type, so internal consumers always read trusted QVariant types. The type
+  // is checked STRICTLY — QVariant::toBool() would turn the string "false"
+  // into true and QVariant::toInt() would turn "middle" into 0, silently
+  // changing a setting the user never set. A mismatched value is rejected
+  // here; set() refuses it and load() falls back to the key's default.
   switch (defaultValue.typeId()) {
   case QMetaType::Bool:
-    return value.toBool();
+    if (value.typeId() != QMetaType::Bool)
+      return false;
+    *coerced = value.toBool();
+    return true;
   case QMetaType::Int:
-    return value.toInt();
+    if (value.typeId() == QMetaType::Int) {
+      *coerced = value.toInt();
+      return true;
+    }
+    // A JSON number must stay a valid Int when it is integral and in range
+    // (width 300.0 -> 300); a fractional or out-of-range one (400.5, 1e100)
+    // must not. Qt 6's QJsonValue::toVariant() returns a qlonglong for an
+    // integral JSON number and a double only for a fractional/overflowing
+    // one, so both shapes are accepted.
+    if (value.typeId() == QMetaType::LongLong) {
+      const qint64 number = value.toLongLong();
+      if (number >= std::numeric_limits<int>::min() && number <= std::numeric_limits<int>::max()) {
+        *coerced = static_cast<int>(number);
+        return true;
+      }
+      return false;
+    }
+    if (value.typeId() == QMetaType::Double) {
+      const double number = value.toDouble();
+      if (std::isfinite(number) && std::floor(number) == number &&
+          number >= static_cast<double>(std::numeric_limits<int>::min()) &&
+          number <= static_cast<double>(std::numeric_limits<int>::max())) {
+        *coerced = static_cast<int>(number);
+        return true;
+      }
+    }
+    return false;
   case QMetaType::Double:
-    return value.toDouble();
+    // Playback rate is the only double key: fractional JSON numbers arrive
+    // as Double, integral ones as Int (test/UI source) or LongLong
+    // (QJsonValue::toVariant in Qt 6) — 2 -> 2.0.
+    if (value.typeId() == QMetaType::Double || value.typeId() == QMetaType::Int ||
+        value.typeId() == QMetaType::LongLong) {
+      *coerced = value.toDouble();
+      return true;
+    }
+    return false;
   case QMetaType::QString:
-    return value.toString();
+    if (value.typeId() != QMetaType::QString)
+      return false;
+    *coerced = value.toString();
+    return true;
   default:
     // Null-default keys have no fixed type (nullable positions x/y accept
     // a number, common.langId accepts a string). Preserve the value's
     // natural type so it round-trips without drift.
-    return value;
+    *coerced = value;
+    return true;
   }
 }
 

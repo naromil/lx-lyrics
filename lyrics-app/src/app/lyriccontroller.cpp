@@ -143,6 +143,17 @@ void LyricController::setTrack(const TrackSnapshot& track)
 
   applyLyricText(track.lrc, track.tlrc, track.rlrc, track.lxlrc);
 
+  // set_info is a FULL snapshot (protocol §5): it carries the playback state
+  // next to the track metadata. Apply it here, through the normal entry
+  // points so the renderer's playing flag is mirrored too — a host that only
+  // pushes set_info must not leave the lyric window paused until its next
+  // set_status. The feed wiring deliberately calls setTrack alone (no
+  // additional play/pause in main.cpp), so this is the single apply site.
+  if (track.isPlay)
+    play(track.playedTimeMs);
+  else
+    pause();
+
   // Window title from the track metadata (name - singer).
   const QString title =
     track.singer.isEmpty() ? track.name : QStringLiteral("%1 - %2").arg(track.name, track.singer);
@@ -151,7 +162,29 @@ void LyricController::setTrack(const TrackSnapshot& track)
 
 void LyricController::setLyric(const LyricSnapshot& lyric)
 {
-  applyLyricText(lyric.lrc, lyric.tlrc, lyric.rlrc, lyric.lxlrc);
+  // set_lyric may arrive while the same track plays (a host-side lyric edit
+  // or an external source). LyricPlayer::setLyric PAUSES a playing clock
+  // while it re-parses, so a REAL change must re-anchor afterwards or the
+  // lyric window freezes. Capture the RAW caller position BEFORE the change
+  // (the offset-inclusive position already includes the old total offset,
+  // and the new selection may carry a different [offset:] tag/line mode);
+  // play() then applies the new offset exactly once. An identical re-push is
+  // deduped by the player and stays a complete no-op: no pause, no re-anchor.
+  const bool wasPlaying = m_player->isPlaying();
+  const std::optional<qint64> rawPositionMs = m_player->rawLivePositionMs();
+  const bool changed = applyLyricText(lyric.lrc, lyric.tlrc, lyric.rlrc, lyric.lxlrc);
+  if (!changed)
+    return;
+  if (wasPlaying && rawPositionMs.has_value() && m_selector->hasLyrics()) {
+    m_player->play(*rawPositionMs);
+    // Keep the renderer's 3 s resume re-center gate in sync: the player was
+    // playing before the lyric swap and is playing again now.
+    m_renderer->setPlaying(true);
+    return;
+  }
+  // A real change that could not resume (paused, or the lyric vanished)
+  // still mirrors the player, which setLyric paused on the change.
+  m_renderer->setPlaying(m_player->isPlaying());
 }
 
 void LyricController::setStatus(const PlaybackSnapshot& status)
@@ -241,7 +274,7 @@ void LyricController::applySelectorConfig()
   m_selector->setIsSwapLyricTranslationAndRoma(config.get(kKeySwapTranslationAndRoma).toBool());
 }
 
-void LyricController::applyLyricText(const QString& lrc, const QString& tlyric,
+bool LyricController::applyLyricText(const QString& lrc, const QString& tlyric,
                                      const QString& rlyric, const QString& lxlyric)
 {
   m_lastLrc = lrc;
@@ -249,7 +282,9 @@ void LyricController::applyLyricText(const QString& lrc, const QString& tlyric,
   m_lastRlrc = rlyric;
   m_lastLxlrc = lxlyric;
   m_hasLyric = true;
-  reapplyLyricSelection();
+  // Propagate the changed flag: setLyric's resume decision needs to know
+  // whether the player actually re-parsed (a dedup no-op must not re-anchor).
+  return reapplyLyricSelection();
 }
 
 bool LyricController::reapplyLyricSelection()

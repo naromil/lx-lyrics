@@ -32,14 +32,18 @@
  * The stub app. It logs the hello line first, then prints the app->host lines
  * (including one non-JSON line, which the adapter must tolerate) and finally
  * logs every host->app line until the host sends set_stop - exiting there is
- * what makes the adapter observe the child-exited path.
+ * what makes the adapter observe the child-exited path. Like a well-behaved
+ * app it asks for analyser data only when that hello declared `spectrum: true`
+ * (§4); the dedicated analyser stub below is the one that asks regardless.
  */
 static const char* const k_stub_script =
   "#!/bin/sh\n"
   "read -r hello\n"
   "printf '%s\\n' \"$hello\" >> \"$LX_STUB_LOG\"\n"
   "printf '%s\\n' 'qt.qpa.xcb: non-JSON noise the adapter must tolerate'\n"
-  "printf '%s\\n' '{\"v\":2,\"action\":\"get_analyser_data_array\"}'\n"
+  "case \"$hello\" in\n"
+  "  *'\"spectrum\":true'*) printf '%s\\n' '{\"v\":2,\"action\":\"get_analyser_data_array\"}' ;;\n"
+  "esac\n"
   "printf '%s\\n' '{\"v\":2,\"action\":\"close_requested\"}'\n"
   "while IFS= read -r line; do\n"
   "  printf '%s\\n' \"$line\" >> \"$LX_STUB_LOG\"\n"
@@ -88,6 +92,17 @@ static const char* const k_bad_action_stub_script =
   "#!/bin/sh\n"
   "printf '%s\\n' '{\"v\":2,\"action\":\"unknown_action\"}'\n"
   "cat > \"$LX_STUB_LOG\"\n"
+  "printf 'EOF_SEEN\\n' >> \"$LX_STUB_LOG\"\n";
+
+/* §4: asking for analyser data is legal only against a hello that declared
+ * `spectrum: true`. The stub logs the hello it saw (so the test can assert the
+ * declaration matches the request's fate), asks once, then drains stdin. */
+static const char* const k_analyser_stub_script =
+  "#!/bin/sh\n"
+  "read -r hello\n"
+  "printf '%s\\n' \"$hello\" >> \"$LX_STUB_LOG\"\n"
+  "printf '%s\\n' '{\"v\":2,\"action\":\"get_analyser_data_array\"}'\n"
+  "cat >> \"$LX_STUB_LOG\"\n"
   "printf 'EOF_SEEN\\n' >> \"$LX_STUB_LOG\"\n";
 
 /* A line over the 1 MiB protocol limit (§2/§7). The pipeline blocks once the
@@ -501,6 +516,65 @@ static void test_protocol_error(const char* what, const char* script, const char
   }
 }
 
+/* §4/§7: `get_analyser_data_array` is legal only against a host whose hello
+ * declared `spectrum: true`. Declared false, it is a protocol error — the
+ * session ends and the analyser callback never runs; declared true, the same
+ * line reaches the callback once and is answered. */
+static void test_analyser_requires_spectrum(const char* script, const char* log_path)
+{
+  const lx_feed_callbacks_t callbacks = {
+    .analyser_data_requested = on_analyser_requested,
+    .protocol_error = on_protocol_error,
+    .child_exited = on_child_exited,
+  };
+
+  /* hello.spectrum: false — the request must be refused, not answered. */
+  analyser_requests = 0;
+  protocol_errors = 0;
+  child_exits = 0;
+  protocol_error_reason[0] = '\0';
+  unlink(log_path);
+  setenv("LX_STUB_LOG", log_path, 1);
+  lx_feed_t* feed = lx_feed_spawn(script, "audacious", false, &callbacks, NULL);
+  check(feed != NULL, "spawn an app that asks for analyser data with spectrum false");
+  if (feed) {
+    check(wait_for(&protocol_errors, 1, 3000),
+          "an analyser request with spectrum false is a protocol error");
+    check(strstr(protocol_error_reason, "hello.spectrum was false") != NULL,
+          "the analyser error names the hello.spectrum declaration");
+    check(wait_for(&child_exits, 1, 3000), "the violating session ends");
+    lx_feed_stop(feed);
+    check(analyser_requests == 0, "the analyser callback never runs for that request");
+    check(protocol_errors == 1, "the analyser violation is reported exactly once");
+    check(wait_for_eof_marker(log_path, 3000), "the violating app got EOF and quit");
+    char* log = read_file(log_path);
+    check(log != NULL && strstr(log, "\"spectrum\":false") != NULL,
+          "that session really declared hello.spectrum false");
+    free(log);
+  }
+
+  /* hello.spectrum: true — the very same line is accepted and answered. */
+  analyser_requests = 0;
+  protocol_errors = 0;
+  child_exits = 0;
+  unlink(log_path);
+  feed = lx_feed_spawn(script, "audacious", true, &callbacks, NULL);
+  check(feed != NULL, "spawn an app that asks for analyser data with spectrum true");
+  if (!feed) {
+    return;
+  }
+  check(wait_for(&analyser_requests, 1, 2000), "the analyser request reaches the callback");
+  check(wait_for_text(log_path, "\"action\":\"spectrum\"", 2000),
+        "the accepted request is answered with a spectrum line");
+  lx_feed_stop(feed);
+  check(analyser_requests == 1, "the analyser callback runs exactly once");
+  check(protocol_errors == 0, "the request against a spectrum:true host is not an error");
+  char* log = read_file(log_path);
+  check(log != NULL && strstr(log, "\"spectrum\":true") != NULL,
+        "that session really declared hello.spectrum true");
+  free(log);
+}
+
 /* The host gives up on a full stdin pipe: it must close the write end (so the
  * app still sees the EOF that quits it, §2) and must not leak the descriptor. */
 static void test_failed_write_closes_stdin(const char* eof_stub, const char* drain_stub,
@@ -709,12 +783,14 @@ int main(void)
   char bad_action_script[LX_PATH_BUF];
   char overlong_script[LX_PATH_BUF];
   char close_script[LX_PATH_BUF];
+  char analyser_script[LX_PATH_BUF];
   char scripted_log[LX_PATH_BUF];
   char periodic_log[LX_PATH_BUF];
   char leak_log[LX_PATH_BUF];
   char bad_v_log[LX_PATH_BUF];
   char bad_action_log[LX_PATH_BUF];
   char overlong_log[LX_PATH_BUF];
+  char analyser_log[LX_PATH_BUF];
   char eof_log[LX_PATH_BUF];
   char close_log[LX_PATH_BUF];
   char noise_capture[LX_PATH_BUF];
@@ -726,6 +802,7 @@ int main(void)
   snprintf(bad_action_script, sizeof(bad_action_script), "%s/stub-bad-action.sh", dir);
   snprintf(overlong_script, sizeof(overlong_script), "%s/stub-overlong.sh", dir);
   snprintf(close_script, sizeof(close_script), "%s/stub-close.sh", dir);
+  snprintf(analyser_script, sizeof(analyser_script), "%s/stub-analyser.sh", dir);
   snprintf(scripted_log, sizeof(scripted_log), "%s/scripted.log", dir);
   snprintf(periodic_log, sizeof(periodic_log), "%s/periodic.log", dir);
   snprintf(leak_log, sizeof(leak_log), "%s/leak.log", dir);
@@ -734,15 +811,17 @@ int main(void)
   snprintf(overlong_log, sizeof(overlong_log), "%s/overlong.log", dir);
   snprintf(eof_log, sizeof(eof_log), "%s/eof.log", dir);
   snprintf(close_log, sizeof(close_log), "%s/close.log", dir);
+  snprintf(analyser_log, sizeof(analyser_log), "%s/analyser.log", dir);
   snprintf(noise_capture, sizeof(noise_capture), "%s/noise-capture.log", dir);
 
   const char* const stub_paths[] = {
-    script,       drain_script,      eof_script,      noise_script,
-    bad_v_script, bad_action_script, overlong_script, close_script,
+    script,          drain_script, eof_script,      noise_script, bad_v_script, bad_action_script,
+    overlong_script, close_script, analyser_script,
   };
   const char* const stub_bodies[] = {
-    k_stub_script,       k_drain_stub_script,      k_eof_stub_script,      k_noise_stub_script,
-    k_bad_v_stub_script, k_bad_action_stub_script, k_overlong_stub_script, k_close_stub_script,
+    k_stub_script,          k_drain_stub_script, k_eof_stub_script,
+    k_noise_stub_script,    k_bad_v_stub_script, k_bad_action_stub_script,
+    k_overlong_stub_script, k_close_stub_script, k_analyser_stub_script,
   };
   for (size_t i = 0; i < sizeof(stub_paths) / sizeof(stub_paths[0]); i++) {
     if (!write_stub(stub_paths[i], stub_bodies[i])) {
@@ -759,6 +838,7 @@ int main(void)
   test_protocol_error("a stub with an unsupported protocol version", bad_v_script, bad_v_log, true);
   test_protocol_error("a stub with an unknown action", bad_action_script, bad_action_log, true);
   test_protocol_error("a stub with an over-long line", overlong_script, overlong_log, false);
+  test_analyser_requires_spectrum(analyser_script, analyser_log);
   test_close_requested_ends_session(close_script, close_log);
   test_failed_write_closes_stdin(eof_script, drain_script, eof_log);
   test_concurrent_stop(drain_script);
@@ -775,6 +855,7 @@ int main(void)
   unlink(overlong_log);
   unlink(eof_log);
   unlink(close_log);
+  unlink(analyser_log);
   unlink(noise_capture);
   rmdir(dir);
   printf("%s: %d failure(s)\n", failures ? "FAILED" : "PASSED", failures);

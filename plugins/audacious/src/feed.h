@@ -71,16 +71,21 @@ typedef struct {
   /**
    * The app asked for an analyser frame (`get_analyser_data_array`, only sent
    * when `hello.spectrum` was true). Reply with lx_feed_send_spectrum().
+   *
+   * A request in a session spawned with @p spectrum_available false never
+   * reaches this callback: §4 forbids it, so the feed reports it through
+   * protocol_error() and ends the session instead.
    */
   void (*analyser_data_requested)(lx_feed_t* feed, void* userdata);
   /** The user closed the lyric window; the app is quitting. */
   void (*close_requested)(lx_feed_t* feed, void* userdata);
   /**
    * The app's stdout carried a protocol violation (§7): a well-formed JSON line
-   * with a missing/unsupported `v`, an unknown action, or a line over
-   * LX_FEED_MAX_LINE. The session is already over when this is called (the
-   * app's stdin was closed, so it quits on EOF per §2) and it is never
-   * respawned: the host ends its session and stays loaded and idle.
+   * with a missing/unsupported `v`, an unknown action, an analyser request
+   * although `hello.spectrum` was false (§4), or a line over LX_FEED_MAX_LINE.
+   * The session is already over when this is called (the app's stdin was
+   * closed, so it quits on EOF per §2) and it is never respawned: the host
+   * ends its session and stays loaded and idle.
    */
   void (*protocol_error)(lx_feed_t* feed, void* userdata, const char* reason);
   /** The app's stdout reached EOF (or the stop grace expired): the session is over. */
@@ -99,6 +104,10 @@ typedef struct {
  * logs there); its stdout must carry protocol lines only — stray non-JSON lines
  * are tolerated and skipped *loudly* (§7), while a well-formed JSON line that
  * violates v2 ends the session through the protocol_error callback (§7).
+ *
+ * @p spectrum_available is what `hello.spectrum` declares: pass true only when
+ * this session really can answer analyser requests. An app request when it is
+ * false is such a violation (§4) and ends the session.
  *
  * Returns NULL when the pipes or the process cannot be created. The returned
  * feed carries one reference for the caller (see the threading contract above).

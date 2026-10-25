@@ -32,9 +32,12 @@ public:
   // Key-based access (lx-music setting['desktopLyric.x'] pattern).
   // Returns an invalid QVariant for unknown keys.
   QVariant get(const QString& key) const;
-  // Returns false for unknown keys (fail fast, no silent typos). Coerces the
-  // value to the key's default type, then emits settingChanged/anySettingChanged
-  // and schedules a save. A no-op set (same value) stays quiet.
+  // Returns false for unknown keys (fail fast, no silent typos) and for a
+  // value whose type does not match the key (strict coercion: a JSON string
+  // "false" is NOT a boolean). A wrong-typed call leaves the stored value
+  // untouched and emits no signal. Otherwise coerces the value to the key's
+  // default type, then emits settingChanged/anySettingChanged and schedules a
+  // save. A no-op set (same value) stays quiet.
   bool set(const QString& key, const QVariant& value);
 
   void loadDefaults();
@@ -43,9 +46,10 @@ public:
   bool reset(const QString& key);
 
   // JSON persistence. load() applies known keys on startup; unknown JSON keys
-  // are ignored (forward-compatible) and a missing file is seeded with
-  // defaults. load() does not emit settingChanged: subscribers attach after
-  // startup and read the final values via get().
+  // are ignored (forward-compatible), a value whose JSON type does not match
+  // the key falls back to that key's default, and a missing file is seeded
+  // with defaults. load() does not emit settingChanged: subscribers attach
+  // after startup and read the final values via get().
   void load();
   // Debounced: schedules the actual write; a 500 ms timer flushes.
   void save();
@@ -77,7 +81,11 @@ signals:
   void anySettingChanged();
 
 private:
-  static QVariant coerceToDefault(const QVariant& defaultValue, const QVariant& value);
+  // Strict coercion to the type of defaultValue. Returns false when `value`
+  // has the wrong type (no lossy QVariant::toBool()/toInt() inventing a
+  // meaning); on success writes the typed value through `coerced`.
+  static bool coerceToDefault(const QVariant& defaultValue, const QVariant& value,
+                              QVariant* coerced);
   static QColor parseRgbaString(const QString& rgba);
   static QString rgbaStringFromColor(const QColor& color);
 

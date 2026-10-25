@@ -23,7 +23,7 @@ Consequences:
 
 ### lyrics-app
 
-- Owns **acquisition**: for the file at `set_info.path`, the same-directory `<dir>/<completeBaseName>.lrc` sidecar and the embedded lyrics tag (TagLib) — joined when both exist — with encoding conversion (UTF-8 BOM / UTF-16 BOM / GB18030 / BIG5 via ICU).
+- Owns **acquisition**: for the file at `set_info.path`, the same-directory `<dir>/<completeBaseName>.lrc` sidecar (falling back to a Kugou `<dir>/<completeBaseName>.krc` — `krc1` header + 16-byte XOR + zlib inflate — when the `.lrc` is absent, empty or undecodable) and the embedded lyrics tag (TagLib) — joined when both exist — with encoding conversion (UTF-8 BOM / UTF-16 BOM / GB18030 / BIG5 via ICU). Every sidecar is capped at 10 MiB; a larger one is skipped with a warning.
 - Owns **all parsing**: LRC, translation (`tlrc`), romaji (`rlrc`), word-level (`lxlrc`), and the `[awlrc:…]` container.
 - Owns **all selection logic**: lxlrc-vs-lrc choice, extended-lyrics construction (translation/romaji swap), offset handling, and active-line recomputation from `played_time`.
 - Owns **all rendering**: synchronized scrolling, line-by-line fill of the active line (word tags are stripped — lx-music's per-word karaoke animation is not reproduced), colors/fonts/opacity, vertical and horizontal layouts, spectrum visualization, and window management (frameless, always-on-top, lock, hover-hide, etc.).
@@ -71,7 +71,7 @@ Pushing selection logic (e.g. lxlrc-vs-lrc) or container decoding into an adapte
 - **Player-owned adapters, app-owned acquisition** — the adapter lives in the player process and spawns the app as its child, so the window shares the player's lifetime; the app reads the lyrics itself, so every adapter stays thin and the acquisition logic exists exactly once.
 - **Full settings port** — the `desktopLyric.*` key set is carried over verbatim, but the default values are tuned to user preference (enable, isAlwaysOnTop, isAlwaysOnTopLoop, fullscreenHide, width, fontSize, opacity, isZoomActiveLrc deviate from upstream); window positions default to auto (null).
 - **User-tuned behavior deviations** — the close button fades the content out (300 ms, reusing the reference's `#container` opacity-transition idiom) before quitting, where the reference closes the window instantly; and the active lyric line renders at the full configured played color, where the reference's hardcoded `body { opacity: .8 }` dims every pixel to 80%. Non-active lines keep that dimming here (applied per-line as `(opacity/100) × lerp(0.8, 1.0, colorProgress)` instead of a window-wide effect); all other quit paths (stdin EOF / player shutdown, WM close) stay instant like the reference.
-- **Lyric sources: tags + local `.lrc`** — embedded-tag lyrics and sidecar files only; online lyric APIs are deferred.
+- **Lyric sources: tags + local `.lrc` (Kugou `.krc` fallback)** — embedded-tag lyrics and sidecar files only; online lyric APIs are deferred.
 - **Spectrum is optional per host** — the analyser stream is part of the protocol, the float→byte conversion is defined in `docs/protocol.md`, and a host without an analyser declares `spectrum: false` (the app then never asks).
 - **Separate app process + pipes** instead of an embedded window — keeps the display host-agnostic and testable, at the cost of a small process.
 

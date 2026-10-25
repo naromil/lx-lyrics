@@ -34,15 +34,13 @@ const QRegularExpression kInvalidTimeFieldExp(QStringLiteral("^(?:\\[[\\d:.\\-]+
 // inside the time field.
 const QRegularExpression kTimeExp(QStringLiteral("\\d{1,3}(:\\d{1,3}){0,2}(?:\\.\\d{1,3})"));
 
-// JS t_rxp_1 /^0+(\d+)/, t_rxp_2 /:0+(\d+)/g, t_rxp_3 /\.0+(\d+)/.
-// Note t_rxp_3 only strips a zero run that is followed by more digits: ".050"
-// becomes ".50" but ".50" is unchanged. Qt's replace() honours the \1
-// backreference exactly like JS "$1" but replaces ALL occurrences, whereas the
-// JS t_rxp_3 (no /g) replaces only the first — unreachable here because
-// kTimeExp allows at most one '.' per timestamp.
+// JS t_rxp_1 /^0+(\d+)/ and t_rxp_2 /:0+(\d+)/g strip redundant leading
+// zeros from the hours/minutes fields. The fraction is NOT stripped: under
+// decimal-fraction semantics it is the DIGIT COUNT that carries the scale, so
+// stripping it would change the value (".005" must stay 5 ms, not become
+// ".5" = 500 ms).
 const QRegularExpression kLeadingZeroRxp(QStringLiteral("^0+(\\d+)"));
 const QRegularExpression kColonZeroRxp(QStringLiteral(":0+(\\d+)"));
-const QRegularExpression kDotZeroRxp(QStringLiteral("\\.0+(\\d+)"));
 
 struct TagField {
   const char* code;
@@ -56,11 +54,19 @@ constexpr std::array kTagFields = {TagField{"ti", &LrcTag::title}, TagField{"ar"
 QString formatTimeLabel(const QString& label)
 {
   // The stripped label is the map key: equivalent timestamps such as
-  // "[00:01.00]" and "[00:01.0]" both key to "0:1.0" and therefore merge.
+  // "[00:01.0]", "[00:01.00]" and "[00:01.000]" all key to "0:1.000" and
+  // therefore merge. The fraction is canonicalized to exactly three digits by
+  // RIGHT-padding with zeros — the value-preserving direction under decimal
+  // fractions (1 digit = tenths, 2 = hundredths, 3 = milliseconds). Leading
+  // zeros inside the fraction are significant and never stripped.
   QString stripped = label;
   stripped.replace(kLeadingZeroRxp, QStringLiteral("\\1"));
   stripped.replace(kColonZeroRxp, QStringLiteral(":\\1"));
-  stripped.replace(kDotZeroRxp, QStringLiteral(".\\1"));
+  const qsizetype dot = stripped.indexOf(QLatin1Char('.'));
+  if (dot >= 0) {
+    const QString fraction = stripped.mid(dot + 1);
+    stripped = stripped.left(dot + 1) + fraction.left(3).leftJustified(3, QLatin1Char('0'));
+  }
   return stripped;
 }
 
@@ -97,7 +103,7 @@ qint64 parseLeadingDecimalInt(const QString& text)
   const int digitsStart = i;
   quint64 value = 0;
   const quint64 kMagnitudeLimit =
-    negative ? quint64{1} << 63 : static_cast<quint64>(std::numeric_limits<qint64>::max());
+    negative ? quint64{1} << 63U : static_cast<quint64>(std::numeric_limits<qint64>::max());
   while (i < text.size()) {
     const QChar c = text.at(i);
     if (c < QLatin1Char('0') || c > QLatin1Char('9'))
@@ -114,8 +120,8 @@ qint64 parseLeadingDecimalInt(const QString& text)
   if (negative) {
     // The exact |qint64::min()| magnitude maps to qint64::min(); everything
     // below the limit negates losslessly (value <= max is guaranteed here).
-    return value == (quint64{1} << 63) ? std::numeric_limits<qint64>::min()
-                                       : -static_cast<qint64>(value);
+    return value == (quint64{1} << 63U) ? std::numeric_limits<qint64>::min()
+                                        : -static_cast<qint64>(value);
   }
   return static_cast<qint64>(value);
 }
@@ -260,15 +266,23 @@ QVector<LrcLine> parseLines(const QString& lrc, const QStringList& extendedLyric
             continue;
           while (timeArr.size() < 3)
             timeArr.prepend(QStringLiteral("0"));
+          // Fractional seconds are a DECIMAL fraction, not a millisecond
+          // count: "[00:01.50]" is 1.50 s = 1500 ms. line-player.js appends
+          // the digits as raw milliseconds (1050 ms) — a bug in the
+          // reference that this port used to mirror. DELIBERATE DEVIATION:
+          // formatTimeLabel has already scaled and right-padded the fraction
+          // to three digits (1 = tenths, 2 = hundredths, 3 = milliseconds),
+          // so the canonical digits ARE milliseconds here.
+          qint64 fractionMs = 0;
           if (timeArr.at(2).contains(QLatin1Char('.'))) {
             const QStringList parts = timeArr.at(2).split(QLatin1Char('.'));
             timeArr[2] = parts.value(0);
-            timeArr.append(parts.value(1));
+            fractionMs = parts.value(1).toLongLong();
           }
 
-          const qint64 timeMs =
-            timeArr.value(0).toLongLong() * 3600000 + timeArr.value(1).toLongLong() * 60000 +
-            timeArr.value(2).toLongLong() * 1000 + timeArr.value(3).toLongLong();
+          const qint64 timeMs = timeArr.value(0).toLongLong() * 3600000 +
+                                timeArr.value(1).toLongLong() * 60000 +
+                                timeArr.value(2).toLongLong() * 1000 + fractionMs;
           lineMap.insert(timeStr, LrcLine{timeMs, text, {}});
           insertionOrder.append(timeStr);
         }

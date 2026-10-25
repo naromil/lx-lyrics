@@ -732,7 +732,11 @@ void LyricWindow::applySetting(const QString& key, const QVariant& value)
     // -> closeWindow/createWindow).
     updateHiddenByHostConditions();
   } else if (key == QStringLiteral("desktopLyric.isShowTaskbar")) {
-    setWindowFlagKeepingVisible(Qt::Tool, value.toBool());
+    // INVERSION PARITY with the constructor: Qt::Tool is set when the
+    // setting is OFF (a tool window has no taskbar entry), so a true
+    // isShowTaskbar *removes* the flag. The old code re-applied the flag on
+    // true, hiding the taskbar entry the setting had just asked for.
+    setWindowFlagKeepingVisible(Qt::Tool, !value.toBool());
   } else if (key == QStringLiteral("desktopLyric.isLockScreen")) {
     if (value.toBool())
       clampToAvailableGeometry();

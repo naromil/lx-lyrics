@@ -36,6 +36,11 @@
 // The last slot runs the real `lx-lyrics-app --player-feed` under a wrapper
 // shell whose stdin write end the test keeps open, then SIGKILLs the shell:
 // only the app's own parent watch can end it, since no EOF is possible.
+//
+// The start-time slot covers the pid-reuse guard: a live pid reads a stable
+// kernel start time, a never-allocated pid is unreadable, and a deliberately
+// wrong start time is rejected — the comparison the sweep makes before each
+// signal, so a reused pid can never be hit.
 
 namespace {
 
@@ -126,6 +131,35 @@ pid_t takeWrapperPid(QProcess& wrapper, QByteArray& buffer)
     }
   }
   return -1;
+}
+
+/// Independently extracts the starttime field (overall field 22) from
+/// /proc/<pid>/stat: everything after the LAST ')' is split by QByteArray,
+/// where token 0 is the state, so starttime is token 19. A different parser
+/// from the production loop, so a shifted index cannot cancel out. Empty on
+/// any failure.
+QByteArray statStarttimeToken(pid_t pid)
+{
+  std::array<char, kPathSize> path{};
+  std::snprintf(path.data(), path.size(), "/proc/%ld/stat", static_cast<long>(pid));
+  const int fd = ::open(path.data(), O_RDONLY | O_CLOEXEC);
+  if (fd < 0) {
+    return {};
+  }
+  std::array<char, 1024> buffer{};
+  const ssize_t count = ::read(fd, buffer.data(), buffer.size());
+  ::close(fd);
+  if (count <= 0) {
+    return {};
+  }
+  const QByteArray stat(buffer.data(), static_cast<qsizetype>(count));
+  const qsizetype close = stat.lastIndexOf(')');
+  if (close < 0) {
+    return {};
+  }
+  const QList<QByteArray> fields = stat.mid(close + 1).trimmed().split(' ');
+  constexpr int kStarttimeIndex = 19;
+  return kStarttimeIndex < fields.size() ? fields.at(kStarttimeIndex) : QByteArray();
 }
 
 /// Double-forks and execs /bin/sh with argv[0] = "lx-lyrics-app", so the
@@ -226,6 +260,7 @@ class TestOrphanSweep : public QObject {
 
 private slots:
   void killsOnlyOrphans();
+  void startTimeIdentity();
   void quitsWhenParentDies();
 };
 
@@ -257,6 +292,42 @@ void TestOrphanSweep::killsOnlyOrphans()
   QTRY_VERIFY_WITH_TIMEOUT(!processAlive(deaf.pid()), 5000);
   QVERIFY(processAlive(live.pid()));
   QVERIFY(processAlive(wrong.pid()));
+}
+
+// Regression: a pid is not an identity. The sweep records each candidate's
+// kernel start time during the scan and re-checks it before every signal, so
+// a victim that exits and whose pid is reused cannot make a deferred SIGTERM
+// or SIGKILL hit an unrelated process. These are the exact helpers the signal
+// path calls.
+void TestOrphanSweep::startTimeIdentity()
+{
+  quint64 starttime = 0;
+  QVERIFY(readProcessStartTime(::getpid(), &starttime));
+
+  // The field index is load-bearing: after the last ')' token 0 is the state
+  // (field 3), so starttime (field 22) must be token 19.
+  bool parsed = false;
+  const qulonglong expected = statStarttimeToken(::getpid()).toULongLong(&parsed);
+  QVERIFY(parsed);
+  QCOMPARE(starttime, static_cast<quint64>(expected));
+
+  // Stable: a second read of the same live process agrees.
+  quint64 again = 0;
+  QVERIFY(readProcessStartTime(::getpid(), &again));
+  QCOMPARE(again, starttime);
+  QVERIFY(processStartTimeMatches(::getpid(), starttime));
+
+  // Linux never allocates PID_MAX_LIMIT (4194304) or above, so the next value
+  // has no /proc entry ever: unreadable means "gone", never a match.
+  constexpr qint64 kNeverAllocatedPid = 4194305;
+  quint64 missing = 0;
+  QVERIFY(!readProcessStartTime(kNeverAllocatedPid, &missing));
+  QVERIFY(!processStartTimeMatches(kNeverAllocatedPid, starttime));
+
+  // A wrong start time means the pid now belongs to another process: the
+  // comparison must reject it so the sweep leaves that process alone.
+  QVERIFY(!processStartTimeMatches(::getpid(), starttime + 1));
+  QVERIFY(!processStartTimeMatches(::getpid(), starttime == 0 ? 1 : starttime - 1));
 }
 
 // Regression: a feed child whose parent dies WITHOUT closing its stdin must

@@ -9,6 +9,7 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTest>
 
@@ -45,6 +46,8 @@ private slots:
   void setFlushLoadRoundTrip();
   void unknownKeySetFailsFast();
   void unknownJsonKeysIgnoredOnLoad();
+  void strictJsonTypesFallBackToDefaults();
+  void wrongTypedSetLeavesValueUntouched();
   void resetRestoresDefault();
   void debouncedSaveWritesFile();
 
@@ -207,6 +210,103 @@ void TestConfig::unknownJsonKeysIgnoredOnLoad()
   // ...the unknown "future.*" keys are ignored, not stored, no crash.
   QVERIFY(!config.get(QStringLiteral("future.unknownFeature")).isValid());
   QVERIFY(!config.get(QStringLiteral("future.other")).isValid());
+}
+
+void TestConfig::strictJsonTypesFallBackToDefaults()
+{
+  // REGRESSION: QVariant::toBool() reads the STRING "false" as true and
+  // QVariant::toInt() turns "18"/true into 18/1, so a hand-edited or
+  // malformed config silently changed a setting. A wrong-typed JSON value
+  // must fall back to the key's default instead. A JSON number is still a
+  // valid Int when integral and in range (width 400.0 -> 400); Qt 6's
+  // QJsonValue::toVariant() delivers it as a qlonglong.
+  const QString path = DesktopLyricConfig::configFilePath();
+  QVERIFY(!path.isEmpty());
+  QDir().mkpath(QFileInfo(path).absolutePath());
+
+  const QJsonObject seeded{
+    {QStringLiteral("desktopLyric.isLock"), QStringLiteral("false")},
+    {QStringLiteral("desktopLyric.style.fontSize"), QStringLiteral("18")},
+    {QStringLiteral("desktopLyric.width"), 400.0},
+    {QStringLiteral("desktopLyric.style.opacity"), true},
+    {QStringLiteral("desktopLyric.isShowTaskbar"), true},
+    {QStringLiteral("desktopLyric.direction"), QStringLiteral("vertical")},
+    {QStringLiteral("player.playbackRate"), 1.5},
+  };
+  QFile file(path);
+  QVERIFY(file.open(QIODevice::WriteOnly));
+  file.write(QJsonDocument(seeded).toJson(QJsonDocument::Indented));
+  file.close();
+
+  DesktopLyricConfig config;
+  config.load();
+
+  QCOMPARE(config.isLock(), false); // "false" is not a boolean.
+  QCOMPARE(config.fontSize(), 14);  // "18" is not a number.
+  QCOMPARE(config.get(QStringLiteral("desktopLyric.style.opacity")).toInt(),
+           100); // true is not an int.
+  QCOMPARE(config.get(QStringLiteral("desktopLyric.width")).toInt(), 400);
+  QCOMPARE(config.get(QStringLiteral("desktopLyric.width")).typeId(),
+           static_cast<int>(QMetaType::Int));
+
+  // Valid values are untouched by the strict check.
+  QCOMPARE(config.isShowTaskbar(), true);
+  QCOMPARE(config.direction(), QStringLiteral("vertical"));
+  QCOMPARE(config.get(QStringLiteral("player.playbackRate")).toDouble(), 1.5);
+
+  // The fallback defaults survive a save+load round-trip.
+  config.flush();
+  DesktopLyricConfig reloaded;
+  reloaded.load();
+  QCOMPARE(reloaded.isLock(), false);
+  QCOMPARE(reloaded.fontSize(), 14);
+  QCOMPARE(reloaded.get(QStringLiteral("desktopLyric.style.opacity")).toInt(), 100);
+  QCOMPARE(reloaded.get(QStringLiteral("desktopLyric.width")).toInt(), 400);
+  QCOMPARE(reloaded.isShowTaskbar(), true);
+  QCOMPARE(reloaded.direction(), QStringLiteral("vertical"));
+}
+
+void TestConfig::wrongTypedSetLeavesValueUntouched()
+{
+  // set() is strict too: a wrong-typed value is REJECTED (false), emits no
+  // signal and leaves the stored value untouched — no silent toBool()/toInt()
+  // coercion.
+  DesktopLyricConfig config;
+  QSignalSpy changed(&config, &DesktopLyricConfig::settingChanged);
+  QSignalSpy anyChanged(&config, &DesktopLyricConfig::anySettingChanged);
+
+  // Baseline: a valid write lands and signals.
+  QVERIFY(config.set(QStringLiteral("desktopLyric.isLock"), true));
+  QCOMPARE(config.isLock(), true);
+  QCOMPARE(changed.count(), 1);
+  changed.clear();
+  anyChanged.clear();
+
+  QVERIFY(!config.set(QStringLiteral("desktopLyric.isLock"), QStringLiteral("false")));
+  QVERIFY(!config.set(QStringLiteral("desktopLyric.style.fontSize"), QStringLiteral("18")));
+  QVERIFY(!config.set(QStringLiteral("desktopLyric.style.fontSize"), 18.5));
+  QVERIFY(!config.set(QStringLiteral("desktopLyric.style.opacity"), true));
+  QVERIFY(!config.set(QStringLiteral("desktopLyric.width"), 400.5));
+  QVERIFY(!config.set(QStringLiteral("desktopLyric.direction"), 2));
+  QVERIFY(!config.set(QStringLiteral("player.playbackRate"), QStringLiteral("1.5")));
+
+  QCOMPARE(config.isLock(), true);
+  QCOMPARE(config.fontSize(), 14);
+  QCOMPARE(config.opacity(), 100);
+  QCOMPARE(config.get(QStringLiteral("desktopLyric.width")).toInt(), 300);
+  QCOMPARE(config.direction(), QStringLiteral("horizontal"));
+  QCOMPARE(config.get(QStringLiteral("player.playbackRate")).toDouble(), 1.0);
+  QCOMPARE(changed.count(), 0);
+  QCOMPARE(anyChanged.count(), 0);
+
+  // Valid coercions still work: a JSON-style integral double for an Int key
+  // and an Int for the Double key.
+  QVERIFY(config.set(QStringLiteral("desktopLyric.width"), 500.0));
+  QCOMPARE(config.get(QStringLiteral("desktopLyric.width")).toInt(), 500);
+  QCOMPARE(config.get(QStringLiteral("desktopLyric.width")).typeId(),
+           static_cast<int>(QMetaType::Int));
+  QVERIFY(config.set(QStringLiteral("player.playbackRate"), 2));
+  QCOMPARE(config.get(QStringLiteral("player.playbackRate")).toDouble(), 2.0);
 }
 
 void TestConfig::resetRestoresDefault()

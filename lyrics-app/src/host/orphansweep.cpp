@@ -13,7 +13,6 @@
 #include <cstring>
 #include <ctime>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 #include <csignal>
@@ -242,21 +241,93 @@ bool isAppProcess(pid_t pid, const char* cmdline)
   return std::strcmp(baseName(exe.data()), kAppName) == 0;
 }
 
-bool waitForExit(pid_t pid, int timeout_ms)
+/// A candidate is gone when it disappeared, became a zombie, or its pid now
+/// names a different process (the start time changed): in all three cases
+/// there is nothing left to signal, and signalling the pid would either fail
+/// or hit an unrelated process.
+bool candidateAlive(pid_t pid, quint64 starttime)
+{
+  return processAlive(pid) && processStartTimeMatches(pid, starttime);
+}
+
+bool waitForExit(pid_t pid, quint64 starttime, int timeout_ms)
 {
   int waited = 0;
   while (waited <= timeout_ms) {
-    if (!processAlive(pid)) {
+    if (!candidateAlive(pid, starttime)) {
       return true;
     }
     const struct timespec step = {0, static_cast<long>(kPollStepMs) * 1000L * 1000L};
     ::nanosleep(&step, nullptr);
     waited += kPollStepMs;
   }
-  return !processAlive(pid);
+  return !candidateAlive(pid, starttime);
 }
 
+/// One scanned candidate: the pid, the parent that made it an orphan (only
+/// for the log line), and the start time that pins the pid to this process
+/// instance rather than to whatever may later inherit the pid.
+struct Victim {
+  pid_t pid;
+  pid_t parent;
+  quint64 starttime;
+};
+
 } // namespace
+
+bool readProcessStartTime(qint64 pid, quint64* starttime)
+{
+  if (!starttime) {
+    return false;
+  }
+  std::array<char, kPathSize> path{};
+  std::snprintf(path.data(), path.size(), "/proc/%lld/stat", static_cast<long long>(pid));
+  std::array<char, 1024> buffer{};
+  if (!readProcFile(path.data(), buffer.data(), buffer.size(), nullptr)) {
+    return false;
+  }
+  // comm (field 2) is parenthesised and may itself contain spaces or
+  // parentheses, so only the LAST ')' is trustworthy (proc(5)). After it the
+  // fields are single-space separated: state is field 3 (token 0), so the
+  // starttime — overall field 22 — is token 19.
+  const char* close = std::strrchr(buffer.data(), ')');
+  if (!close) {
+    return false;
+  }
+  const char* cursor = close + 1;
+  for (int token = 0; token < 19; ++token) {
+    while (*cursor == ' ') {
+      ++cursor;
+    }
+    const char* begin = cursor;
+    while (*cursor != '\0' && *cursor != ' ') {
+      ++cursor;
+    }
+    if (cursor == begin) {
+      return false; // Truncated or malformed entry.
+    }
+  }
+  while (*cursor == ' ') {
+    ++cursor;
+  }
+  if (*cursor < '0' || *cursor > '9') {
+    return false;
+  }
+  errno = 0;
+  char* number_end = nullptr;
+  const unsigned long long value = std::strtoull(cursor, &number_end, 10);
+  if (number_end == cursor || errno == ERANGE) {
+    return false;
+  }
+  *starttime = static_cast<quint64>(value);
+  return true;
+}
+
+bool processStartTimeMatches(qint64 pid, quint64 starttime)
+{
+  quint64 current = 0;
+  return readProcessStartTime(pid, &current) && current == starttime;
+}
 
 int reapOrphanFeeds()
 {
@@ -267,7 +338,7 @@ int reapOrphanFeeds()
 
   const pid_t self = ::getpid();
   const pid_t own_parent = ::getppid();
-  std::vector<std::pair<pid_t, pid_t>> victims;
+  std::vector<Victim> victims;
 
   while (const struct dirent* entry = ::readdir(proc)) {
     if (!isNumeric(entry->d_name)) {
@@ -296,12 +367,22 @@ int reapOrphanFeeds()
     if (!isOrphan(pid, &parent)) {
       continue;
     }
-    victims.emplace_back(pid, parent);
+    Victim victim{pid, parent, 0};
+    if (!readProcessStartTime(pid, &victim.starttime)) {
+      continue; // Died during the scan: nothing to signal, no identity to pin.
+    }
+    victims.push_back(victim);
   }
   ::closedir(proc);
 
   int signalled = 0;
-  for (const auto& [pid, parent] : victims) {
+  for (const Victim& victim : victims) {
+    const pid_t pid = victim.pid;
+    const pid_t parent = victim.parent;
+    if (!processStartTimeMatches(pid, victim.starttime)) {
+      // Gone since the scan, or the pid already belongs to another process.
+      continue;
+    }
     if (::kill(pid, SIGTERM) != 0) {
       if (errno == EPERM) {
         qWarning("cannot signal orphaned lyrics feed pid=%lld (ppid=%lld): %s",
@@ -313,14 +394,19 @@ int reapOrphanFeeds()
              static_cast<long long>(parent));
     ++signalled;
 
-    if (!waitForExit(pid, kTermGraceMs)) {
-      if (::kill(pid, SIGKILL) != 0) {
+    if (!waitForExit(pid, victim.starttime, kTermGraceMs)) {
+      // The grace period elapsed with the candidate still alive; re-check the
+      // identity immediately before the escalation so a pid reused in the
+      // meantime is left alone.
+      if (!processStartTimeMatches(pid, victim.starttime)) {
+        // Exited (and possibly reused) in the race window: nothing to kill.
+      } else if (::kill(pid, SIGKILL) != 0) {
         if (errno != ESRCH) {
           qWarning("cannot kill orphaned lyrics feed pid=%lld: %s", static_cast<long long>(pid),
                    std::strerror(errno));
         }
       } else {
-        waitForExit(pid, kTermGraceMs);
+        waitForExit(pid, victim.starttime, kTermGraceMs);
       }
     }
 

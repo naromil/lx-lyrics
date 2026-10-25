@@ -40,7 +40,7 @@ private slots:
   void lrcParserMultiTimeTagAttachesToEveryTimestamp();
   void lrcParserSkipsExtendedLyricCommentLines();
   void lrcParserStrippedTimestampKeyMerge();
-  void lrcParserFractionalSecondsMatchJs();
+  void lrcParserFractionalSecondsAreDecimal();
   void lrcParserEmptyLyric();
   void lrcParserCrlfLineEndings();
   void lrcParserNoFractionalSecondsBecomesStatic();
@@ -240,10 +240,10 @@ void TestEngine::lrcParserSkipsExtendedLyricCommentLines()
 
 void TestEngine::lrcParserStrippedTimestampKeyMerge()
 {
-  // formatTimeLabel is the map key, so "[00:01.00]" and "[00:01.0]" both key
-  // to "0:1.0" and merge. (Under the exact JS t_rxp_3 the pair ".50"/".5"
-  // does NOT merge because ".50" has no leading zero after the dot — see
-  // lrcParserFractionalSecondsMatchJs.)
+  // formatTimeLabel is the map key: decimal-equivalent timestamps such as
+  // "[00:01.00]", "[00:01.0]" and "[00:01.000]" all key to "0:1.000" and
+  // merge. The fraction is right-padded to three digits (milliseconds), never
+  // stripped: leading zeros inside the fraction carry magnitude.
   const LrcParser::Result result = LrcParser::parse(QStringLiteral("[00:01.00]A\n[00:01.0]B"));
 
   QCOMPARE(result.lines.size(), 1);
@@ -252,18 +252,34 @@ void TestEngine::lrcParserStrippedTimestampKeyMerge()
   QCOMPARE(result.lines.at(0).extendedLyrics, QStringList{QStringLiteral("B")});
 }
 
-void TestEngine::lrcParserFractionalSecondsMatchJs()
+void TestEngine::lrcParserFractionalSecondsAreDecimal()
 {
-  // Exact JS t_rxp_3 (/\.0+(\d+)/) behaviour: ".50" is left as-is, so
-  // "[00:01.50]" keys "0:1.50" (1050 ms) and "[00:01.5]" keys "0:1.5"
-  // (1005 ms) — two distinct lines, sorted by time.
-  const LrcParser::Result result = LrcParser::parse(QStringLiteral("[00:01.50]A\n[00:01.5]B"));
+  // LRC fractional seconds are a DECIMAL fraction, not a millisecond count:
+  // "[00:01.50]" is 1.50 s = 1500 ms (not 1050) and "[00:12.34]" is 12340
+  // (not 12034). line-player.js appends the digits as raw milliseconds — a
+  // bug in the reference; this port DELIBERATELY DEVIATES. One digit is
+  // tenths (x100), two are hundredths (x10), three are milliseconds (x1).
+  // Value-equal timestamps ("[00:01.50]" and "[00:01.5]") merge as
+  // translations, exactly like "[00:01.00]"/"[00:01.0]" above. Leading zeros
+  // inside the fraction are significant: "[00:03.005]" is 3005 ms (the KRC
+  // sidecar zero-pads milliseconds to three digits for exactly this reason).
+  const LrcParser::Result result = LrcParser::parse(QStringLiteral(
+    "[00:12.34]C\n[00:01.50]A\n[00:01.5]B\n[00:02.345]D\n[00:03.005]E\n[00:03.050]F\n[00:03.5]G"));
 
-  QCOMPARE(result.lines.size(), 2);
-  QCOMPARE(result.lines.at(0).timeMs, qint64(1005));
-  QCOMPARE(result.lines.at(0).text, QStringLiteral("B"));
-  QCOMPARE(result.lines.at(1).timeMs, qint64(1050));
-  QCOMPARE(result.lines.at(1).text, QStringLiteral("A"));
+  QCOMPARE(result.lines.size(), 6);
+  QCOMPARE(result.lines.at(0).timeMs, qint64(1500));
+  QCOMPARE(result.lines.at(0).text, QStringLiteral("A"));
+  QCOMPARE(result.lines.at(0).extendedLyrics, QStringList{QStringLiteral("B")});
+  QCOMPARE(result.lines.at(1).timeMs, qint64(2345));
+  QCOMPARE(result.lines.at(1).text, QStringLiteral("D"));
+  QCOMPARE(result.lines.at(2).timeMs, qint64(3005));
+  QCOMPARE(result.lines.at(2).text, QStringLiteral("E"));
+  QCOMPARE(result.lines.at(3).timeMs, qint64(3050));
+  QCOMPARE(result.lines.at(3).text, QStringLiteral("F"));
+  QCOMPARE(result.lines.at(4).timeMs, qint64(3500));
+  QCOMPARE(result.lines.at(4).text, QStringLiteral("G"));
+  QCOMPARE(result.lines.at(5).timeMs, qint64(12340));
+  QCOMPARE(result.lines.at(5).text, QStringLiteral("C"));
 }
 
 void TestEngine::lrcParserEmptyLyric()

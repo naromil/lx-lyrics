@@ -10,6 +10,8 @@
 
 import json
 import os
+import shutil
+import signal
 
 import gi
 
@@ -50,16 +52,35 @@ STOP_GRACE_MS = 1000
 # must not grow Quod Libet's memory.
 MAX_PENDING_LINES = 64
 
-# Protocol §2/§7: a line over 1 MiB is a protocol error. GLib's line reader reports the
-# byte length without the newline, which is the same count the app and the other adapters
-# cap on.
+# Protocol §2/§7: a line over 1 MiB is a protocol error. The cap counts the line's bytes
+# without its newline, which is the same count the app and the other adapters use.
 MAX_LINE_BYTES = 1024 * 1024
+
+# The app's stdout is read in bounded chunks and assembled into lines here. PyGObject does
+# not expose the `length` argument of `g_data_input_stream_read_upto_async()` (verified on
+# PyGObject 3.58/GLib 2.90: the wrapper takes stop_chars only), so `read_upto_async()`
+# itself would still grow GLib's buffer without bound before a newline arrives. A bounded
+# `read_bytes_async()` accumulator keeps the cap in our hands and the main loop free.
+READ_CHUNK_BYTES = 64 * 1024
 
 # The plugin's one setting, stored by Quod Libet itself: `PluginConfigMixin` derives the
 # option name from PLUGIN_ID, so this lands in `[plugins] lxlyrics_app_path` of
 # `$XDG_CONFIG_HOME/quodlibet/config`.
 APP_PATH_OPTION = "app_path"
 DEFAULT_APP_PATH = "lx-lyrics-app"
+
+# The global shortcut is owned by the separate `lx-lyrics-hotkey` GIO helper
+# (`lyrics-app/src/hotkey/`), the same fd-3 transport the C adapters use: the plugin
+# passes the write end of a pipe as descriptor 3, the helper reports `ready <trigger>`,
+# `unavailable <reason>` and one `toggle` per press. It runs while the plugin is enabled,
+# not per lyrics session, so the shortcut can open the window as well as close it.
+HOTKEY_NAME = "lx-lyrics-hotkey"
+HOTKEY_PIPE_FD = 3
+# Status lines are ours and tiny; anything longer than this is not a helper report and is
+# dropped whole rather than buffered.
+HOTKEY_STATUS_BYTES = 4096
+HOTKEY_READ_CHUNK_BYTES = 4096
+HOTKEY_STOP_GRACE_MS = 1000
 
 
 def _position_ms(player):
@@ -167,6 +188,215 @@ def _line_bytes(message):
         return line.encode("utf-8", "replace")
 
 
+def resolve_hotkey_path(app_path):
+    """The helper next to the resolved app executable, else `lx-lyrics-hotkey` on PATH."""
+    resolved = app_path or DEFAULT_APP_PATH
+    if os.sep not in resolved:
+        resolved = shutil.which(resolved) or resolved
+    directory = os.path.dirname(resolved)
+    if directory:
+        candidate = os.path.join(directory, HOTKEY_NAME)
+        if os.access(candidate, os.X_OK):
+            return candidate
+    return shutil.which(HOTKEY_NAME)
+
+
+def _pipe_input_stream(fd):
+    """A GIO input stream over `fd`, closing it when the stream is closed."""
+    try:
+        # GLib >= 2.80/PyGObject >= 3.50 expose the non-deprecated namespace.
+        from gi.repository import GioUnix  # noqa: F401
+
+        stream = GioUnix.InputStream.new(fd, True)
+    except (ImportError, AttributeError):
+        stream = Gio.UnixInputStream.new(fd, True)
+    return Gio.DataInputStream.new(stream)
+
+
+class HotkeyHelper:
+    """The `lx-lyrics-hotkey` child and the plugin's end of its fd-3 pipe.
+
+    The helper is optional: a missing binary, a failed spawn or a pipe error logs one line
+    and leaves the plugin fully usable without a shortcut. `toggle` flips the same session
+    switch `enabled()`/`disabled()` drive; the one-shot `ready`/`unavailable` reports are
+    logged once, and an overlong or malformed line is ignored, so the helper can never
+    take the plugin down with it.
+    """
+
+    def __init__(self, app_path, on_toggle, log=print, warn=print):
+        self.app_path = app_path
+        self.on_toggle = on_toggle
+        self.log = log
+        self.warn = warn
+        self.proc = None
+        self.stream = None
+        self.read_fd = None
+        self.buffer = bytearray()
+        self.discarding = False
+        self.child_exited = False
+        self.ready_reported = False
+        self.unavailable_reported = False
+        self.eof_reported = False
+
+    def start(self):
+        """Spawn the helper. False (with one log line) when it cannot run."""
+        if self.proc is not None or self.stream is not None:
+            return True
+        path = resolve_hotkey_path(self.app_path)
+        if path is None:
+            self.warn(
+                "lxlyrics: %s not found; the global shortcut is unavailable" % HOTKEY_NAME
+            )
+            return False
+        try:
+            read_fd, write_fd = os.pipe()
+        except OSError as err:
+            self.warn("lxlyrics: cannot create the shortcut pipe: %s" % err)
+            return False
+        launcher = Gio.SubprocessLauncher.new(Gio.SubprocessFlags.NONE)
+        launcher.take_fd(write_fd, HOTKEY_PIPE_FD)
+        try:
+            self.proc = launcher.spawnv([path, "--pipe-fd", str(HOTKEY_PIPE_FD)])
+        except GLib.Error as err:
+            self.warn(
+                "lxlyrics: cannot run %s: %s; the global shortcut is unavailable" % (path, err)
+            )
+            os.close(read_fd)
+            return False
+        finally:
+            # `take_fd` leaves the parent's descriptor open; closing it here makes the
+            # child's fd 3 the only write end, so its EOF is also the helper's quit trigger.
+            try:
+                os.close(write_fd)
+            except OSError:
+                pass
+        self.read_fd = read_fd
+        self.stream = _pipe_input_stream(read_fd)
+        self.read_status()
+        return True
+
+    def read_status(self):
+        if self.stream is None:
+            return
+        self.stream.read_bytes_async(
+            HOTKEY_READ_CHUNK_BYTES, GLib.PRIORITY_DEFAULT, None, self._status_read
+        )
+
+    def _status_read(self, stream, result):
+        if self.stream is None:
+            return
+        try:
+            chunk = stream.read_bytes_finish(result)
+        except GLib.Error as err:
+            self.warn("lxlyrics: reading from %s failed: %s" % (HOTKEY_NAME, err))
+            self.stop()
+            return
+        data = chunk.get_data() if chunk is not None else b""
+        if not data:
+            if not self.eof_reported:
+                self.eof_reported = True
+                self.log("lxlyrics: the global shortcut helper exited")
+            self.stop()
+            return
+        self._consume_status(data)
+        self.read_status()
+
+    def _consume_status(self, data):
+        """Split raw fd-3 bytes into bounded lines, dropping anything over the cap."""
+        index = 0
+        while index < len(data):
+            newline = data.find(b"\n", index)
+            if newline < 0:
+                piece = data[index:]
+                if not self.discarding:
+                    if len(self.buffer) + len(piece) > HOTKEY_STATUS_BYTES:
+                        self.buffer.clear()
+                        self.discarding = True
+                    else:
+                        self.buffer += piece
+                return
+            piece = data[index:newline]
+            index = newline + 1
+            if self.discarding:
+                self.discarding = False
+                continue
+            if len(self.buffer) + len(piece) > HOTKEY_STATUS_BYTES:
+                self.buffer.clear()
+                continue
+            line = bytes(self.buffer) + piece
+            self.buffer.clear()
+            self.handle_status_line(line)
+
+    def handle_status_line(self, line):
+        """One fd-3 line, already bounded: dispatch, or ignore what is not a report."""
+        if isinstance(line, bytes):
+            try:
+                text = line.decode("utf-8")
+            except UnicodeDecodeError:
+                self.log("lxlyrics: ignoring a non-UTF-8 shortcut line")
+                return
+        else:
+            text = line
+        text = text.rstrip("\r")
+        if not text:
+            return
+        if text == "toggle":
+            self.on_toggle()
+            return
+        if text.startswith("ready "):
+            if not self.ready_reported:
+                self.ready_reported = True
+                self.log("lxlyrics: global shortcut bound to %s" % text[len("ready ") :])
+            return
+        if text.startswith("unavailable "):
+            if not self.unavailable_reported:
+                self.unavailable_reported = True
+                self.warn(
+                    "lxlyrics: global shortcut unavailable (%s)" % text[len("unavailable ") :]
+                )
+            return
+        self.log("lxlyrics: shortcut helper: %s" % text)
+
+    def stop(self):
+        """Quit the helper: close the pipe, terminate, grace, kill. Idempotent."""
+        proc, self.proc = self.proc, None
+        stream, self.stream = self.stream, None
+        fd, self.read_fd = self.read_fd, None
+        self.buffer.clear()
+        self.discarding = False
+        closed = False
+        if stream is not None:
+            try:
+                stream.close()
+                closed = True
+            except GLib.Error as err:
+                self.warn("lxlyrics: closing the shortcut pipe failed: %s" % err)
+        if not closed and fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if proc is None:
+            return
+        try:
+            proc.send_signal(signal.SIGTERM)
+        except GLib.Error as err:
+            self.log("lxlyrics: terminating the shortcut helper failed: %s" % err)
+        self.child_exited = False
+        proc.wait_async(None, self._child_exited)
+        GLib.timeout_add(HOTKEY_STOP_GRACE_MS, self._kill_lingering, proc)
+
+    def _child_exited(self, _proc, _result):
+        """The helper exited inside its grace window: nothing left to kill."""
+        self.child_exited = True
+
+    def _kill_lingering(self, proc):
+        """A helper that ignored SIGTERM gets killed, once."""
+        if not self.child_exited:
+            proc.force_exit()
+        return GLib.SOURCE_REMOVE
+
+
 class FeedWriter:
     """The app process and the host end of the feed.
 
@@ -188,6 +418,7 @@ class FeedWriter:
         self.stdin = None
         self.stdout = None
         self.pending = []
+        self.line_buffer = bytearray()
         self.writing = False
         self.child_exited = False
         self.stalled = False
@@ -227,7 +458,9 @@ class FeedWriter:
     def read_line(self):
         if self.stdout is None:
             return
-        self.stdout.read_line_async(GLib.PRIORITY_DEFAULT, None, self._line_read)
+        self.stdout.read_bytes_async(
+            READ_CHUNK_BYTES, GLib.PRIORITY_DEFAULT, None, self._line_read
+        )
 
     def stop(self, force=False):
         """End the feed and drop the pipes.
@@ -241,6 +474,7 @@ class FeedWriter:
         stdin, self.stdin = self.stdin, None
         self.stdout = None
         self.pending = []
+        self.line_buffer.clear()
         self.on_line = None
         self.on_exit = None
         if proc is None:
@@ -312,23 +546,65 @@ class FeedWriter:
         self._write_next()
 
     def _line_read(self, stream, result):
+        if self.stdout is None:
+            return
         try:
-            line, length = stream.read_line_finish_utf8(result)
+            chunk = stream.read_bytes_finish(result)
         except GLib.Error as err:
             print_e("lxlyrics: reading from the app failed: %s" % err)
             self._finished()
             return
-        if line is None:
+        data = chunk.get_data() if chunk is not None else b""
+        if not data:
+            # EOF. A final line without its newline is delivered like the old line reader
+            # did, then the session ends.
+            if self.line_buffer:
+                line = bytes(self.line_buffer)
+                self.line_buffer.clear()
+                if not self._deliver_line(line):
+                    return
             self._finished()
             return
-        # §7: the cap is checked before the line is interpreted.
-        size = length or len(line.encode("utf-8", "replace"))
-        if size > MAX_LINE_BYTES:
-            self.fail("app→host line is %d bytes (over the %d cap)" % (size, MAX_LINE_BYTES))
+        self.line_buffer += data
+        if not self._process_lines():
             return
-        if self.on_line is not None:
-            self.on_line(line)
         self.read_line()
+
+    def _process_lines(self):
+        """Deliver every complete line buffered so far. False when the feed has ended."""
+        buffer = self.line_buffer
+        while True:
+            newline = buffer.find(b"\n")
+            if newline < 0:
+                break
+            line = bytes(buffer[:newline])
+            del buffer[: newline + 1]
+            if not self._deliver_line(line):
+                return False
+        # §7: a line still without a newline cannot grow past the cap. Exactly cap bytes
+        # are fine — the next chunk decides whether it ends here or is an over-cap line.
+        if len(buffer) > MAX_LINE_BYTES:
+            self.fail(
+                "app→host line is %d bytes without a newline (over the %d cap)"
+                % (len(buffer), MAX_LINE_BYTES)
+            )
+            return False
+        return True
+
+    def _deliver_line(self, line):
+        """One complete app→host line: cap first, then strict UTF-8, then the handler."""
+        if len(line) > MAX_LINE_BYTES:
+            self.fail("app→host line is %d bytes (over the %d cap)" % (len(line), MAX_LINE_BYTES))
+            return False
+        try:
+            text = line.decode("utf-8")
+        except UnicodeDecodeError as err:
+            self.fail("app→host line is not valid UTF-8: %s" % err)
+            return False
+        if self.on_line is not None:
+            self.on_line(text)
+        # A handler that ended the feed (protocol error, child gone) must not re-arm.
+        return self.stdout is not None
 
     def _finished(self):
         """The child is gone: drop the pipes and report it exactly once."""
@@ -562,6 +838,7 @@ class LxLyrics(EventPlugin, PluginConfigMixin):
     def __init__(self):
         super().__init__()
         self.session = None
+        self.hotkey = None
 
     @classmethod
     def PluginPreferences(cls, window):
@@ -591,12 +868,44 @@ class LxLyrics(EventPlugin, PluginConfigMixin):
             cls.config_set(APP_PATH_OPTION, path)
 
     def enabled(self):
-        """Quod Libet enabled (or restored) the plugin: start the lyrics session."""
+        """Quod Libet enabled (or restored) the plugin: start the shortcut and session."""
+        self._start_hotkey()
         self._start_session()
 
     def disabled(self):
-        """Quod Libet disabled the plugin or is quitting: end the session."""
+        """Quod Libet disabled the plugin or is quitting: end the session and shortcut."""
         self._stop_session()
+        self._stop_hotkey()
+
+    def _start_hotkey(self):
+        """Start the global-shortcut helper once per enable, never per session."""
+        if self.hotkey is not None:
+            return
+        hotkey = HotkeyHelper(
+            self.config_get(APP_PATH_OPTION, DEFAULT_APP_PATH),
+            self._toggle_session,
+            log=print_d,
+            warn=print_w,
+        )
+        if hotkey.start():
+            self.hotkey = hotkey
+
+    def _stop_hotkey(self):
+        hotkey, self.hotkey = self.hotkey, None
+        if hotkey is not None:
+            hotkey.stop()
+
+    def _toggle_session(self):
+        """The shortcut's switch: the same start/stop path as enabled()/disabled().
+
+        It flips only the lyrics session; the plugin manager's enabled state is left
+        alone, so the shortcut keeps working after it closes the window, and
+        `close_requested` still turns the plugin itself off as before.
+        """
+        if self.session is None:
+            self._start_session()
+        else:
+            self._stop_session()
 
     def plugin_on_song_started(self, song):
         if self.session is not None:

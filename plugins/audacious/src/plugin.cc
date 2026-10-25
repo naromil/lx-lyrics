@@ -666,7 +666,17 @@ void* LxLyrics::session_start(void* userdata)
     .child_exited = on_child_exited,
     .sample_status = on_sample_status,
   };
-  self->m_feed = lx_feed_spawn(self->m_app_path, LX_HOST_NAME, true, &callbacks, nullptr);
+  /* `hello.spectrum` is a capability claim, not a "a frame is ready" claim.
+   * Declaring it true is honest: attach_hooks() above has just registered
+   * LxSpectrum's Visualizer with the host (aud_visualizer_add(),
+   * libaudcore/interface.h:53 — a void API that cannot fail and needs no
+   * playback running), so this session really can answer analyser requests
+   * (§4). LxSpectrum::read() still returns false until the host's vis runner
+   * has delivered a frame and the samplerate is known; that transient absence
+   * of data is not a capability lie, so it must not gate the declaration. */
+  const bool spectrum_available = true;
+  self->m_feed =
+    lx_feed_spawn(self->m_app_path, LX_HOST_NAME, spectrum_available, &callbacks, nullptr);
   if (!self->m_feed) {
     AUDERR("lx-lyrics: cannot spawn %s\n", self->m_app_path);
     self->detach_hooks();

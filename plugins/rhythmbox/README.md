@@ -7,7 +7,9 @@ everything else: it reads the sidecar/embedded lyrics of the file at `path`, par
 and renders them.
 
 The lyric window therefore lives and dies with Rhythmbox: closing the window ends the
-session, and the app quits when its stdin closes.
+session, and the app quits when its stdin closes. While the plugin is loaded it also runs
+the separate `lx-lyrics-hotkey` helper over an fd-3 pipe, so an optional global shortcut
+can show and hide the same window (see *Global shortcut*).
 
 ## Install
 
@@ -24,8 +26,10 @@ copies those two files and writes `app-path` into the config file below for you.
    **LX Lyrics** is enabled — a fresh install ships with `InitiallyEnabled=true`, so it
    usually already is.
 2. Start the lyrics display with **View → LX Lyrics**. This is the session toggle; the
-   plugin's own enable/disable stays Rhythmbox's Plugins page. Nothing is spawned until
-   you toggle it, so a fresh install never opens a lyric window on its own.
+   plugin's own enable/disable stays Rhythmbox's Plugins page. No lyric window is spawned
+   until you toggle it, so a fresh install never opens one on its own. Activating the
+   plugin also starts `lx-lyrics-hotkey` when it is installed — that process owns the
+   global shortcut and is not itself a lyrics session (see *Global shortcut*).
 3. If `lx-lyrics-app` is not on `PATH`, set its path in **Tools → Plugins → LX Lyrics →
    Preferences**. The app is always started as `<executable> --player-feed`.
 
@@ -58,6 +62,10 @@ Lyrics** off does the same, and so does the app exiting on its own. Disabling th
   `meson_options.txt`), so a distribution only has it if it does not switch it off. Where it
   is missing, build it (see below) — do not look for a code workaround here.
 - The lx-lyrics display app (this repository's `lyrics-app`), built and installed.
+- **Optional:** `lx-lyrics-hotkey`, the same directory's GIO helper (the app's CMake builds
+  it when `pkg-config gio-2.0` is found, and installs it next to the app). It provides the
+  global shortcut; without it the plugin and the View-menu toggle work exactly as before,
+  and the adapter logs one `lx-lyrics-hotkey not found` line.
 
 PyGObject version notes (these are Rhythmbox's own build constraints, quoted from its
 `meson.build`):
@@ -141,7 +149,39 @@ app-path=/usr/local/bin/lx-lyrics-app
 
 `enabled` is the remembered session state; `app-path` is the executable spawned with
 `--player-feed`. Both are written by the plugin (the preferences pane edits `app-path`,
-the View menu toggle and a closed lyric window edit `enabled`).
+the View menu toggle and a closed lyric window edit `enabled`). The global shortcut adds no
+key of its own.
+
+## Global shortcut
+
+The plugin runs `lx-lyrics-hotkey` **once while the plugin is loaded**, not once per lyrics
+session, so the shortcut can open the window while no session is running. It starts when
+Rhythmbox activates the plugin and stops when the plugin is disabled (deactivating the
+plugin with a live session stops both; enabling it again starts a fresh helper). Toggling
+**View → LX Lyrics** and pressing the shortcut flip exactly the same session state, the
+same check-mark and the same remembered `enabled` key. Closing the lyric window still ends
+the session and turns the View toggle off; that is a session end, not the plugin being
+disabled, so the helper keeps running and the shortcut can bring the window back.
+
+The helper is the same GIO binary the C adapters use. The adapter creates a pipe, hands the
+write end to the child as file descriptor 3 (`lx-lyrics-hotkey --pipe-fd 3`), closes its own
+copy, and reads the read end asynchronously with `Gio.UnixInputStream`/`Gio.DataInputStream`
+on Rhythmbox's main loop. The helper's newline-terminated status lines are:
+
+| line | meaning |
+|------|---------|
+| `ready <trigger>` | the desktop portal bound the shortcut; logged once |
+| `unavailable <reason>` | no shortcut is available; logged once, the plugin stays fully usable |
+| `toggle` | one key press; flips the session |
+| anything else | ignored/logged; empty lines are ignored and an overlong line (over 4 KiB) is discarded whole until its newline |
+
+No `--accelerator` is passed, so the helper uses its default binding. The helper is looked
+for **next to the resolved app executable** first, then as `lx-lyrics-hotkey` on `PATH`
+(the app's install step puts both in the same `<prefix>/bin`). If it is missing, fails to
+spawn or its pipe breaks, the adapter logs one line and everything else keeps working; if
+it exits later, that is logged once and the lyrics session is never disturbed. A helper
+status line is not a protocol line: the feed cap and §7 actions apply only to the app's
+stdout.
 
 ## Debugging
 
@@ -153,8 +193,9 @@ rhythmbox -D lxlyrics
 ```
 
 That shows the adapter's own lines (spawn failures, stray non-JSON output from the app, a
-protocol error that ends the session, and the `close_requested`/exit transitions). Use
-plain `-d` only if you want all of Rhythmbox's debug output.
+protocol error that ends the session, the `close_requested`/exit transitions, and the
+shortcut helper's `ready`/`unavailable`/exit reports). Use plain `-d` only if you want all
+of Rhythmbox's debug output.
 
 libpeas's own `libpeas-WARNING **: Could not load plugin loader 'python3'` in that log is
 not the adapter's line: it means the libpeas Python loader is missing, so no Python plugin
@@ -162,14 +203,17 @@ in Rhythmbox can load — see Requirements.
 
 ## Tests
 
-Hermetic — no Rhythmbox, GTK, PyGObject or display server needed. The adapter is imported
-against stub `gi.repository` namespaces and a stub `RBShellPlayer`, and the tests assert
-the exact JSON lines emitted for scripted player events (handshake, track change, pause,
-500 ms `set_status` coalescing, seek discontinuity, `close_requested`), plus the process
-lifecycle and the key-file round-trip.
+Hermetic — no Rhythmbox, GTK, PyGObject, display server or helper binary needed. The
+adapter is imported against stub `gi.repository` namespaces, a stub `RBShellPlayer` and a
+stub fd-3 helper process/stream, and the tests assert the exact JSON lines emitted for
+scripted player events (handshake, track change, pause, 500 ms `set_status` coalescing, seek
+discontinuity, `close_requested`), the bounded stdout read (normal, exactly-cap, over-cap
+without a newline, invalid UTF-8, EOF), the process lifecycle, the shortcut transport
+(spawn argv/fd 3, `ready`/`unavailable`/`toggle`/unknown/overlong/EOF, path resolution,
+missing/failed helper), and the key-file round-trip.
 
 ```sh
-python3 -m unittest discover -s plugins/rhythmbox/tests -v
+python3 -m unittest discover -s plugins/rhythmbox/tests -v   # 56 tests
 ```
 
 (From inside this directory, `python3 -m unittest discover -s tests -v` is equivalent.)
@@ -186,8 +230,10 @@ Host → app: `set_info` (path, singer, name, album, empty lyric fields — the 
 file at `path`), `set_status`, `set_play`, `set_pause`, `set_stop`. App → host:
 `close_requested` only — any other well-formed line (a `v` that is not 2, an unknown
 action, an analyser request this host never declared, a line over 1 MiB) is a protocol
-error that ends the session, while non-JSON stdout noise is skipped. See `docs/protocol.md`
-for the full v2 contract.
+error that ends the session, while non-JSON stdout noise is skipped. The stdout read is a
+bounded chunk accumulator, so a line that reaches the cap without a newline ends the
+session then and there instead of growing GLib's buffer. See `docs/protocol.md` for the
+full v2 contract.
 
 ## Licence
 

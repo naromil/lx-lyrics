@@ -191,6 +191,9 @@ private slots:
   void overLongLineWithoutNewline();
   void setInfoLyricPrecedence();
   void lyricsForTrackFileFixtures();
+  void krcSidecarDecoding();
+  void corruptKrcIsEmpty();
+  void oversizedSidecarIgnored();
   void analyserFrameSizes();
   void closeRequestedWrittenOnce();
   void refusedSinkIsNotRetried();
@@ -532,6 +535,136 @@ void TestFeed::lyricsForTrackFileFixtures()
   // Truncated GBK/BIG5 lead bytes: neither encoding yields clean text, so the
   // chain gives up (empty) instead of returning U+FFFD soup.
   QCOMPARE(decodeLyricsBytes(QByteArray("\x81\x40\x81", 3)), QString());
+}
+
+// The sample.krc fixture is a `krc1` header followed by the UTF-8 KRC text
+// zlib-compressed and XORed with the reference key. Reproduce it with:
+//   python3 - <<'PY'
+//   import zlib
+//   key = bytes([0x40,0x47,0x61,0x77,0x5e,0x32,0x74,0x47,
+//                0x51,0x36,0x31,0x2d,0xce,0xd2,0x6e,0x69])
+//   text = (b"[id:$00000000]\r\n"
+//           b"[1000,500]First <0,250>line<250,250>\r\n"
+//           b"[1005,500]Thousand five\r\n"
+//           b"[1050,500]Fifty millis\r\n"
+//           b"[2500,500]Second line\r\n"
+//           b"[3723,400]Third &amp; last\r\n"
+//           b"[59999,400]Last minute\r\n")
+//   payload = bytes(b ^ key[i % 16] for i, b in enumerate(zlib.compress(text)))
+//   open("tests/fixtures/sample.krc", "wb").write(b"krc1" + payload)
+//   PY
+void TestFeed::krcSidecarDecoding()
+{
+  const QByteArray krcBytes = readFile(fixturePath(QStringLiteral("sample.krc")));
+  QVERIFY(!krcBytes.isEmpty());
+
+  QTemporaryDir dir;
+  QVERIFY(dir.isValid());
+  {
+    QFile krc(dir.filePath(QStringLiteral("song.krc")));
+    QVERIFY(krc.open(QIODevice::WriteOnly));
+    QCOMPARE(krc.write(krcBytes), qint64(krcBytes.size()));
+  }
+
+  // `[start,duration]` -> `[mm:ss.mmm]`: minutes and seconds like the
+  // reference, milliseconds deliberately zero-padded to 3 digits. The LRC
+  // parser reads fractional digits as a decimal fraction, so the reference's
+  // unpadded 1/2-digit fields (1005 ms -> `[00:01.5]`, 1050 ms ->
+  // `[00:01.50]`) would be misread; padding preserves the original starts.
+  // CRs are dropped, the [id:] header and word tags removed, HTML entities
+  // resolved; text and line order are preserved, including the trailing
+  // newline.
+  const QString expected = QStringLiteral("[00:01.000]First line\n"
+                                          "[00:01.005]Thousand five\n"
+                                          "[00:01.050]Fifty millis\n"
+                                          "[00:02.500]Second line\n"
+                                          "[00:03.723]Third & last\n"
+                                          "[00:59.999]Last minute\n");
+  const QString decoded = lyricsForTrackFile(dir.filePath(QStringLiteral("song.mp3")));
+  QCOMPARE(decoded, expected);
+  // Pin the non-multiple-of-100 starts explicitly: reference padding would
+  // leave 0/1/2 fractional digits, all ambiguous under decimal semantics.
+  QVERIFY(decoded.contains(QStringLiteral("[00:01.005]Thousand five")));
+  QVERIFY(decoded.contains(QStringLiteral("[00:01.050]Fifty millis")));
+  QVERIFY(decoded.contains(QStringLiteral("[00:59.999]Last minute")));
+
+  // An empty .lrc falls through to the .krc ...
+  {
+    QFile lrc(dir.filePath(QStringLiteral("song.lrc")));
+    QVERIFY(lrc.open(QIODevice::WriteOnly));
+  }
+  QCOMPARE(lyricsForTrackFile(dir.filePath(QStringLiteral("song.mp3"))), expected);
+
+  // ... and so does an undecodable one.
+  {
+    QFile lrc(dir.filePath(QStringLiteral("song.lrc")));
+    QVERIFY(lrc.open(QIODevice::WriteOnly));
+    const QByteArray undecodable("\x81\x40\x81", 3);
+    QCOMPARE(lrc.write(undecodable), qint64(undecodable.size()));
+  }
+  QCOMPARE(lyricsForTrackFile(dir.filePath(QStringLiteral("song.mp3"))), expected);
+
+  // A usable .lrc wins when both sidecars exist (the fixtures ship both for
+  // the "sample" base name).
+  QCOMPARE(lyricsForTrackFile(fixturePath(QStringLiteral("sample.mp3"))),
+           QString::fromUtf8(readFile(fixturePath(QStringLiteral("sample.lrc")))));
+}
+
+void TestFeed::corruptKrcIsEmpty()
+{
+  const QByteArray valid = readFile(fixturePath(QStringLiteral("sample.krc")));
+  QVERIFY(!valid.isEmpty());
+
+  QTemporaryDir dir;
+  QVERIFY(dir.isValid());
+
+  // Header followed by a non-zlib payload: one qWarning, empty lyrics, no
+  // crash.
+  {
+    QFile krc(dir.filePath(QStringLiteral("garbage.krc")));
+    QVERIFY(krc.open(QIODevice::WriteOnly));
+    const QByteArray garbage = QByteArrayLiteral("krc1") + QByteArray(64, '\x7f');
+    QCOMPARE(krc.write(garbage), qint64(garbage.size()));
+  }
+  QCOMPARE(lyricsForTrackFile(dir.filePath(QStringLiteral("garbage.mp3"))), QString());
+
+  // A truncated stream is rejected the same way: no partial lyric escapes.
+  {
+    QFile krc(dir.filePath(QStringLiteral("truncated.krc")));
+    QVERIFY(krc.open(QIODevice::WriteOnly));
+    const QByteArray truncated = valid.left(valid.size() - 8);
+    QCOMPARE(krc.write(truncated), qint64(truncated.size()));
+  }
+  QCOMPARE(lyricsForTrackFile(dir.filePath(QStringLiteral("truncated.mp3"))), QString());
+}
+
+void TestFeed::oversizedSidecarIgnored()
+{
+  constexpr qint64 kCap = 10 * 1024 * 1024;
+  QTemporaryDir dir;
+  QVERIFY(dir.isValid());
+
+  // An over-cap .lrc is skipped before readAll(): a zero-filled oversized
+  // file would otherwise decode to a non-empty NUL string.
+  {
+    QFile lrc(dir.filePath(QStringLiteral("song.lrc")));
+    QVERIFY(lrc.open(QIODevice::WriteOnly));
+    QVERIFY(lrc.resize(kCap + 1));
+  }
+  QCOMPARE(lyricsForTrackFile(dir.filePath(QStringLiteral("song.mp3"))), QString());
+
+  // The .krc cap is the same. This file carries a VALID prefix, so only the
+  // size check — not a decode failure — can keep it from being decoded.
+  QVERIFY(QFile::remove(dir.filePath(QStringLiteral("song.lrc"))));
+  const QByteArray krcBytes = readFile(fixturePath(QStringLiteral("sample.krc")));
+  QVERIFY(!krcBytes.isEmpty());
+  {
+    QFile krc(dir.filePath(QStringLiteral("song.krc")));
+    QVERIFY(krc.open(QIODevice::WriteOnly));
+    QCOMPARE(krc.write(krcBytes), qint64(krcBytes.size()));
+    QVERIFY(krc.resize(kCap + 1));
+  }
+  QCOMPARE(lyricsForTrackFile(dir.filePath(QStringLiteral("song.mp3"))), QString());
 }
 
 void TestFeed::analyserFrameSizes()

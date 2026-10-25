@@ -13,7 +13,10 @@ import contextlib
 import io
 import json
 import os
+import shutil
+import signal
 import sys
+import tempfile
 import types
 import unittest
 
@@ -45,11 +48,14 @@ class _Env:
 
     def __init__(self):
         self.processes = []
+        self.helper_processes = []
+        self.helper_stream = None
         self.sources = {}
         self.next_source_id = 0
         self.plugin_manager = None
         self.plugin_instance = None
         self.spawn_error = None
+        self.helper_spawn_error = None
         self.write_error = None
         self.close_error = None
         self.short_write = None
@@ -63,6 +69,10 @@ class _Env:
         for process in self.processes:
             os.close(process.stdin.fd)
         self.processes.clear()
+        if self.helper_stream is not None and not self.helper_stream.closed:
+            self.helper_stream.close()
+        self.helper_processes.clear()
+        self.helper_stream = None
         self.sources.clear()
         self.config_values.clear()
         self.config_calls.clear()
@@ -70,6 +80,7 @@ class _Env:
         self.disconnected.clear()
         self.window_state = 0
         self.spawn_error = None
+        self.helper_spawn_error = None
         self.write_error = None
         self.close_error = None
         self.short_write = None
@@ -147,6 +158,9 @@ def install_stubs():
         def get_data(self):
             return self.data
 
+        def get_size(self):
+            return len(self.data)
+
     GLib = types.SimpleNamespace(
         PRIORITY_DEFAULT=0,
         SOURCE_REMOVE=False,
@@ -159,6 +173,7 @@ def install_stubs():
     )
 
     class SubprocessFlags:
+        NONE = 0
         STDIN_PIPE = 64
         STDOUT_PIPE = 16
 
@@ -216,25 +231,42 @@ def install_stubs():
                     callback(self, None)
 
     class InputStream:
-        """The app's stdout: one armed read at a time, fed by the tests."""
+        """The app's stdout: one armed bounded read at a time, fed by the tests.
+
+        Chunks are split at the count the adapter asked for, the way a pipe read returns
+        at most the requested number of bytes, so accumulation across chunks is exercised.
+        """
 
         def __init__(self):
             self.callback = None
+            self.count = 0
             self.result = None
 
-        def read_line_async(self, _priority, _cancellable, callback):
+        def read_bytes_async(self, count, _priority, _cancellable, callback):
             if self.callback is not None:
                 raise AssertionError("a second read was armed while one is outstanding")
             self.callback = callback
+            self.count = count
 
-        def read_line_finish_utf8(self, _result):
+        def read_bytes_finish(self, _result):
             return self.result
 
         def feed_line(self, line):
-            self._deliver((line, len(line)))
+            self.feed_bytes(line.encode("utf-8") + b"\n")
 
         def feed_eof(self):
-            self._deliver((None, 0))
+            self._deliver(Bytes(b""))
+
+        def feed_bytes(self, data):
+            """Deliver raw bytes (no implicit newline), one read-sized chunk at a time."""
+            if self.callback is None:
+                raise AssertionError("the app wrote without a read armed")
+            while data:
+                take = min(len(data), self.count)
+                part, data = data[:take], data[take:]
+                self._deliver(Bytes(part))
+                if self.callback is None:
+                    return  # the adapter ended the session; the rest is unread pipe data
 
         def _deliver(self, result):
             callback, self.callback = self.callback, None
@@ -278,9 +310,111 @@ def install_stubs():
         def force_exit(self):
             self.killed = True
 
+    class UnixInputStream:
+        """The helper's read end: one armed bounded read at a time, fed by the tests."""
+
+        def __init__(self, fd, close_fd):
+            self.fd = fd
+            self.close_fd = close_fd
+            self.callback = None
+            self.count = 0
+            self.result = None
+            self.closed = False
+
+        @classmethod
+        def new(cls, fd, close_fd):
+            stream = cls(fd, close_fd)
+            env.helper_stream = stream
+            return stream
+
+        def read_bytes_async(self, count, _priority, _cancellable, callback):
+            if self.callback is not None:
+                raise AssertionError("a second read was armed while one is outstanding")
+            self.callback = callback
+            self.count = count
+
+        def read_bytes_finish(self, _result):
+            return self.result
+
+        def feed_line(self, line):
+            self.feed_bytes(line.encode("utf-8") + b"\n")
+
+        def feed_eof(self):
+            self._deliver(Bytes(b""))
+
+        def feed_bytes(self, data):
+            if self.callback is None:
+                raise AssertionError("the helper wrote without a read armed")
+            while data:
+                take = min(len(data), self.count)
+                part, data = data[:take], data[take:]
+                self._deliver(Bytes(part))
+                if self.callback is None:
+                    return
+
+        def _deliver(self, result):
+            callback, self.callback = self.callback, None
+            if callback is None:
+                raise AssertionError("the helper wrote without a read armed")
+            self.result = result
+            callback(self, None)
+
+        def close(self):
+            self.closed = True
+            if self.close_fd:
+                os.close(self.fd)
+                self.close_fd = False
+
+    class HelperProcess:
+        """The spawned helper: the fake half of `Gio.Subprocess` for fd 3."""
+
+        def __init__(self, argv, taken_fds):
+            self.argv = list(argv)
+            self.taken_fds = list(taken_fds)
+            self.signals = []
+            self.killed = False
+            self.wait_callback = None
+
+        def send_signal(self, sig):
+            self.signals.append(sig)
+
+        def wait_async(self, _cancellable, callback):
+            self.wait_callback = callback
+
+        def feed_exit(self):
+            callback, self.wait_callback = self.wait_callback, None
+            if callback is not None:
+                callback(self, None)
+
+        def force_exit(self):
+            self.killed = True
+
+    class SubprocessLauncher:
+        """`Gio.SubprocessLauncher`: records the fd transfer and spawns a fake helper."""
+
+        def __init__(self, flags):
+            self.flags = flags
+            self.taken_fds = []
+
+        @classmethod
+        def new(cls, flags):
+            return cls(flags)
+
+        def take_fd(self, source_fd, target_fd):
+            self.taken_fds.append((source_fd, target_fd))
+
+        def spawnv(self, argv):
+            if env.helper_spawn_error is not None:
+                raise env.helper_spawn_error
+            process = HelperProcess(argv, self.taken_fds)
+            env.helper_processes.append(process)
+            return process
+
     Gio = types.SimpleNamespace(
         Subprocess=Subprocess,
+        SubprocessLauncher=SubprocessLauncher,
         SubprocessFlags=SubprocessFlags,
+        UnixInputStream=UnixInputStream,
         DataInputStream=types.SimpleNamespace(new=staticmethod(lambda stream: stream)),
         io_error_quark=staticmethod(lambda: 42),
         IOErrorEnum=types.SimpleNamespace(PENDING=20),
@@ -611,6 +745,10 @@ class PluginTestCase(unittest.TestCase):
 
     def setUp(self):
         STUBS.reset()
+        previous_path = os.environ.get("PATH")
+        self.path_dir = tempfile.mkdtemp(prefix="lxlyrics-bin-")
+        os.environ["PATH"] = self.path_dir
+        self.addCleanup(self._restore_path, previous_path)
 
         self.player = STUBS.Player()
         self.window = STUBS.MainWindow()
@@ -638,10 +776,30 @@ class PluginTestCase(unittest.TestCase):
     def stored_config(self):
         return dict(STUBS.config_values)
 
+    def _restore_path(self, previous):
+        shutil.rmtree(self.path_dir, ignore_errors=True)
+        if previous is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = previous
+
     def start_session(self):
         STUBS.enable_plugin()
         self.clear_written()
         return self.proc
+
+    def make_executable(self, directory, name):
+        path = os.path.join(directory, name)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("#!/bin/sh\nexit 0\n")
+        os.chmod(path, 0o755)
+        return path
+
+    def configure_app(self, directory):
+        """Point the config at an app executable in a known directory."""
+        app_path = self.make_executable(directory, "lx-lyrics-app")
+        STUBS.config_values[("plugins", "lxlyrics_app_path")] = app_path
+        return app_path
 
     def assert_plugin_off(self):
         self.assertFalse(self.manager.enabled(self.entry), "the plugin toggle is off")
@@ -1048,6 +1206,38 @@ class AppToHostTests(PluginTestCase):
         self.assertIn("ignoring non-JSON line", output.getvalue())
         self.assertTrue(self.manager.enabled(self.entry), "the cap is a limit, not an error")
 
+    def test_an_over_cap_line_without_a_newline_is_a_protocol_error(self):
+        self.start_session()
+
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            self.proc.stdout.feed_bytes(b"x" * (lxlyrics.MAX_LINE_BYTES + 1))
+
+        self.assertIn("protocol error", output.getvalue())
+        self.assertIn("without a newline", output.getvalue())
+        self.assertIn(str(lxlyrics.MAX_LINE_BYTES + 1), output.getvalue())
+        self.assert_plugin_off()
+        self.assertTrue(self.proc.killed, "an endless line must not stall the main loop")
+
+    def test_an_invalid_utf8_line_is_a_protocol_error(self):
+        self.start_session()
+
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            self.proc.stdout.feed_bytes(b"\xff\n")
+
+        self.assertIn("protocol error", output.getvalue())
+        self.assertIn("not valid UTF-8", output.getvalue())
+        self.assert_plugin_off()
+        self.assertTrue(self.proc.killed)
+
+    def test_the_stdout_read_is_bounded(self):
+        self.start_session()
+
+        self.assertEqual(self.proc.stdout.count, lxlyrics.READ_CHUNK_BYTES)
+        self.assertLessEqual(lxlyrics.READ_CHUNK_BYTES, lxlyrics.MAX_LINE_BYTES + 1)
+        self.assertEqual(self.proc.stdout.callback is not None, True, "exactly one read armed")
+
     def test_stray_output_on_stdout_is_ignored(self):
         self.start_session()
         self.player.paused = False
@@ -1253,6 +1443,178 @@ class FullscreenTests(PluginTestCase):
         self.assertEqual(
             STUBS.disconnected, STUBS.window_signal_ids, "and leaks no handler per session"
         )
+
+
+class HotkeyTests(PluginTestCase):
+    """The global-shortcut helper: spawned with the plugin, flipped by fd 3."""
+
+    def _start_with_helper(self):
+        helper = self.make_executable(self.path_dir, lxlyrics.HOTKEY_NAME)
+        self.configure_app(self.path_dir)
+        STUBS.enable_plugin()
+        self.assertEqual(len(STUBS.helper_processes), 1)
+        return helper, STUBS.helper_processes[-1]
+
+    def test_the_helper_starts_with_the_plugin_enable(self):
+        helper, proc = self._start_with_helper()
+
+        self.assertEqual(proc.argv, [helper, "--pipe-fd", "3"])
+        self.assertEqual([target for _source, target in proc.taken_fds], [3])
+        self.assertIsNotNone(self.plugin.hotkey)
+        self.assertIsNotNone(STUBS.helper_stream)
+        self.assertTrue(self.manager.enabled(self.entry))
+
+    def test_the_shortcut_flips_the_session_but_not_the_plugin_manager(self):
+        self._start_with_helper()
+        self.assertIsNotNone(self.plugin.session)
+
+        STUBS.helper_stream.feed_line("toggle")
+
+        self.assertIsNone(self.plugin.session)
+        self.assertTrue(self.manager.enabled(self.entry), "the plugin toggle stays on")
+        self.assertEqual(len(STUBS.processes), 1, "the shortcut did not spawn a second app")
+
+        STUBS.helper_stream.feed_line("toggle")
+
+        self.assertIsNotNone(self.plugin.session)
+        self.assertTrue(self.manager.enabled(self.entry))
+        self.assertEqual(len(STUBS.processes), 2)
+
+    def test_ready_and_unavailable_are_logged_once(self):
+        self._start_with_helper()
+        output = io.StringIO()
+
+        with contextlib.redirect_stderr(output):
+            STUBS.helper_stream.feed_line("ready CTRL+ALT+l")
+            STUBS.helper_stream.feed_line("ready CTRL+ALT+l")
+            STUBS.helper_stream.feed_line("unavailable no session bus")
+            STUBS.helper_stream.feed_line("unavailable no session bus")
+
+        text = output.getvalue()
+        self.assertEqual(text.count("global shortcut bound to CTRL+ALT+l"), 1)
+        self.assertEqual(text.count("global shortcut unavailable (no session bus)"), 1)
+
+    def test_unknown_and_empty_lines_leave_the_session_alone(self):
+        self._start_with_helper()
+        output = io.StringIO()
+
+        with contextlib.redirect_stderr(output):
+            STUBS.helper_stream.feed_line("")
+            STUBS.helper_stream.feed_line("what is this")
+
+        self.assertIsNotNone(self.plugin.session)
+        self.assertIn("shortcut helper: what is this", output.getvalue())
+
+    def test_an_overlong_status_line_is_discarded_until_its_newline(self):
+        self._start_with_helper()
+
+        STUBS.helper_stream.feed_bytes(b"x" * (lxlyrics.HOTKEY_STATUS_BYTES + 1))
+        STUBS.helper_stream.feed_bytes(b"more garbage\n")
+        STUBS.helper_stream.feed_line("toggle")
+
+        self.assertIsNone(self.plugin.session, "the next well-formed line still works")
+
+    def test_helper_eof_is_logged_once_and_never_touches_the_session(self):
+        _helper, proc = self._start_with_helper()
+        stream = STUBS.helper_stream
+        output = io.StringIO()
+
+        with contextlib.redirect_stderr(output):
+            stream.feed_eof()
+
+        self.assertTrue(stream.closed)
+        self.assertEqual(proc.signals, [signal.SIGTERM])
+        self.assertIsNotNone(self.plugin.session, "a dead helper does not end the lyrics")
+        self.assertTrue(self.manager.enabled(self.entry))
+        self.assertEqual(output.getvalue().count("shortcut helper exited"), 1)
+        proc.feed_exit()
+        STUBS.run_timeouts()
+        self.assertFalse(proc.killed, "a helper that left on its own is not killed")
+
+    def test_a_missing_helper_logs_once_and_the_plugin_still_works(self):
+        output = io.StringIO()
+
+        with contextlib.redirect_stderr(output):
+            STUBS.enable_plugin()
+
+        self.assertIsNone(self.plugin.hotkey)
+        self.assertIn("lx-lyrics-hotkey not found", output.getvalue())
+        self.assertEqual(output.getvalue().count("not found"), 1)
+        self.assertIsNotNone(self.plugin.session)
+        self.assertTrue(self.manager.enabled(self.entry))
+
+    def test_a_helper_that_cannot_spawn_logs_once_and_the_plugin_still_works(self):
+        self.make_executable(self.path_dir, lxlyrics.HOTKEY_NAME)
+        self.configure_app(self.path_dir)
+        STUBS.helper_spawn_error = StubError("Failed to execute child process")
+        output = io.StringIO()
+
+        with contextlib.redirect_stderr(output):
+            STUBS.enable_plugin()
+
+        self.assertIsNone(self.plugin.hotkey)
+        self.assertEqual(STUBS.helper_processes, [])
+        self.assertIn("cannot run", output.getvalue())
+        self.assertEqual(output.getvalue().count("global shortcut is unavailable"), 1)
+        self.assertIsNotNone(self.plugin.session)
+        self.assertTrue(self.manager.enabled(self.entry))
+
+    def test_disabling_the_plugin_stops_the_helper(self):
+        _helper, proc = self._start_with_helper()
+        stream = STUBS.helper_stream
+
+        STUBS.disable_plugin()
+
+        self.assertTrue(stream.closed)
+        self.assertEqual(proc.signals, [signal.SIGTERM])
+        self.assertIsNone(self.plugin.hotkey)
+        proc.feed_exit()
+        STUBS.run_timeouts()
+        self.assertFalse(proc.killed)
+
+    def test_close_requested_still_turns_the_plugin_and_helper_off(self):
+        self._start_with_helper()
+        stream = STUBS.helper_stream
+
+        self.proc.stdout.feed_line('{"v":2,"action":"close_requested"}')
+
+        self.assertFalse(self.manager.enabled(self.entry))
+        self.assertIsNone(self.plugin.session)
+        self.assertIsNone(self.plugin.hotkey)
+        self.assertTrue(stream.closed)
+
+    def test_stopping_the_helper_twice_is_a_no_op(self):
+        _helper, proc = self._start_with_helper()
+        hotkey = self.plugin.hotkey
+
+        hotkey.stop()
+        hotkey.stop()
+
+        self.assertEqual(proc.signals, [signal.SIGTERM])
+
+
+class HotkeyPathTests(PluginTestCase):
+    def test_prefers_the_helper_next_to_the_app(self):
+        app_dir = tempfile.mkdtemp(prefix="lxlyrics-app-")
+        self.addCleanup(shutil.rmtree, app_dir, True)
+        app_path = self.make_executable(app_dir, "lx-lyrics-app")
+        helper = self.make_executable(app_dir, lxlyrics.HOTKEY_NAME)
+
+        self.assertEqual(lxlyrics.resolve_hotkey_path(app_path), helper)
+
+    def test_falls_back_to_path(self):
+        helper = self.make_executable(self.path_dir, lxlyrics.HOTKEY_NAME)
+
+        self.assertEqual(lxlyrics.resolve_hotkey_path("/nowhere/lx-lyrics-app"), helper)
+
+    def test_a_bare_app_name_is_resolved_before_its_directory(self):
+        self.make_executable(self.path_dir, "lx-lyrics-app")
+        helper = self.make_executable(self.path_dir, lxlyrics.HOTKEY_NAME)
+
+        self.assertEqual(lxlyrics.resolve_hotkey_path("lx-lyrics-app"), helper)
+
+    def test_a_missing_helper_is_none(self):
+        self.assertIsNone(lxlyrics.resolve_hotkey_path("/nowhere/lx-lyrics-app"))
 
 
 class ConfigTests(PluginTestCase):

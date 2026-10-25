@@ -20,8 +20,10 @@ find_package(Qt6 6.4 REQUIRED COMPONENTS
 )
 
 # Lyric acquisition happens in the app now (the host sends the file path), so
-# the app decodes legacy encodings with ICU and reads embedded tags with TagLib.
+# the app decodes legacy encodings with ICU, reads embedded tags with TagLib,
+# and inflates Kugou .krc sidecars with zlib.
 find_package(ICU REQUIRED COMPONENTS uc)
+find_package(ZLIB REQUIRED)
 
 # TagLib: prefer the CONFIG package (target TagLib::tag), fall back to
 # pkg-config (target PkgConfig::TagLib) on installs that ship no CMake files.
@@ -123,6 +125,7 @@ target_include_directories(lx-lyrics-app PRIVATE src/)
 target_link_libraries(lx-lyrics-app PRIVATE
     Qt6::Widgets
     ICU::uc
+    ZLIB::ZLIB
     ${LX_TAGLIB_TARGET}
 )
 
@@ -190,6 +193,7 @@ target_compile_definitions(lyrics-app-feed-tests PRIVATE
 target_link_libraries(lyrics-app-feed-tests PRIVATE
     Qt6::Test
     ICU::uc
+    ZLIB::ZLIB
     ${LX_TAGLIB_TARGET}
 )
 
@@ -265,6 +269,7 @@ target_link_libraries(lyrics-app-controller-tests PRIVATE
     Qt6::Test
     Qt6::Widgets
     ICU::uc
+    ZLIB::ZLIB
     ${LX_TAGLIB_TARGET}
 )
 

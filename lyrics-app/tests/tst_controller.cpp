@@ -115,12 +115,16 @@ private slots:
   void unsyncedLyricShowsStaticTextPlaceholder();
   void emptyLyricShowsPlaceholder();
   void validLyricShowsParsedLines();
+  void setTrackAppliesPlaybackSnapshot();
+  void setLyricChangeWhilePlayingResumes();
+  void identicalLyricRepushIsNoOp();
   void stopAfterValidLyricShowsPlaceholder();
   void metadataToggleReappliesPlaceholder();
   void mixedLyricNeverVisitsStaticLine();
   void setOffsetReplaceSemantics();
   void selectorToggleWhilePlayingKeepsRawPosition();
   void enableHideShowsWindow();
+  void showTaskbarTogglesToolFlag();
   void fullscreenHideHidesWindow();
   void settingsDialogSurvivesWindowHide();
   void closeButtonRequestsClose();
@@ -255,6 +259,102 @@ void TestLyricController::validLyricShowsParsedLines()
   auto* renderer = window.contentContainer()->findChild<LyricRenderer*>();
   QVERIFY(renderer != nullptr);
   QCOMPARE(renderer->lineCount(), 2);
+}
+
+void TestLyricController::setTrackAppliesPlaybackSnapshot()
+{
+  // REGRESSION: set_info is a FULL snapshot, but setTrack applied only the
+  // metadata and the lyric; isPlay/played_time waited for the next
+  // set_status. A lone set_info must start (or pause) the clock on the
+  // snapshot's position.
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults(); // Idempotent; the ctor already loaded them.
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  TrackSnapshot snapshot;
+  snapshot.name = QStringLiteral("Snapshot");
+  snapshot.singer = QStringLiteral("Singer");
+  snapshot.lrc = QStringLiteral("[00:01.00]A\n[00:02.00]B\n[00:10.00]C");
+  snapshot.isPlay = true;
+  snapshot.playedTimeMs = 2000;
+  controller.setTrack(snapshot);
+
+  // The snapshot's played_time lands the clock on line 1 (2000 ms + the
+  // 60 ms line-mode lead-in), not on line 0 as a 0 ms start would.
+  QVERIFY(controller.player()->isPlaying());
+  QCOMPARE(controller.player()->currentLine(), 1);
+  QCOMPARE(controller.player()->currentText(), QStringLiteral("B"));
+
+  // The same track with a paused snapshot pauses the clock.
+  snapshot.isPlay = false;
+  controller.setTrack(snapshot);
+  QVERIFY(!controller.player()->isPlaying());
+}
+
+void TestLyricController::setLyricChangeWhilePlayingResumes()
+{
+  // REGRESSION: LyricPlayer::setLyric pauses a playing clock while it
+  // re-parses, and setLyric discarded the changed flag, so a host lyric edit
+  // (set_lyric, protocol §5) froze the lyric window. A REAL change while
+  // playing must re-anchor on the RAW position captured BEFORE the pause.
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults(); // Idempotent; the ctor already loaded them.
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  TrackSnapshot snapshot;
+  snapshot.name = QStringLiteral("Edit");
+  snapshot.singer = QStringLiteral("Singer");
+  snapshot.lrc = QStringLiteral("[00:01.00]A\n[00:05.00]B\n[00:10.00]C");
+  controller.setTrack(snapshot);
+
+  controller.play(2000);
+  QVERIFY(controller.player()->isPlaying());
+  QCOMPARE(controller.player()->currentText(), QStringLiteral("A"));
+
+  LyricSnapshot lyric;
+  lyric.lrc = QStringLiteral("[00:01.00]A2\n[00:05.00]B\n[00:10.00]C");
+  controller.setLyric(lyric);
+
+  QVERIFY(controller.player()->isPlaying()); // Resumed after the re-parse pause.
+  QCOMPARE(controller.player()->currentText(), QStringLiteral("A2"));
+  // Same moment: raw ~2000 ms + the 60 ms line-mode lead-in once. Replaying
+  // the offset-inclusive clock would add the lead-in a second time.
+  QVERIFY(qAbs(controller.player()->currentPositionMs() - 2060) < 100);
+}
+
+void TestLyricController::identicalLyricRepushIsNoOp()
+{
+  // The host re-pushes set_lyric periodically. An identical re-push is
+  // deduped by the player and must stay a no-op: no pause, no re-anchor.
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults(); // Idempotent; the ctor already loaded them.
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  TrackSnapshot snapshot;
+  snapshot.name = QStringLiteral("Repeat");
+  snapshot.singer = QStringLiteral("Singer");
+  snapshot.lrc = QStringLiteral("[00:01.00]A\n[00:05.00]B\n[00:10.00]C");
+  controller.setTrack(snapshot);
+  controller.play(2000);
+  QVERIFY(controller.player()->isPlaying());
+
+  const qint64 before = controller.player()->currentPositionMs();
+  LyricSnapshot same;
+  same.lrc = snapshot.lrc;
+  controller.setLyric(same);
+
+  QVERIFY(controller.player()->isPlaying());
+  QCOMPARE(controller.player()->currentText(), QStringLiteral("A"));
+  // The clock keeps running: it did not jump back to the raw ~2000 ms a
+  // replayed play(raw) would anchor (before already includes the 60 ms
+  // line-mode lead-in).
+  QVERIFY(controller.player()->currentPositionMs() >= before);
 }
 
 void TestLyricController::stopAfterValidLyricShowsPlaceholder()
@@ -461,6 +561,28 @@ void TestLyricController::enableHideShowsWindow()
 
   QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.enable"), true));
   QVERIFY(window.isVisible());
+}
+
+void TestLyricController::showTaskbarTogglesToolFlag()
+{
+  // REGRESSION: applySetting re-applied Qt::Tool when isShowTaskbar was TRUE
+  // — the exact opposite of the constructor (Qt::Tool when the setting is
+  // OFF). Qt::Tool windows have no taskbar entry, so the live toggle hid the
+  // entry it had just been asked to show.
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults();
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  QCOMPARE(ctx.config.isShowTaskbar(), false);
+  QVERIFY(window.windowFlags().testFlag(Qt::Tool));
+
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.isShowTaskbar"), true));
+  QVERIFY(!window.windowFlags().testFlag(Qt::Tool));
+
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.isShowTaskbar"), false));
+  QVERIFY(window.windowFlags().testFlag(Qt::Tool));
 }
 
 void TestLyricController::fullscreenHideHidesWindow()

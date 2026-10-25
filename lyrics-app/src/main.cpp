@@ -232,15 +232,15 @@ int main(int argc, char* argv[])
   }
 
   // Standalone self-feed (task 2.13): the fake track goes through the SAME
-  // pipeline as a host set_info. play(0) starts the player's own clock and
-  // the player's lineChanged signal moves the renderer's active line — no
-  // FeedReader is constructed. The visualizer is fed by the synthetic
-  // transport below (a hostless demo has no host to ask), through the same
-  // bridge and gate a host drives.
+  // pipeline as a host set_info. setTrack applies the snapshot's isPlay +
+  // playedTime (makeDemoTrack plays from 0), which starts the player's own
+  // clock and lets lineChanged move the renderer's active line — no
+  // FeedReader is constructed, and no second play() is issued here. The
+  // visualizer is fed by the synthetic transport below (a hostless demo has
+  // no host to ask), through the same bridge and gate a host drives.
   else if (cli.demo) {
     const TrackSnapshot demo = makeDemoTrack();
     lyricController->setTrack(demo);
-    lyricController->play(0);
     appContext.pauseHide->setPlayState(true); // The demo plays: keep it bright.
     window->setWindowTitle(QStringLiteral("DEMO: %1 - %2").arg(demo.name, demo.singer));
 

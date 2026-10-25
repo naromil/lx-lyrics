@@ -18,7 +18,7 @@ The two sides share **no source code**. Each side is implemented from this docum
 
 **The display app owns acquisition, ALL parsing, selection, and rendering.** Specifically, the app:
 
-- Acquires lyrics for the playing file named by `set_info.path`: the same-directory sidecar `<dir>/<completeBaseName>.lrc` first, then the file's embedded lyrics tag — converting non-UTF-8 bytes itself (UTF-8 BOM / UTF-16 BOM / GB18030 / BIG5 via ICU) and reading tags itself (TagLib). The host never converts encodings and never reads lyric files.
+- Acquires lyrics for the playing file named by `set_info.path`: the same-directory sidecar `<dir>/<completeBaseName>.lrc` first (falling back to a Kugou `<dir>/<completeBaseName>.krc` — `krc1` header + zlib stream XORed with the reference 16-byte key — when the `.lrc` is absent, empty or undecodable; every sidecar is capped at 10 MiB), then the file's embedded lyrics tag — converting non-UTF-8 bytes itself (UTF-8 BOM / UTF-16 BOM / GB18030 / BIG5 via ICU) and reading tags itself (TagLib). The host never converts encodings and never reads lyric files.
 - Chooses whether to render `lxlrc` or `lrc` (lxlrc takes priority when present and enabled).
 - Builds the extended lyric lines from `tlrc` (translation) and `rlrc` (romaji/romanization), including ordering/swapping of translation vs romaji.
 - Decodes `[awlrc:base64,...]` container payloads inside lyric text.
@@ -113,7 +113,7 @@ v2 removed the v1 `id` and `line` fields: no host computes line numbers any more
 **Lyric precedence:**
 
 1. A **non-empty `lrc`** from the host wins — the host had lyric text of its own and the app renders it as-is (still splitting `tlrc`/`rlrc`/`lxlrc` out of it normally).
-2. Otherwise (empty or omitted `lrc`) the app **reads the file at `path`**: the `<dir>/<completeBaseName>.lrc` sidecar first, then the file's embedded lyrics tag, joined with `\n` when both exist. No path or no lyrics ⇒ empty lyrics, and the window shows its no-lyrics state.
+2. Otherwise (empty or omitted `lrc`) the app **reads the file at `path`**: the `<dir>/<completeBaseName>.lrc` sidecar first, then — only when that `.lrc` is absent, empty or undecodable — a Kugou `<dir>/<completeBaseName>.krc` sidecar (each capped at 10 MiB), then the file's embedded lyrics tag, joined with `\n` when several yield text. No path or no lyrics ⇒ empty lyrics, and the window shows its no-lyrics state.
 
 `tlrc`, `rlrc` and `lxlrc` are only ever host-supplied text: the app does not derive them from the file.
 

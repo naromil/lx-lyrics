@@ -165,9 +165,13 @@ binding is re-established on the next start.
 - **Reader thread**: blocks in `poll()` on the app's stdout with a 500 ms timeout. On timeout it
   emits the periodic `set_status` while playing; on data it parses `get_analyser_data_array` and
   `close_requested`, tolerating/skipping non-JSON lines (a stray Qt stdout write must not break the
-  feed). A *well-formed* v2 violation is a protocol error instead (§7): a missing/unsupported `v`,
-  an unknown action or a line over 1 MiB is logged loudly and ends the session — the app's stdin is
-  closed so it quits on EOF, the toggle goes off, and nothing is respawned. Every write end is
+  feed). An analyser request is answered only when this session's `hello.spectrum` was `true`: a
+  host that declared no analyser MUST never receive that request (§4), so when the declaration was
+  `false` it is a protocol error, not an action to ignore — otherwise a broken app would wait for a
+  frame forever. Any other *well-formed* v2 violation is a protocol error too (§7): a
+  missing/unsupported `v`, an unknown action or a line over 1 MiB is logged loudly and ends the
+  session — the app's stdin is closed so it quits on EOF, the toggle goes off, and nothing is
+  respawned. Every write end is
   non-blocking with a bounded wait, so a stalled app can never wedge DeaDBeeF's main thread, and
   `SIGPIPE` is blocked around writes instead of being ignored process-wide. The feed object is
   reference-counted (`lx_feed_acquire`/`lx_feed_release`), because the player thread (plugin
@@ -197,8 +201,10 @@ binding is re-established on the next start.
 "app" (which logs every received line to `$LX_STUB_LOG` and prints the app→host lines itself) and
 asserts the exact host→app bytes, the close-requested read-back, the periodic `set_status`, the
 non-JSON tolerance, the 128-byte spectrum rule, the no-session/exec-failure paths, each §7
-protocol-error case (unsupported `v`, unknown action, over-1 MiB line → reported once and the
-session ends, with the app quitting on the EOF it was sent), that a failed write closes the app's
+protocol-error case (unsupported `v`, unknown action, over-1 MiB line, and `get_analyser_data_array`
+against a `spectrum: false` hello → reported once, the analyser callback never runs, the session
+ends with the app quitting on the EOF it was sent; the same request against `spectrum: true` reaches
+the callback once and is answered), that a failed write closes the app's
 stdin without leaking a descriptor, and that a writer thread keeps working (as a no-op) while
 another thread stops the session.
 

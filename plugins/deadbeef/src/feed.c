@@ -49,6 +49,10 @@ struct lx_feed {
   volatile sig_atomic_t stop_requested;
   bool stdin_open; /* guarded by write_lock */
   bool child_exited;
+  /* The `spectrum` value this session declared in hello (§5). §4 forbids the
+   * app from asking for analyser data when it was false, so the reader thread
+   * needs the declaration to tell a legitimate request from a violation. */
+  bool spectrum_available;
   /* Set by the reader thread when the app violated the protocol (§7); the
    * reason is passed to the protocol_error callback. */
   char protocol_error_reason[160];
@@ -467,6 +471,15 @@ static bool feed_handle_line(struct lx_feed* feed, const char* line, size_t leng
   }
 
   if (strcmp(action, "get_analyser_data_array") == 0) {
+    /* §4: the app may only ask a host that declared `spectrum: true`, and a
+     * host that declared no analyser MUST never receive this request. Ignoring
+     * it instead would leave a broken app waiting for a frame forever, so it is
+     * the §7 protocol error it looks like (the same call VLC's adapter makes). */
+    if (!feed->spectrum_available) {
+      feed_note_protocol_error(feed,
+                               "analyser data was requested although hello.spectrum was false");
+      return false;
+    }
     if (feed->callbacks.analyser_data_requested) {
       feed->callbacks.analyser_data_requested(feed, feed->userdata);
     }
@@ -671,6 +684,7 @@ lx_feed_t* lx_feed_spawn(const char* app_path, const char* host_name, bool spect
   feed->to_child = to_child[1];
   feed->from_child = from_child[0];
   feed->stdin_open = true;
+  feed->spectrum_available = spectrum_available;
   if (callbacks) {
     feed->callbacks = *callbacks;
   }

@@ -22,8 +22,10 @@
 // The port is faithful to the JS reference
 // (references/src/common/utils/lyric-font-player/line-player.js) plus its
 // Lyric facade (index.js):
-// - Fractional timestamps are milliseconds: "[00:00.50]" is 50ms and
-//   "[00:00.500]" is 500ms (JS reads the fractional digits as whole ms).
+// - Fractional timestamps are DECIMAL fractions of a second (a deliberate
+//   deviation from line-player.js, which reads the digits as whole ms):
+//   "[00:00.5]" and "[00:00.50]" are 500ms, "[00:00.500]" is 500ms, and
+//   "[00:00.05]" is 50ms.
 // - Line mode reserves 60ms of lead-in: total offset = [offset:] tag + user
 //   offset + (lineMode ? 60 : 0). With kThreeLineLrc (first line at 50ms) the
 //   clock is already past line 0 at play(0).
@@ -34,9 +36,9 @@
 
 namespace {
 
-const QString kThreeLineLrc = QStringLiteral("[00:00.50]First\n"
+const QString kThreeLineLrc = QStringLiteral("[00:00.05]First\n"
                                              "[00:02.00]Second\n"
-                                             "[00:03.50]Third");
+                                             "[00:03.050]Third");
 
 // First line genuinely after the line-mode offset (500ms > 60ms) and with a
 // comfortable gap before the last line, so the timer path runs deterministically.
@@ -214,7 +216,8 @@ void TestLyricPlayer::setLyricEmitsLyricsChangedAndParsesLines()
 
   QCOMPARE(lyricsSpy.count(), 1);
   QCOMPARE(player.lines().size(), 3);
-  // Fractional seconds are milliseconds: "[00:00.50]" -> 50ms, not 500ms.
+  // Decimal fraction: two digits are hundredths ("[00:00.05]" -> 50ms) and
+  // three digits are milliseconds ("[00:03.050]" -> 3050ms).
   QCOMPARE(player.lines().at(0).timeMs, qint64(50));
   QCOMPARE(player.lines().at(0).text, QStringLiteral("First"));
   QCOMPARE(player.lines().at(1).timeMs, qint64(2000));
@@ -304,7 +307,7 @@ void TestLyricPlayer::playFromZeroMultiLineEmitsLinesInOrder()
                      emissions.append({line, text});
                    });
 
-  player.setLyric(kLeadInLrc); // lines at 500 / 2000 / 3050 ms
+  player.setLyric(kLeadInLrc); // lines at 500 / 2000 / 3500 ms
   player.play(0);
 
   QCOMPARE(emissions.first().first, -1);
@@ -351,8 +354,8 @@ void TestLyricPlayer::playAtLastLineEndsWithLastLineActive()
                      exactEmissions.append({line, text});
                    });
 
-  exactPlayer.setLyric(kLeadInLrc); // last line at 3050ms
-  exactPlayer.play(2990);           // clock 3050 == exactly the last line time
+  exactPlayer.setLyric(kLeadInLrc); // last line at 3500ms
+  exactPlayer.play(3440);           // clock 3500 == exactly the last line time
 
   QVERIFY(!exactPlayer.isPlaying());
   QCOMPARE(exactPlayer.currentLine(), 2);
@@ -368,13 +371,13 @@ void TestLyricPlayer::playAtLastLineEndsWithLastLineActive()
                    });
 
   nearPlayer.setLyric(kLeadInLrc);
-  nearPlayer.play(2500); // clock 2560: inside line 1's span
+  nearPlayer.play(2900); // clock 2960: inside line 1's span
 
   QVERIFY(nearPlayer.isPlaying());
   QCOMPARE(nearPlayer.currentLine(), 1);
   QCOMPARE(nearPlayer.currentText(), QStringLiteral("Second"));
 
-  QTest::qWait(600); // passes 3050ms; last line emitted and playing stops
+  QTest::qWait(800); // passes 3500ms; last line emitted and playing stops
 
   QVERIFY(!nearPlayer.isPlaying());
   QCOMPARE(nearPlayer.currentLine(), 2);

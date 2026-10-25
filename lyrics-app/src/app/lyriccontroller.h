@@ -37,6 +37,10 @@ public:
   ~LyricController() override;
 
   // --- music-state entry points (FeedReader signals and --demo self-feed) ---
+  // set_info is a FULL snapshot: metadata + lyrics + playback state. setTrack
+  // applies isPlay/playedTimeMs too, so a host that only pushes set_info
+  // (and its own periodic set_status) starts on the right position. set_lyric
+  // is lyric-only; a real change while playing re-anchors the clock.
   void setTrack(const TrackSnapshot& track);
   void setLyric(const LyricSnapshot& lyric);
   void setStatus(const PlaybackSnapshot& status);
@@ -53,7 +57,10 @@ public:
 private:
   void applyRendererConfig();
   void applySelectorConfig();
-  void applyLyricText(const QString& lrc, const QString& tlyric, const QString& rlyric,
+  // Applies raw lyric fields through the selector and player. Returns
+  // whether the player actually re-parsed (false = identical re-push deduped
+  // into a no-op).
+  bool applyLyricText(const QString& lrc, const QString& tlyric, const QString& rlyric,
                       const QString& lxlyric);
   // Re-runs the selector over the last raw lyric fields and pushes the
   // result into the player. Returns whether the player actually re-parsed

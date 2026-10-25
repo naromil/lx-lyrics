@@ -7,7 +7,9 @@ newline-delimited v2 JSON to the child's stdin. The app owns everything else: it
 sidecar/embedded lyrics of the file at `path`, parses them, and renders them.
 
 The lyric window therefore lives and dies with Quod Libet: closing the window ends the
-session, and the app quits when its stdin closes.
+session, and the app quits when its stdin closes. While the plugin is enabled it also runs
+the separate `lx-lyrics-hotkey` helper over an fd-3 pipe, so an optional global shortcut
+can show and hide the same window (see *Global shortcut*).
 
 ## Install
 
@@ -36,8 +38,10 @@ Then:
    Plugins window's *Refresh* button, which upstream's plugin docs mention, is only shown in
    debug builds — `quodlibet/qltk/pluginwin.py:424-429`.)
 2. Find **LX Lyrics** (the search box accepts the name or the id `lxlyrics`) and switch it
-   on. That toggle *is* the session toggle — the plugin starts the display app the moment
-   it is enabled, so a freshly installed plugin never opens a window on its own.
+   on. That toggle *is* the session toggle — the plugin starts the display app and, when it
+   is installed, the `lx-lyrics-hotkey` helper the moment it is enabled, so a freshly
+   installed plugin never opens a window on its own. The helper is not a session: the
+   global shortcut can open and close the window while the plugin stays enabled.
 3. If `lx-lyrics-app` is not on `PATH`, set its path in the same window: select the
    **LX Lyrics** row and use the *Lyrics app executable* entry in the preferences pane, which
    is the window's right-hand side and shows for the selected row whether or not the plugin is
@@ -52,8 +56,10 @@ the same way, and so does the app exiting on its own.
 
 An event plugin has no menu of its own to hang a second toggle on — Quod Libet's other UI
 hook for plugins is a sidebar (`UserInterfacePlugin`, `quodlibet/plugins/gui.py:15-31`),
-which a lyrics window has no use for — so the plugin manager's own toggle is the only
-honest one.
+which a lyrics window has no use for — so the plugin manager's toggle remains the only
+in-UI way to enable or disable the plugin. The global shortcut is a **session** toggle, not
+a plugin toggle: it only works while the plugin is enabled and never turns the plugin
+itself off.
 
 Ex Falso shares the plugin directory but registers only a songs-menu handler
 (`quodlibet/qltk/exfalsowindow.py:55-59`), so this plugin is never loaded there.
@@ -68,6 +74,10 @@ Ex Falso shares the plugin directory but registers only a songs-menu handler
 - **GTK 3 / PyGObject.** Quod Libet 4.7.1 is a GTK 3 application and pins it itself
   (`quodlibet/qltk/__init__.py:17`); the adapter pins `Gdk`/`Gtk` 3.0 with it.
 - The lx-lyrics display app (this repository's `lyrics-app`), built and installed.
+- **Optional:** `lx-lyrics-hotkey`, the same directory's GIO helper (the app's CMake builds
+  it when `pkg-config gio-2.0` is found, and installs it next to the app). It provides the
+  global shortcut; without it the plugin works exactly as before, and the adapter logs one
+  `lx-lyrics-hotkey not found` line.
 
 Quod Libet exposes **no analyser to plugins**, so the handshake declares
 `spectrum: false` and the app never requests spectrum frames. Quod Libet *does* have a
@@ -95,13 +105,50 @@ lxlyrics_app_path=/usr/local/bin/lx-lyrics-app
   the last non-empty value stays. Quod Libet writes the config on exit and every five minutes
   (`quodlibet/main.py:227`, `quodlibet/_main.py:413-417`).
 
+The global shortcut adds **no config key** of its own.
+
+## Global shortcut
+
+The plugin runs `lx-lyrics-hotkey` **once per enable**, not once per lyrics session, so the
+shortcut can open the window while no session is running. `enabled()` starts the helper and
+the session; `disabled()` — the Plugins-window toggle, Quod Libet quitting, or the
+`close_requested` path below — stops both. The shortcut flips the **session** with the same
+start/stop path as `enabled()`/`disabled()`, but it leaves the plugin manager's state
+alone: a press while the lyric window is open ends the session and the plugin stays enabled,
+so the next press reopens it. `close_requested` (the app's own close button) is deliberately
+different: it still ends the session and turns the plugin off through
+`PluginManager.enable(..., False)` + `save()`, so nothing respawns and the helper stops with
+the plugin. A shortcut session start that cannot spawn the app follows the same
+self-disable path as an ordinary enable failure.
+
+The helper is the same GIO binary the C adapters use. The adapter creates a pipe, hands the
+write end to the child as file descriptor 3 (`lx-lyrics-hotkey --pipe-fd 3`), closes its own
+copy, and reads the read end asynchronously with `Gio.UnixInputStream`/`Gio.DataInputStream`
+on Quod Libet's GTK main loop. The helper's newline-terminated status lines are:
+
+| line | meaning |
+|------|---------|
+| `ready <trigger>` | the desktop portal bound the shortcut; logged once |
+| `unavailable <reason>` | no shortcut is available; logged once, the plugin stays fully usable |
+| `toggle` | one key press; flips the session |
+| anything else | ignored/logged; empty lines are ignored and an overlong line (over 4 KiB) is discarded whole until its newline |
+
+No `--accelerator` is passed, so the helper uses its default binding. The helper is looked
+for **next to the resolved app executable** first, then as `lx-lyrics-hotkey` on `PATH`
+(the app's install step puts both in the same `<prefix>/bin`). If it is missing, fails to
+spawn or its pipe breaks, the adapter logs one line and everything else keeps working; if
+it exits later, that is logged once and the lyrics session is never disturbed. A helper
+status line is not a protocol line: the feed cap and §7 actions apply only to the app's
+stdout.
+
 ## Debugging
 
 The app's stderr is inherited, so its own logs land in Quod Libet's console (run
 `quodlibet` from a terminal). The adapter logs through Quod Libet's own helpers: protocol
 errors, spawn failures and write failures go to the error channel, which is always
-printed; the stalled-child warning and the informational session transitions go to the
-warning/debug channels, which Quod Libet prints only in debug mode
+printed; the stalled-child warning, the informational session transitions and the shortcut
+helper's `ready`/exit reports go to the warning/debug channels, while a missing helper,
+spawn failure or `unavailable` binding is a warning — these print only in debug mode
 (`quodlibet/util/dprint.py:172-204,283-295`). Quod Libet's debug flag is `--debug` (or the
 `QUODLIBET_DEBUG` environment variable, `quodlibet/const.py:291`):
 
@@ -112,17 +159,20 @@ QUODLIBET_DEBUG=1 quodlibet   # the same
 
 ## Tests
 
-Hermetic — no Quod Libet, GTK, PyGObject, display server, player or app binary needed. The
-adapter is imported against stub `gi.repository`, `quodlibet`, `quodlibet.plugins`,
-`quodlibet.plugins.events`, `quodlibet.qltk` and `quodlibet.util.dprint` modules, and the
-tests assert the exact JSON lines emitted for scripted player events (handshake, snapshot,
-track start/end, pause/unpause, seek, the 500 ms `set_status` cadence, the seek
-heuristic, fullscreen transitions, `close_requested`), plus the process lifecycle
-(grace-then-kill, protocol errors, non-JSON tolerance, the capped pending queue, short and
-failed writes) and the config round-trip.
+Hermetic — no Quod Libet, GTK, PyGObject, display server, player, app binary or helper
+binary needed. The adapter is imported against stub `gi.repository`, `quodlibet`,
+`quodlibet.plugins`, `quodlibet.plugins.events`, `quodlibet.qltk` and
+`quodlibet.util.dprint` modules, plus a stub fd-3 helper process/stream, and the tests
+assert the exact JSON lines emitted for scripted player events (handshake, snapshot, track
+start/end, pause/unpause, seek, the 500 ms `set_status` cadence, the seek heuristic,
+fullscreen transitions, `close_requested`), the bounded stdout read (normal, exactly-cap,
+over-cap without a newline, invalid UTF-8, EOF), the process lifecycle (grace-then-kill,
+protocol errors, non-JSON tolerance, the capped pending queue, short and failed writes), the
+shortcut transport (spawn argv/fd 3, `ready`/`unavailable`/`toggle`/unknown/overlong/EOF,
+path resolution, missing/failed helper), and the config round-trip.
 
 ```sh
-python3 -m unittest discover -s plugins/quodlibet/tests -v   # 56 tests
+python3 -m unittest discover -s plugins/quodlibet/tests -v   # 74 tests
 ```
 
 (From inside this directory, `python3 -m unittest discover -s tests -v` is equivalent.)
@@ -143,30 +193,36 @@ on every change of the main window's fullscreen state. A session starts with
 
 App → host: `close_requested` only — any other well-formed line (a `v` that is not 2, an
 unknown action, an analyser request this host never declared, a line over 1 MiB) is a
-protocol error that ends the session, while non-JSON stdout noise is skipped. See
-`docs/protocol.md` for the full v2 contract.
+protocol error that ends the session, while non-JSON stdout noise is skipped. The stdout
+read is a bounded chunk accumulator, so a line that reaches the cap without a newline ends
+the session then and there instead of growing GLib's buffer. See `docs/protocol.md` for the
+full v2 contract. The helper's fd-3 status lines are a separate, non-protocol channel.
 
 ### How the session works
 
 | Quod Libet | adapter |
 |------------|---------|
-| plugin enabled (or restored at startup) | spawn the child, `hello`, then the `set_info` + state snapshot of whatever is playing |
+| plugin enabled (or restored at startup) | start `lx-lyrics-hotkey`, spawn the child, `hello`, then the `set_info` + state snapshot of whatever is playing |
 | `plugin_on_song_started(song)` | `set_info` + `set_play{0}` — a fresh track starts at 0 |
 | `plugin_on_song_ended(song, stopped)` | `set_stop` when `stopped` (playback really ended, not a gapless move) |
 | `plugin_on_paused()` / `plugin_on_unpaused()` | `set_pause` / `set_play{player position}` |
 | `plugin_on_seek(song, msec)` | `set_play{msec}` |
 | 500 ms poll while playing | `set_status{isPlay, played_time}`, or `set_play` when the clock jumped a second or more (a seek the player did not report) |
 | main window fullscreen changed | `set_fullscreen{isFullscreen}` |
-| plugin disabled, or Quod Libet quitting | close the child's stdin (EOF ⇒ the app quits); `force_exit()` only after `STOP_GRACE_MS` |
-| app `close_requested` | end the session without killing the app, and turn the plugin off through the plugin manager |
+| global shortcut `toggle` | start or stop the session through the same path as `enabled()`/`disabled()`, without touching the plugin manager's enabled state |
+| plugin disabled, or Quod Libet quitting | close the child's stdin (EOF ⇒ the app quits); `force_exit()` only after `STOP_GRACE_MS`; stop and reap the helper |
+| app `close_requested` | end the session without killing the app, and turn the plugin off through the plugin manager (which also stops the helper) |
+| helper `ready`/`unavailable`/EOF | log once; never touch the lyrics session |
 | app exits on its own, protocol error, spawn failure | turn the plugin off, no respawn |
 
 Everything runs on Quod Libet's GTK main loop: the child's stdout is read with one armed
-async line read at a time, and its stdin is non-blocking (`os.set_blocking`), so a child
-that stops draining leaves the pending write waiting for `POLLOUT` instead of parking the
-main loop. Queued lines are capped at `MAX_PENDING_LINES` (64) with the oldest stale lines
-dropped — never the line being written and never the leading `hello` — and one warning per
-overflow episode.
+**bounded** async read at a time (a chunk accumulator capped at `MAX_LINE_BYTES`, because
+PyGObject does not expose the bounded `read_upto_async` length), and its stdin is
+non-blocking (`os.set_blocking`), so a child that stops draining leaves the pending write
+waiting for `POLLOUT` instead of parking the main loop. Queued lines are capped at
+`MAX_PENDING_LINES` (64) with the oldest stale lines dropped — never the line being written
+and never the leading `hello` — and one warning per overflow episode. The helper's fd-3
+lines are read on the same loop with a separate 4 KiB cap.
 
 Two edge cases are inherited from the Rhythmbox adapter on purpose, because they are the
 same protocol machinery:

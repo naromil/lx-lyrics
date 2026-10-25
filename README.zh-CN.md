@@ -8,12 +8,12 @@
 
 七个项目——显示应用加六个适配器——**不共享任何 C++ 源码**；唯一的契约是 `docs/protocol.md` **v2**：播放器侧适配器与显示应用之间基于 stdin/stdout 的 player feed。
 
-- **`lyrics-app/`**——独立的 Qt6 / C++23 桌面歌词窗口，支持同步滚动与当前行高亮渲染。负责歌词获取（同名 `.lrc` 文件 + 内嵌标签）、解析、选择与渲染。完整测试套件通过（6 个套件、171 个 QTest 用例）。支持宿主驱动（`--player-feed`）、自喂数据（`--demo`），或作为惰性窗口运行。
+- **`lyrics-app/`**——独立的 Qt6 / C++23 桌面歌词窗口，支持同步滚动与当前行高亮渲染。负责歌词获取（同名 `.lrc` 文件，回退到酷狗 `.krc`（每个 sidecar 上限 10 MiB） + 内嵌标签）、解析、选择与渲染。完整测试套件通过（8 个套件、186 个 QTest 用例）。支持宿主驱动（`--player-feed`）、自喂数据（`--demo`），或作为惰性窗口运行。
 - **`plugins/fooyin/`**——Fooyin 适配器（>= 0.11.1）：把 `lx-lyrics-app --player-feed` 作为直接子进程启动，并通过 feed 推送播放上下文（路径、元数据、状态、位置、频谱）。插件元数据及 `Plugin`/`CorePlugin`/`GuiPlugin` 接口已针对已安装的 Fooyin 0.12.6 完成加载验证。
 - **`plugins/deadbeef/`**——DeaDBeeF C 适配器（`ddb_lxlyrics.so`），API 下限 1.16（DeaDBeeF >= 1.9.3）；当播放器暴露其分析器时响应频谱请求。
-- **`plugins/rhythmbox/`**——Rhythmbox libpeas Python 适配器；Rhythmbox 没有分析器 API，因此声明 `spectrum: false`。
+- **`plugins/rhythmbox/`**——Rhythmbox libpeas Python 适配器；Rhythmbox 没有分析器 API，因此声明 `spectrum: false`。它还会随插件启动可选的 `lx-lyrics-hotkey` 全局快捷键助手，用于切换同一个“视图 → LX Lyrics”动作（缺少助手时只记录一条警告，适配器其余功能不受影响）。
 - **`plugins/audacious/`**——Audacious 通用插件（`lxlyrics.so`，≥ 4.6.1；纯 POSIX C 传输层 + C++17 胶水层）：启动子进程并推送播放上下文，并通过 Audacious 公开的 `Visualizer` API 响应分析器请求（`spectrum: true`）。
-- **`plugins/quodlibet/`**——Quod Libet 事件插件（单个 Python 模块 `lxlyrics.py`，≥ 4.4.0）：在 GLib 主循环上启动子进程，推送播放上下文以及 `set_fullscreen`；Quod Libet 不暴露分析器，因此声明 `spectrum: false`。
+- **`plugins/quodlibet/`**——Quod Libet 事件插件（单个 Python 模块 `lxlyrics.py`，≥ 4.4.0）：在 GLib 主循环上启动子进程，推送播放上下文以及 `set_fullscreen`；Quod Libet 不暴露分析器，因此声明 `spectrum: false`。插件启用期间还会启动可选的 `lx-lyrics-hotkey` 助手：快捷键只切换歌词会话，而 `close_requested` 仍会关闭插件并停止助手。
 - **`plugins/vlc/`**——VLC 3.0.x 接口模块（`liblxlyrics_plugin.so`，通过 `--extraintf=lxlyrics` 加载）：基于轮询的采样器为子进程供数；从插件中访问不到分析器，因此 `spectrum: false`；不支持 VLC 4。
 
 ## 播放器支持
