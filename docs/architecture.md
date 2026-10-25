@@ -15,7 +15,7 @@ The adapter lives **inside the player's process** (a Fooyin Qt plugin, a DeaDBee
 
 Consequences:
 
-- The user sees exactly one lyrics-app process, and the lyric window lives and dies with the player: closing the child's stdin (player exit, toggle off) makes the app quit immediately.
+- The user sees exactly one lyrics-app process, and the lyric window lives and dies with the player: closing the child's stdin (player exit, toggle off) makes the app quit immediately. The app also self-terminates within ~1 s if its parent process dies while the pipe stays open (a getppid() check in `--player-feed`); the startup sweep remains for pre-existing leftovers from older builds or legacy adapters.
 - `close_requested` is the one app→host message that is not a request for data — the user closed the lyric window, so the adapter ends its session and does not respawn.
 - Nothing listens on a port; the pipe pair is private to the parent and its child.
 

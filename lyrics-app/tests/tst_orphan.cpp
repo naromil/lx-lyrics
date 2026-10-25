@@ -2,6 +2,8 @@
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 LX Lyrics contributors.
  */
+#include <QFileInfo>
+#include <QProcess>
 #include <QTest>
 #include <QtGlobal>
 
@@ -21,7 +23,8 @@
 #include "host/orphansweep.h"
 #include "testbootstrap.h"
 
-// Hermetic tests for src/host/orphansweep.{h,cpp}.
+// Hermetic tests for src/host/orphansweep.{h,cpp} plus one end-to-end
+// regression test for the app's in-process parent watch.
 //
 // Four decoys are forked with a real `lx-lyrics-app --player-feed` argv: two
 // orphans (one ignores SIGTERM, so the sweep must escalate to SIGKILL), a
@@ -29,6 +32,10 @@
 // feed flag. A sweep must kill exactly the first two and leave the others
 // alone. The destructors kill every decoy on every path, including a QVERIFY
 // early return.
+//
+// The last slot runs the real `lx-lyrics-app --player-feed` under a wrapper
+// shell whose stdin write end the test keeps open, then SIGKILLs the shell:
+// only the app's own parent watch can end it, since no EOF is possible.
 
 namespace {
 
@@ -91,6 +98,34 @@ bool cmdlineHas(pid_t pid, const char* wanted)
     offset += std::strlen(argument) + 1;
   }
   return false;
+}
+
+/// Single-quotes a path for /bin/sh, escaping embedded single quotes.
+QString shellQuoted(const QString& value)
+{
+  QString quoted = value;
+  quoted.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
+  return QLatin1Char('\'') + quoted + QLatin1Char('\'');
+}
+
+/// Reads the wrapper's stdout without blocking and returns the first complete
+/// numeric line (the shell's `echo $!`). Partial lines stay buffered.
+pid_t takeWrapperPid(QProcess& wrapper, QByteArray& buffer)
+{
+  buffer += wrapper.readAllStandardOutput();
+  const qsizetype newline = buffer.lastIndexOf('\n');
+  if (newline < 0) {
+    return -1;
+  }
+  const QList<QByteArray> lines = buffer.left(newline).split('\n');
+  for (const QByteArray& line : lines) {
+    bool ok = false;
+    const qlonglong value = line.trimmed().toLongLong(&ok);
+    if (ok && value > 1) {
+      return static_cast<pid_t>(value);
+    }
+  }
+  return -1;
 }
 
 /// Double-forks and execs /bin/sh with argv[0] = "lx-lyrics-app", so the
@@ -191,6 +226,7 @@ class TestOrphanSweep : public QObject {
 
 private slots:
   void killsOnlyOrphans();
+  void quitsWhenParentDies();
 };
 
 void TestOrphanSweep::killsOnlyOrphans()
@@ -221,6 +257,64 @@ void TestOrphanSweep::killsOnlyOrphans()
   QTRY_VERIFY_WITH_TIMEOUT(!processAlive(deaf.pid()), 5000);
   QVERIFY(processAlive(live.pid()));
   QVERIFY(processAlive(wrong.pid()));
+}
+
+// Regression: a feed child whose parent dies WITHOUT closing its stdin must
+// end itself. Only the app's ParentWatch can do that — the wrapper's stdin
+// write channel is never closed here, so no EOF can arrive.
+void TestOrphanSweep::quitsWhenParentDies()
+{
+  const QFileInfo app(QCoreApplication::applicationDirPath() + QStringLiteral("/lx-lyrics-app"));
+  QVERIFY2(app.isExecutable(), qPrintable(app.absoluteFilePath()));
+
+  QProcess wrapper;
+  // The app's stderr goes to ours, never into an undrained pipe.
+  wrapper.setProcessChannelMode(QProcess::ForwardedErrorChannel);
+
+  // QProcess closes its OWN stdin channel when the observed child (the shell)
+  // dies, which would hand the app a genuine EOF and mask the self-watch. Give
+  // the wrapper the read end of a pipe this test owns instead, and keep the
+  // write end open for the whole test (closeWriteChannel() is never called):
+  // the app can then only quit through its parent watch.
+  std::array<int, 2> inputPipe{};
+  QVERIFY(::pipe(inputPipe.data()) == 0);
+  const int inputReadFd = inputPipe[0];
+  const int inputWriteFd = inputPipe[1];
+  wrapper.setStandardInputFile(QStringLiteral("/dev/fd/%1").arg(inputReadFd));
+
+  wrapper.start(QStringLiteral("/bin/sh"),
+                {QStringLiteral("-c"), shellQuoted(app.absoluteFilePath()) +
+                                         QStringLiteral(" --player-feed <&0 & echo $!; wait")});
+  QVERIFY(wrapper.waitForStarted(5000));
+  ::close(inputReadFd); // The shell holds its own copy of the read end.
+
+  pid_t appPid = -1;
+  QByteArray output;
+  const bool havePid = QTest::qWaitFor(
+    [&appPid, &wrapper, &output] {
+      appPid = takeWrapperPid(wrapper, output);
+      return appPid > 0;
+    },
+    5000);
+  QVERIFY(havePid);
+  Decoy appGuard(appPid);
+
+  QTRY_VERIFY_WITH_TIMEOUT(cmdlineHas(appGuard.pid(), "--player-feed"), 5000);
+  QVERIFY(processAlive(appGuard.pid()));
+
+  // SIGKILL the app's parent (the shell). The app is reparented; the stdin
+  // write end in this process is still open, so only the self-watch notices
+  // and quits — without a close_requested line.
+  wrapper.kill();
+  QVERIFY(wrapper.waitForFinished(5000));
+
+  const bool gone = QTest::qWaitFor(
+    [&appGuard] {
+      return !processAlive(appGuard.pid());
+    },
+    8000);
+  ::close(inputWriteFd);
+  QVERIFY(gone);
 }
 
 } // namespace

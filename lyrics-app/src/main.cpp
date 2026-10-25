@@ -18,6 +18,7 @@
 #include "app/spectrumtransport.h"
 #include "host/feedreader.h"
 #include "host/orphansweep.h"
+#include "host/parentwatch.h"
 #include "host/pipeio.h"
 #include "i18n/translationmanager.h"
 #include "window/lyricwindow.h"
@@ -124,8 +125,24 @@ int main(int argc, char* argv[])
   // PauseHide, the spectrum frames into SpectrumBridge.
   if (cli.playerFeed) {
     // A player that died before closing our stdin leaves this session with no
-    // EOF, and the never-closed window would sit on screen forever. Sweep our
-    // own previous sessions before opening a new one; a no-op when there are
+    // EOF, and the never-closed window would sit on screen forever. Watch our
+    // own parent in-process (a QTimer + getppid(), so a dead player ends this
+    // session within ~1 s even while its pipe write end is still open) and
+    // only then sweep leftover previous sessions. The watch comes first:
+    // reapOrphanFeeds() can block up to a second per victim.
+    auto* parentWatch = new ParentWatch(&appContext);
+    QObject::connect(parentWatch, &ParentWatch::orphaned, &appContext, [window] {
+      qWarning() << "feed: parent process is gone; exiting";
+      // Hide first: Qt closes still-visible top-level windows while tearing
+      // QApplication down, and LyricWindow treats any closeEvent as a user
+      // close. A player-driven end must not send close_requested (§4).
+      window->hide();
+      QCoreApplication::quit();
+    });
+    parentWatch->start();
+
+    // Cleanup for pre-existing orphans (a player that died before this build
+    // had the self-watch, or a legacy adapter) and a no-op when there are
     // none (and in --demo / inert mode, which never runs this branch).
     reapOrphanFeeds();
 

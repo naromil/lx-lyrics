@@ -95,6 +95,8 @@ add_executable(lx-lyrics-app
     src/host/feedtypes.h
     src/host/orphansweep.cpp
     src/host/orphansweep.h
+    src/host/parentwatch.cpp
+    src/host/parentwatch.h
     src/host/pipeio.cpp
     src/host/pipeio.h
     src/host/tracklyrics.cpp

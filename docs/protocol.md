@@ -39,7 +39,7 @@ The adapter must **never** parse LRC, compute line numbers, build extended lyric
 - **The app's stdout carries protocol lines only.** Every log the app emits goes to stderr, so an adapter can parse stdout unconditionally.
 - A line longer than **1 MiB** is a protocol error (§7).
 - **EOF on the app's stdin means the player is gone: the app quits immediately**, with no close animation. Closing the child's stdin is therefore the adapter's normal way to end a session; the app is never left running after its player exits.
-- **A closed or stalled app stdout is not a quit trigger.** The app's app→host writes are non-blocking and bounded: if the host stops draining the child's stdout (or closes it) while the child's stdin stays open, the app logs **one** warning, drops its further app→host lines and keeps running. Only EOF on stdin ends a session.
+- **A closed or stalled app stdout is not a quit trigger.** The app's app→host writes are non-blocking and bounded: if the host stops draining the child's stdout (or closes it) while the child's stdin stays open, the app logs **one** warning, drops its further app→host lines and keeps running. Only stdin EOF ends a session from the host's side; as a safety net the app also exits on its own if its parent process dies, without sending `close_requested`.
 - The adapter does **not** wait for the app to ask for anything before pushing state: the initial snapshot follows the handshake immediately (§5), so pipe buffering makes the spawn race-free — there is no request/response round trip to bootstrap.
 
 ---
