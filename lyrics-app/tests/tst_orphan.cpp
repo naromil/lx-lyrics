@@ -262,6 +262,7 @@ private slots:
   void killsOnlyOrphans();
   void startTimeIdentity();
   void quitsWhenParentDies();
+  void refusesSessionRestore();
 };
 
 void TestOrphanSweep::killsOnlyOrphans()
@@ -386,6 +387,34 @@ void TestOrphanSweep::quitsWhenParentDies()
     8000);
   ::close(inputWriteFd);
   QVERIFY(gone);
+}
+
+// Regression: a window still open at logout came back after a reboot, because
+// the desktop session manager restarted the app from its saved command line
+// (argv + `-session <id>`) with no player behind it. Its parent (the session
+// manager) stays alive and its stdin need not reach EOF, so neither quit
+// trigger fires: the restored instance must refuse to run on its own.
+void TestOrphanSweep::refusesSessionRestore()
+{
+  const QFileInfo app(QCoreApplication::applicationDirPath() + QStringLiteral("/lx-lyrics-app"));
+  QVERIFY2(app.isExecutable(), qPrintable(app.absoluteFilePath()));
+
+  QProcess restored;
+  restored.setProcessChannelMode(QProcess::ForwardedErrorChannel);
+  // Live parent (this test) and an open stdin write channel (never closed
+  // before the wait): only the restore check can end this process.
+  restored.start(app.absoluteFilePath(),
+                 {QStringLiteral("--player-feed"), QStringLiteral("-session"),
+                  QStringLiteral("10d0c0ffee0000000000000000000000_1_0")});
+  QVERIFY(restored.waitForStarted(5000));
+  const bool finished = restored.waitForFinished(5000);
+  if (!finished) {
+    restored.kill();
+    restored.waitForFinished(5000);
+  }
+  QVERIFY(finished);
+  QCOMPARE(restored.exitStatus(), QProcess::NormalExit);
+  QCOMPARE(restored.exitCode(), 0);
 }
 
 } // namespace

@@ -6,6 +6,8 @@
  */
 #include <QApplication>
 #include <QCoreApplication>
+#include <QDebug>
+#include <QSessionManager>
 #include <QtGlobal>
 
 #include <csignal>
@@ -82,6 +84,28 @@ int main(int argc, char* argv[])
   std::signal(SIGPIPE, SIG_IGN);
 
   QApplication app(argc, argv);
+
+#if QT_CONFIG(sessionmanager)
+  // Opt out of desktop session management (XSMP). Qt registers every app with
+  // the session manager and, by default, asks to be restarted with its own
+  // command line (plus `-session <id>`) at the next login — so a window still
+  // open at logout/reboot came back after the reboot with no player behind it,
+  // and nothing would ever end it. A lyric window only means something while
+  // a player drives (or the demo self-feeds) it: never ask to be restarted,
+  // and refuse to run as a restored instance should an older build's session
+  // entry still bring one back.
+  if (app.isSessionRestored()) {
+    qWarning() << "started by session restore with no player; exiting";
+    return 0;
+  }
+  const auto neverRestart = [](QSessionManager& manager) {
+    manager.setRestartHint(QSessionManager::RestartNever);
+  };
+  QObject::connect(&app, &QGuiApplication::commitDataRequest, &app, neverRestart,
+                   Qt::DirectConnection);
+  QObject::connect(&app, &QGuiApplication::saveStateRequest, &app, neverRestart,
+                   Qt::DirectConnection);
+#endif
 
   const CliOptions cli = parseCliOptions(QApplication::arguments());
 
