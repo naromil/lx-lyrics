@@ -2,7 +2,7 @@
 
 ## Routine (Claude may build these without asking)
 
-- [ ] Read ID3v2 `SYLT` synced-lyrics frames in `TrackLyrics` when no `LYRICS`/USLT property yields text — TagLib's `PropertyMap` skips SYLT, so MP3s tagged with synced lyrics only show "No lyrics" (millisecond timestamps only; MPEG-frame timestamps skipped with a warning; feed-suite test with a TagLib-built fixture)
+- [x] Read ID3v2 `SYLT` synced-lyrics frames in `TrackLyrics` when no `LYRICS`/USLT property yields text — TagLib's `PropertyMap` skips SYLT, so MP3s tagged with synced lyrics only show "No lyrics" (millisecond timestamps only; MPEG-frame timestamps skipped with a warning; feed-suite test with a TagLib-built fixture)
 - [ ] Make `ColorPickerButton` reuse `DesktopLyricConfig::parseRgbaString`/`rgbaStringFromColor` and add config-suite edge cases (malformed, out-of-range, named colours) — the picker carries a verbatim copy of both helpers that can silently drift from the config's format
 - [ ] In the audacious plugin: the text in the setting is too long in one line, and the setting window auto adjust length to the text, making the window too long.
 - [ ] Translate the hardcoded English strings in the settings dialog ("Desktop Lyric Settings", "Lyric Style", "Opacity", the spacing-reset tooltip) and the gear tooltip — adds app-local i18n keys beyond lx-music's language packs

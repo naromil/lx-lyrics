@@ -21,7 +21,9 @@
 //   over 10 MiB is ignored with a qWarning) → embedded tag order (LYRICS →
 //   SYNCEDLYRICS → UNSYNCEDLYRICS → "UNSYNCED LYRICS", then the
 //   description-suffixed LYRICS:/UNSYNCEDLYRICS:/"UNSYNCED LYRICS:" keys,
-//   multi-value joined with '\n') → combine order (sidecar + '\n' + embedded;
+//   multi-value joined with '\n'; an MP3 with none of them falls back to its
+//   first lyric-type ID3v2 SYLT frame timed in milliseconds, converted to
+//   `[mm:ss.mmm]` LRC lines) → combine order (sidecar + '\n' + embedded;
 //   the non-empty source alone when only one has text; empty when neither
 //   does).
 

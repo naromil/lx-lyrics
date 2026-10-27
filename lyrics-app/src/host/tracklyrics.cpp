@@ -9,6 +9,9 @@
 #include <unicode/unistr.h>
 
 #include <taglib/fileref.h>
+#include <taglib/id3v2tag.h>
+#include <taglib/mpegfile.h>
+#include <taglib/synchronizedlyricsframe.h>
 #include <taglib/tag.h>
 #include <taglib/tpropertymap.h>
 #include <taglib/tstring.h>
@@ -17,6 +20,7 @@
 #include <QDebug>
 #include <QFile>
 #include <QFileInfo>
+#include <QList>
 #include <QRegularExpression>
 #include <QStringList>
 
@@ -26,6 +30,7 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <utility>
 
 namespace {
 
@@ -149,7 +154,104 @@ QString tagKey(const TagLib::String& key)
   return QString::fromUtf8(key.to8Bit(true).c_str());
 }
 
-/// First non-empty embedded tag, joined with '\n' for multi-value tags.
+/// `[mm:ss.mmm]` for a millisecond offset. Minutes are not wrapped into hours:
+/// the LRC parser accepts up to three minute digits, far beyond any track.
+QString lrcTimeTag(unsigned int ms)
+{
+  constexpr unsigned int kMsPerSecond = 1000;
+  constexpr unsigned int kSecondsPerMinute = 60;
+  const unsigned int totalSeconds = ms / kMsPerSecond;
+  return QStringLiteral("[%1:%2.%3]")
+    .arg(totalSeconds / kSecondsPerMinute, 2, 10, QLatin1Char('0'))
+    .arg(totalSeconds % kSecondsPerMinute, 2, 10, QLatin1Char('0'))
+    .arg(ms % kMsPerSecond, 3, 10, QLatin1Char('0'));
+}
+
+/// True when the SYLT content type can hold displayable lyric text (chords,
+/// events, trivia and URL lists are skipped).
+bool isLyricSyltType(TagLib::ID3v2::SynchronizedLyricsFrame::Type type)
+{
+  using Frame = TagLib::ID3v2::SynchronizedLyricsFrame;
+  return type == Frame::Other || type == Frame::Lyrics || type == Frame::TextTranscription;
+}
+
+/// One SYLT frame as LRC text. Entries are usually whole lines; when any entry
+/// starts with a line break the frame is syllable-synced (the ID3v2.4 §4.9
+/// convention), so an entry without one continues the current line and only
+/// the line-opening entries contribute timestamps. Empty when no entry carries
+/// text.
+QString syltToLrc(const TagLib::ID3v2::SynchronizedLyricsFrame::SynchedTextList& entries)
+{
+  const auto startsWithBreak = [](const QString& text) {
+    return text.startsWith(QLatin1Char('\n')) || text.startsWith(QLatin1Char('\r'));
+  };
+
+  QList<std::pair<unsigned int, QString>> raw;
+  raw.reserve(static_cast<qsizetype>(entries.size()));
+  bool syllableSynced = false;
+  for (const auto& entry : entries) {
+    QString text = QString::fromUtf8(entry.text.to8Bit(true).c_str());
+    syllableSynced = syllableSynced || startsWithBreak(text);
+    raw.append({entry.time, std::move(text)});
+  }
+
+  QStringList lines;
+  QString current;
+  bool hasText = false;
+  for (const auto& [time, text] : raw) {
+    const bool opensLine = !syllableSynced || lines.isEmpty() || startsWithBreak(text);
+    QString flat = text;
+    flat.replace(QLatin1Char('\r'), QLatin1Char(' ')).replace(QLatin1Char('\n'), QLatin1Char(' '));
+    if (opensLine) {
+      if (!lines.isEmpty()) {
+        lines.last() += current.trimmed();
+      }
+      lines.append(lrcTimeTag(time));
+      current = flat;
+    } else {
+      current += flat;
+    }
+    hasText = hasText || !flat.trimmed().isEmpty();
+  }
+  if (!lines.isEmpty()) {
+    lines.last() += current.trimmed();
+  }
+  return hasText ? lines.join(QLatin1Char('\n')) : QString();
+}
+
+/// Synced lyrics from an MP3's ID3v2 `SYLT` frames, which TagLib's PropertyMap
+/// does not expose. The first lyric-type frame with millisecond timestamps
+/// and some text wins; frames timed in MPEG frames are skipped with a warning
+/// (converting them needs the stream's frame duration).
+QString syncedLyricsFromId3v2(const TagLib::FileRef& ref)
+{
+  auto* mpeg = dynamic_cast<TagLib::MPEG::File*>(ref.file());
+  if (mpeg == nullptr || !mpeg->hasID3v2Tag()) {
+    return QString();
+  }
+
+  using SyltFrame = TagLib::ID3v2::SynchronizedLyricsFrame;
+  const TagLib::ID3v2::FrameList& frames = mpeg->ID3v2Tag()->frameList("SYLT");
+  for (const TagLib::ID3v2::Frame* frame : frames) {
+    const auto* sylt = dynamic_cast<const SyltFrame*>(frame);
+    if (sylt == nullptr || !isLyricSyltType(sylt->type())) {
+      continue;
+    }
+    if (sylt->timestampFormat() != SyltFrame::AbsoluteMilliseconds) {
+      qWarning() << "tracklyrics: skipping a SYLT frame timed in MPEG frames"
+                 << "(only millisecond timestamps are supported)";
+      continue;
+    }
+    QString lrc = syltToLrc(sylt->synchedText());
+    if (!lrc.isEmpty()) {
+      return lrc;
+    }
+  }
+  return QString();
+}
+
+/// First non-empty embedded tag, joined with '\n' for multi-value tags; an
+/// MP3's ID3v2 SYLT frame is the last resort.
 QString embeddedLyrics(const QString& localPath)
 {
   // TagLib prints "Could not open file" to stderr for a missing path; the
@@ -189,7 +291,7 @@ QString embeddedLyrics(const QString& localPath)
     }
   }
 
-  return QString();
+  return syncedLyricsFromId3v2(ref);
 }
 
 /// Inflates a zlib stream into `plain`; false when the stream is malformed or

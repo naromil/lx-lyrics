@@ -9,6 +9,7 @@
 #include <QFileDevice>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRegularExpression>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
@@ -17,11 +18,17 @@
 #include <array>
 #include <cstring>
 #include <memory>
+#include <utility>
 
 #include "feedwriter.h"
 #include "host/feedreader.h"
 #include "host/pipeio.h"
 #include "host/tracklyrics.h"
+
+#include <taglib/id3v2tag.h>
+#include <taglib/mpegfile.h>
+#include <taglib/synchronizedlyricsframe.h>
+#include <taglib/unsynchronizedlyricsframe.h>
 
 #include <unistd.h>
 
@@ -95,6 +102,63 @@ bool writeStubScript(const QString& path, const QByteArray& body)
   script.close();
   return QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner |
                                        QFileDevice::ExeOwner);
+}
+
+// One SYLT frame for writeSyltMp3(): content type, timestamp unit, entries.
+struct SyltSpec {
+  TagLib::ID3v2::SynchronizedLyricsFrame::Type type =
+    TagLib::ID3v2::SynchronizedLyricsFrame::Lyrics;
+  TagLib::ID3v2::SynchronizedLyricsFrame::TimestampFormat format =
+    TagLib::ID3v2::SynchronizedLyricsFrame::AbsoluteMilliseconds;
+  QList<std::pair<unsigned int, QString>> entries;
+};
+
+// Builds a TagLib-written MP3 at `path`: a run of silent MPEG-1 Layer III
+// frames (128 kbps, 44.1 kHz — 417 bytes each) carrying an ID3v2 tag with the
+// given SYLT frames and, when `uslt` is non-empty, a USLT frame. False on any
+// failure (every caller QVERIFYs it).
+bool writeSyltMp3(const QString& path, const QList<SyltSpec>& sylts, const QString& uslt = {})
+{
+  constexpr int kFrameBytes = 417;
+  constexpr int kFrameCount = 8;
+  QByteArray audio;
+  for (int i = 0; i < kFrameCount; ++i) {
+    QByteArray frame(kFrameBytes, '\0');
+    frame[0] = static_cast<char>(0xFF);
+    frame[1] = static_cast<char>(0xFB);
+    frame[2] = static_cast<char>(0x90);
+    frame[3] = static_cast<char>(0x64);
+    audio += frame;
+  }
+  QFile file(path);
+  if (!file.open(QIODevice::WriteOnly) || file.write(audio) != qint64(audio.size())) {
+    return false;
+  }
+  file.close();
+
+  const QByteArray utf8Path = path.toUtf8();
+  TagLib::MPEG::File mpeg(utf8Path.constData());
+  if (!mpeg.isValid()) {
+    return false;
+  }
+  TagLib::ID3v2::Tag* tag = mpeg.ID3v2Tag(true);
+  for (const SyltSpec& spec : sylts) {
+    auto* frame = new TagLib::ID3v2::SynchronizedLyricsFrame(TagLib::String::UTF8);
+    frame->setType(spec.type);
+    frame->setTimestampFormat(spec.format);
+    TagLib::ID3v2::SynchronizedLyricsFrame::SynchedTextList list;
+    for (const auto& [time, text] : spec.entries) {
+      list.append({time, TagLib::String(text.toStdString(), TagLib::String::UTF8)});
+    }
+    frame->setSynchedText(list);
+    tag->addFrame(frame);
+  }
+  if (!uslt.isEmpty()) {
+    auto* frame = new TagLib::ID3v2::UnsynchronizedLyricsFrame(TagLib::String::UTF8);
+    frame->setText(TagLib::String(uslt.toStdString(), TagLib::String::UTF8));
+    tag->addFrame(frame);
+  }
+  return mpeg.save();
 }
 
 } // namespace
@@ -191,6 +255,7 @@ private slots:
   void overLongLineWithoutNewline();
   void setInfoLyricPrecedence();
   void lyricsForTrackFileFixtures();
+  void syltSyncedLyrics();
   void krcSidecarDecoding();
   void corruptKrcIsEmpty();
   void oversizedSidecarIgnored();
@@ -535,6 +600,79 @@ void TestFeed::lyricsForTrackFileFixtures()
   // Truncated GBK/BIG5 lead bytes: neither encoding yields clean text, so the
   // chain gives up (empty) instead of returning U+FFFD soup.
   QCOMPARE(decodeLyricsBytes(QByteArray("\x81\x40\x81", 3)), QString());
+}
+
+// ID3v2 SYLT frames are invisible to TagLib's PropertyMap, so an MP3 tagged
+// only with synced lyrics is read frame by frame and converted to LRC.
+void TestFeed::syltSyncedLyrics()
+{
+  using Sylt = TagLib::ID3v2::SynchronizedLyricsFrame;
+  QTemporaryDir dir;
+  QVERIFY(dir.isValid());
+
+  // Line-per-entry frame: one `[mm:ss.mmm]` line per entry, minutes past 59 s.
+  const QString lines = dir.filePath(QStringLiteral("lines.mp3"));
+  QVERIFY(writeSyltMp3(lines, {{Sylt::Lyrics,
+                                Sylt::AbsoluteMilliseconds,
+                                {{1000, QStringLiteral("First line")},
+                                 {2505, QStringLiteral("Second line")},
+                                 {65040, QStringLiteral("Third")}}}}));
+  QCOMPARE(lyricsForTrackFile(lines),
+           QStringLiteral("[00:01.000]First line\n[00:02.505]Second line\n[01:05.040]Third"));
+
+  // Syllable-synced frame (ID3v2.4 §4.9): a leading line break opens a line,
+  // the other entries continue it; only line openers keep a timestamp.
+  const QString syllables = dir.filePath(QStringLiteral("syllables.mp3"));
+  QVERIFY(writeSyltMp3(syllables, {{Sylt::Lyrics,
+                                    Sylt::AbsoluteMilliseconds,
+                                    {{1000, QStringLiteral("Hel")},
+                                     {1200, QStringLiteral("lo ")},
+                                     {1400, QStringLiteral("there")},
+                                     {2000, QStringLiteral("\nSecond")},
+                                     {2300, QStringLiteral(" line")}}}}));
+  QCOMPARE(lyricsForTrackFile(syllables),
+           QStringLiteral("[00:01.000]Hello there\n[00:02.000]Second line"));
+
+  // MPEG-frame timestamps are skipped with a warning; a later millisecond
+  // frame still wins, and a chord frame is never shown as lyrics.
+  const QString mixed = dir.filePath(QStringLiteral("mixed.mp3"));
+  QVERIFY(writeSyltMp3(
+    mixed, {{Sylt::Chord, Sylt::AbsoluteMilliseconds, {{0, QStringLiteral("Am")}}},
+            {Sylt::Lyrics, Sylt::AbsoluteMpegFrames, {{40, QStringLiteral("Frames")}}},
+            {Sylt::Lyrics, Sylt::AbsoluteMilliseconds, {{500, QStringLiteral("Millis")}}}}));
+  QTest::ignoreMessage(QtWarningMsg,
+                       QRegularExpression(QStringLiteral("SYLT frame timed in MPEG frames")));
+  QCOMPARE(lyricsForTrackFile(mixed), QStringLiteral("[00:00.500]Millis"));
+
+  // Only MPEG-frame timestamps: no lyrics.
+  const QString framesOnly = dir.filePath(QStringLiteral("frames.mp3"));
+  QVERIFY(writeSyltMp3(
+    framesOnly, {{Sylt::Lyrics, Sylt::AbsoluteMpegFrames, {{40, QStringLiteral("Frames")}}}}));
+  QTest::ignoreMessage(QtWarningMsg,
+                       QRegularExpression(QStringLiteral("SYLT frame timed in MPEG frames")));
+  QCOMPARE(lyricsForTrackFile(framesOnly), QString());
+
+  // A SYLT frame whose entries are all blank yields nothing.
+  const QString blank = dir.filePath(QStringLiteral("blank.mp3"));
+  QVERIFY(
+    writeSyltMp3(blank, {{Sylt::Lyrics, Sylt::AbsoluteMilliseconds, {{0, QStringLiteral(" ")}}}}));
+  QCOMPARE(lyricsForTrackFile(blank), QString());
+
+  // A USLT (LYRICS) tag keeps priority over SYLT.
+  const QString both = dir.filePath(QStringLiteral("both.mp3"));
+  QVERIFY(writeSyltMp3(
+    both, {{Sylt::Lyrics, Sylt::AbsoluteMilliseconds, {{0, QStringLiteral("Synced")}}}},
+    QStringLiteral("[00:00.00]Unsynced tag")));
+  QCOMPARE(lyricsForTrackFile(both), QStringLiteral("[00:00.00]Unsynced tag"));
+
+  // The sidecar still comes first, then the converted SYLT text.
+  QFile sidecar(dir.filePath(QStringLiteral("lines.lrc")));
+  QVERIFY(sidecar.open(QIODevice::WriteOnly));
+  QVERIFY(sidecar.write("[00:00.00]Sidecar") > 0);
+  sidecar.close();
+  QCOMPARE(lyricsForTrackFile(lines),
+           QStringLiteral("[00:00.00]Sidecar\n[00:01.000]First line\n[00:02.505]Second line\n"
+                          "[01:05.040]Third"));
 }
 
 // The sample.krc fixture is a `krc1` header followed by the UTF-8 KRC text

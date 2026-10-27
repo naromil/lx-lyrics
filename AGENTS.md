@@ -18,7 +18,7 @@ Dropped players: Strawberry, Clementine, Elisa and Tauon have **no extension mec
 ## Build & verify (no CI)
 ```sh
 cd lyrics-app && cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug && cmake --build build
-ctest --test-dir build                 # 8 suites: engine(44) lyricplayer(33) feed(36) config(10) renderer(21) controller(36) orphan(5) hotkey_helper(1) — 186 slots
+ctest --test-dir build                 # 8 suites: engine(44) lyricplayer(33) feed(37) config(10) renderer(21) controller(36) orphan(5) hotkey_helper(1) — 187 slots
 ctest --test-dir build -R engine       # single suite
 QT_QPA_PLATFORM=offscreen timeout 3 ./build/lx-lyrics-app --demo # expect exit code 124 (timeout kill = no crash)
 printf '{"v":2,"action":"nonsense"}\n' | QT_QPA_PLATFORM=offscreen ./build/lx-lyrics-app --player-feed; echo "exit=$?" # expect exit=1 and a protocol-error log line
