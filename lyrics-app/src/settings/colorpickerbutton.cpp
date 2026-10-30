@@ -11,7 +11,6 @@
 #include <QDialog>
 #include <QGridLayout>
 #include <QPainter>
-#include <QRegularExpression>
 #include <QVBoxLayout>
 #include <utility>
 
@@ -19,36 +18,6 @@
 #include "i18n/translationmanager.h"
 
 namespace {
-
-// --- Color string conversion ------------------------------------------------
-//
-// DesktopLyricConfig stores lyric colors as "rgba(r, g, b, a)" with alpha in
-// [0, 1] (see parseRgbaString/rgbaStringFromColor). These helpers mirror that
-// format exactly so values round-trip through config.set() without drift.
-
-QColor parseRgba(const QString& rgba)
-{
-  static const QRegularExpression pattern(QStringLiteral(
-    R"(^rgba\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d+(?:\.\d+)?)\s*\)$)"));
-  const QRegularExpressionMatch match = pattern.match(rgba.trimmed());
-  if (!match.hasMatch())
-    return QColor::fromString(rgba.trimmed()); // Named colors as a fallback.
-
-  const int red = qBound(0, match.captured(1).toInt(), 255);
-  const int green = qBound(0, match.captured(2).toInt(), 255);
-  const int blue = qBound(0, match.captured(3).toInt(), 255);
-  const double alpha = qBound(0.0, match.captured(4).toDouble(), 1.0);
-  return QColor(red, green, blue, qRound(alpha * 255.0));
-}
-
-QString rgbaFromColor(const QColor& color)
-{
-  return QStringLiteral("rgba(%1, %2, %3, %4)")
-    .arg(color.red())
-    .arg(color.green())
-    .arg(color.blue())
-    .arg(QString::number(color.alphaF(), 'g', 2));
-}
 
 // --- Small preset color chip ------------------------------------------------
 
@@ -153,14 +122,14 @@ ColorPickerButton::ColorPickerButton(QString configKey, DesktopLyricConfig& conf
   , m_configKey(std::move(configKey))
   , m_config(config)
   , m_i18n(i18n)
-  , m_defaultColor(parseRgba(defaultRgba))
+  , m_defaultColor(DesktopLyricConfig::parseRgbaString(defaultRgba))
 {
   setFixedSize(72, 28);
   setCursor(Qt::PointingHandCursor);
 
   m_presets.reserve(presetRgbaStrings.size());
   for (const QString& rgba : presetRgbaStrings)
-    m_presets.append(parseRgba(rgba));
+    m_presets.append(DesktopLyricConfig::parseRgbaString(rgba));
 
   connect(this, &QPushButton::clicked, this, &ColorPickerButton::openPicker);
   connect(&m_config, &DesktopLyricConfig::settingChanged, this,
@@ -174,7 +143,7 @@ ColorPickerButton::ColorPickerButton(QString configKey, DesktopLyricConfig& conf
 
 void ColorPickerButton::refreshFromConfig()
 {
-  m_color = parseRgba(m_config.get(m_configKey).toString());
+  m_color = DesktopLyricConfig::parseRgbaString(m_config.get(m_configKey).toString());
   setToolTip(m_config.get(m_configKey).toString());
   update();
 }
@@ -188,7 +157,7 @@ void ColorPickerButton::openPicker()
 
 void ColorPickerButton::applyColor(const QColor& color)
 {
-  m_config.set(m_configKey, rgbaFromColor(color));
+  m_config.set(m_configKey, DesktopLyricConfig::rgbaStringFromColor(color));
 }
 
 void ColorPickerButton::paintEvent(QPaintEvent*)

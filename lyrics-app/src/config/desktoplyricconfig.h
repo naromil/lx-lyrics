@@ -76,6 +76,14 @@ public:
 
   static QString configFilePath();
 
+  // The one colour-string format for lyric colours: lx-music's
+  // "rgba(r, g, b, a)" with alpha a [0, 1] fraction. Out-of-range components
+  // clamp; anything else falls back to QColor::fromString (named/hex colours),
+  // and a malformed string yields an invalid QColor. Shared with the settings
+  // dialog's ColorPickerButton so the two can never drift apart.
+  static QColor parseRgbaString(const QString& rgba);
+  static QString rgbaStringFromColor(const QColor& color);
+
 signals:
   void settingChanged(const QString& key, const QVariant& value);
   void anySettingChanged();
@@ -86,8 +94,6 @@ private:
   // meaning); on success writes the typed value through `coerced`.
   static bool coerceToDefault(const QVariant& defaultValue, const QVariant& value,
                               QVariant* coerced);
-  static QColor parseRgbaString(const QString& rgba);
-  static QString rgbaStringFromColor(const QColor& color);
 
   QMap<QString, QVariant> m_defaults;
   QMap<QString, QVariant> m_values;

@@ -50,6 +50,9 @@ private slots:
   void wrongTypedSetLeavesValueUntouched();
   void resetRestoresDefault();
   void debouncedSaveWritesFile();
+  void parseRgbaStringEdgeCases_data();
+  void parseRgbaStringEdgeCases();
+  void rgbaStringFromColorRoundTrips();
 
   // moc requires an explicit access specifier to terminate the private slots region;
   // without it m_configRoot is parsed as a slot declaration and moc fails.
@@ -350,6 +353,87 @@ void TestConfig::debouncedSaveWritesFile()
   // set() debounces the write by 500ms; the file must appear with the value.
   const QString path = DesktopLyricConfig::configFilePath();
   QTRY_VERIFY_WITH_TIMEOUT(fileContainsIsLockTrue(path), 3000);
+}
+
+// parseRgbaString/rgbaStringFromColor are the single colour-string format
+// shared by the config accessors and the settings dialog's ColorPickerButton.
+void TestConfig::parseRgbaStringEdgeCases_data()
+{
+  QTest::addColumn<QString>("input");
+  QTest::addColumn<bool>("valid");
+  QTest::addColumn<QColor>("expected");
+
+  // Well-formed lx-music values: alpha is a [0, 1] fraction, not 0-255.
+  QTest::newRow("opaque") << QStringLiteral("rgba(7, 197, 86, 1)") << true
+                          << QColor(7, 197, 86, 255);
+  QTest::newRow("fractional alpha")
+    << QStringLiteral("rgba(0, 0, 0, 0.18)") << true << QColor(0, 0, 0, qRound(0.18 * 255.0));
+  QTest::newRow("transparent") << QStringLiteral("rgba(1, 2, 3, 0)") << true << QColor(1, 2, 3, 0);
+  QTest::newRow("loose whitespace")
+    << QStringLiteral("  rgba( 10 ,20,  30 , 0.5 )  ") << true << QColor(10, 20, 30, 128);
+
+  // Out-of-range components clamp instead of wrapping or failing.
+  QTest::newRow("channel above 255")
+    << QStringLiteral("rgba(300, 256, 999, 1)") << true << QColor(255, 255, 255, 255);
+  QTest::newRow("alpha above 1") << QStringLiteral("rgba(10, 20, 30, 2.5)") << true
+                                 << QColor(10, 20, 30, 255);
+  QTest::newRow("alpha as 0-255") << QStringLiteral("rgba(10, 20, 30, 128)") << true
+                                  << QColor(10, 20, 30, 255);
+
+  // Anything else falls back to QColor's own parser: named and hex colours work.
+  QTest::newRow("named") << QStringLiteral("red") << true << QColor(255, 0, 0, 255);
+  QTest::newRow("hex rgb") << QStringLiteral("#00ff00") << true << QColor(0, 255, 0, 255);
+  QTest::newRow("hex argb") << QStringLiteral("#8000ff00") << true << QColor(0, 255, 0, 128);
+
+  // Malformed strings yield an invalid colour, never a silent black.
+  QTest::newRow("empty") << QString() << false << QColor();
+  QTest::newRow("too few components") << QStringLiteral("rgba(1, 2, 3)") << false << QColor();
+  QTest::newRow("negative channel") << QStringLiteral("rgba(-1, 2, 3, 1)") << false << QColor();
+  QTest::newRow("non-numeric") << QStringLiteral("rgba(a, b, c, d)") << false << QColor();
+  QTest::newRow("trailing garbage") << QStringLiteral("rgba(1, 2, 3, 1) x") << false << QColor();
+  QTest::newRow("unknown name") << QStringLiteral("notacolour") << false << QColor();
+}
+
+void TestConfig::parseRgbaStringEdgeCases()
+{
+  QFETCH(QString, input);
+  QFETCH(bool, valid);
+  QFETCH(QColor, expected);
+
+  const QColor actual = DesktopLyricConfig::parseRgbaString(input);
+  QCOMPARE(actual.isValid(), valid);
+  if (valid)
+    QCOMPARE(actual.rgba(), expected.rgba());
+}
+
+void TestConfig::rgbaStringFromColorRoundTrips()
+{
+  // The writer emits exactly the reference format the defaults use.
+  QCOMPARE(DesktopLyricConfig::rgbaStringFromColor(QColor(7, 197, 86, 255)),
+           QStringLiteral("rgba(7, 197, 86, 1)"));
+  QCOMPARE(DesktopLyricConfig::rgbaStringFromColor(QColor(1, 2, 3, 0)),
+           QStringLiteral("rgba(1, 2, 3, 0)"));
+  QCOMPARE(DesktopLyricConfig::rgbaStringFromColor(QColor(0, 0, 0, qRound(0.18 * 255.0))),
+           QStringLiteral("rgba(0, 0, 0, 0.18)"));
+
+  // Every default colour string (see firstRunSeedsDefaults) survives parse -> format unchanged, so a
+  // picker that re-saves an untouched colour writes no drift into the config.
+  for (const QString& stored :
+       {QStringLiteral("rgba(255, 255, 255, 1)"), QStringLiteral("rgba(7, 197, 86, 1)"),
+        QStringLiteral("rgba(0, 0, 0, 0.18)")}) {
+    QCOMPARE(DesktopLyricConfig::rgbaStringFromColor(DesktopLyricConfig::parseRgbaString(stored)),
+             stored);
+  }
+
+  // Any 8-bit alpha survives format -> parse within one step (two decimals).
+  for (int alpha = 0; alpha <= 255; ++alpha) {
+    const QColor color(12, 34, 56, alpha);
+    const QColor back =
+      DesktopLyricConfig::parseRgbaString(DesktopLyricConfig::rgbaStringFromColor(color));
+    QVERIFY(back.isValid());
+    QCOMPARE(back.rgb(), color.rgb());
+    QVERIFY2(qAbs(back.alpha() - alpha) <= 2, qPrintable(QString::number(alpha)));
+  }
 }
 
 QTEST_MAIN(TestConfig)
