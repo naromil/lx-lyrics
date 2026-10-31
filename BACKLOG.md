@@ -7,6 +7,7 @@
 - [ ] In the audacious plugin: the text in the setting is too long in one line, and the setting window auto adjust length to the text, making the window too long.
 - [ ] Translate the hardcoded English strings in the settings dialog ("Desktop Lyric Settings", "Lyric Style", "Opacity", the spacing-reset tooltip) and the gear tooltip — adds app-local i18n keys beyond lx-music's language packs
 - [ ] Global shortcuts for lock/unlock — extends the `lx-lyrics-hotkey` fd-3 lines and needs a new host→app message in `docs/protocol.md`
+- [ ] fix: The remember last state doesn't work in Audacious. The lyrics still displays next time I open Audacious even if it is turned off last time.
 
 ## Proposed (needs the owner's OK — move to Routine to approve)
 
