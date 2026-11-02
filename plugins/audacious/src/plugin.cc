@@ -187,15 +187,40 @@ static const char* const lx_config_defaults[] = {
   LX_CONF_REMEMBER_STATE, "TRUE", LX_CONF_HOTKEY, LX_HOTKEY_DEFAULT, nullptr,
 };
 
+/* Neither frontend wraps a WidgetLabel, and the settings window grows to fit
+ * its widest line, so a long label makes the whole window long. Labels carry
+ * their own line breaks and the build enforces the width. */
+static constexpr int lx_label_max_line = 64;
+
+static constexpr bool lx_label_fits(const char* text)
+{
+  int line = 0;
+  for (; *text != '\0'; ++text) {
+    line = (*text == '\n') ? 0 : line + 1;
+    if (line > lx_label_max_line) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static constexpr char lx_label_app_path[] =
+  N_("Path to the lx-lyrics-app executable.\nEmpty means search $PATH.");
+static constexpr char lx_label_hotkey[] =
+  N_("Global shortcut: the preferred trigger (e.g. CTRL+ALT+l).\n"
+     "The desktop assigns the key; re-bind it in the desktop's own\n"
+     "shortcut settings (KDE: System Settings -> Shortcuts).\n"
+     "This value is used at the next player start.");
+static_assert(lx_label_fits(lx_label_app_path) && lx_label_fits(lx_label_hotkey),
+              "a settings label line is too long; break it with \\n");
+
 static const PreferencesWidget lx_widgets[] = {
-  WidgetLabel(N_("Path to the lx-lyrics-app executable; empty means search $PATH.")),
+  WidgetLabel(lx_label_app_path),
   WidgetEntry(N_("Application:"), WidgetString(LX_CONF_SECTION, LX_CONF_APP_PATH)),
   /* The shortcut is bound by the desktop (KDE: System Settings -> Shortcuts),
    * which is also where it is re-bound; this key is only the preferred trigger
    * sent to the helper at the next player start. */
-  WidgetLabel(N_("Global shortcut: the preferred trigger (e.g. CTRL+ALT+l). The desktop assigns "
-                 "the key and it is re-bound in the desktop's own shortcut settings (KDE: System "
-                 "Settings -> Shortcuts); this value is used at the next player start.")),
+  WidgetLabel(lx_label_hotkey),
   WidgetEntry(N_("Shortcut:"), WidgetString(LX_CONF_SECTION, LX_CONF_HOTKEY)),
   /* Off: a player start begins with the plugin enabled and the lyrics window
    * hidden instead of restoring one (see init()); the box only ever gates that

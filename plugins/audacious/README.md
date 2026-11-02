@@ -125,7 +125,8 @@ non-zero.
 
 The plugin's settings page is its 4th `PluginInfo` field — a declarative
 `const PluginPreferences*` (libaudcore's `preferences.h`) that both frontends build with no toolkit
-code here: two `WidgetLabel`s, two `WidgetEntry`s — `WidgetString("lx-lyrics", "app_path")` and
+code here: two `WidgetLabel`s (neither frontend wraps a label and the window grows to its widest
+line, so they carry their own line breaks, capped at 64 characters by a `static_assert`), two `WidgetEntry`s — `WidgetString("lx-lyrics", "app_path")` and
 `WidgetString("lx-lyrics", "hotkey")` — one `WidgetCheck("Remember the desktop lyrics state from
 the last session", WidgetBool("lx-lyrics", "remember_state"))`, and two `WidgetButton`s — **Open
 lyrics settings** and **Show or hide the lyrics window**. The entries write their keys as the user
