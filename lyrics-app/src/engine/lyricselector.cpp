@@ -10,6 +10,7 @@
 #include <QRegularExpression>
 
 #include <algorithm>
+#include <utility>
 
 namespace {
 
@@ -84,7 +85,7 @@ AwlrcParts LyricSelector::extractAwlrc(const QString& lrc, QString* strippedLrc)
   }
 
   if (strippedLrc)
-    *strippedLrc = stripped;
+    *strippedLrc = std::move(stripped);
   return parts;
 }
 
@@ -117,7 +118,7 @@ void LyricSelector::setLyrics(const QString& lrc, const QString& tlyric, const Q
   // JS parseLyric: return { lyric, ...parsedInfo } — the stripped lrc replaces
   // the raw field, then accepted parts override their targets (lrc -> lyric,
   // tlrc -> tlyric, rlrc -> rlyric, awlrc -> lxlyric).
-  m_lyric = stripped;
+  m_lyric = std::move(stripped);
   m_tlyric = tlyric;
   m_rlyric = rlyric;
   m_lxlyric = lxlyric;

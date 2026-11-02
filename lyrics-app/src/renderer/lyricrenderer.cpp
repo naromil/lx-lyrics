@@ -990,7 +990,7 @@ int LyricRenderer::textFlags() const
 {
   if (m_vertical)
     return Qt::AlignCenter; // Each vertical character fills its own cell.
-  int flags = Qt::AlignVCenter;
+  Qt::Alignment flags = Qt::AlignVCenter;
   switch (m_align & Qt::AlignHorizontal_Mask) {
   case Qt::AlignLeft:
     flags |= Qt::AlignLeft;
@@ -1003,7 +1003,7 @@ int LyricRenderer::textFlags() const
     flags |= Qt::AlignHCenter;
     break;
   }
-  return flags;
+  return static_cast<int>(flags);
 }
 
 QString LyricRenderer::elideForWidth(const QString& text, const QFontMetrics& fm,

@@ -115,7 +115,8 @@ PipeWriteDevice::PipeWriteDevice(int writeFd, QObject* parent)
   // Non-blocking: a host that stops draining its stdout must never park the
   // event-loop thread inside ::write (see the header comment).
   const int flags = ::fcntl(m_fd, F_GETFL);
-  if (flags < 0 || ::fcntl(m_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+  const unsigned nonBlocking = static_cast<unsigned>(flags) | static_cast<unsigned>(O_NONBLOCK);
+  if (flags < 0 || ::fcntl(m_fd, F_SETFL, static_cast<int>(nonBlocking)) < 0) {
     qWarning("pipeio: cannot make fd %d non-blocking (%s); writes may block when the host stalls",
              m_fd, std::strerror(errno));
   }
@@ -160,7 +161,9 @@ qint64 PipeWriteDevice::writeData(const char* data, qint64 maxSize)
     if (ready < 0 && errno == EINTR) {
       continue;
     }
-    if (ready <= 0 || (writable.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+    constexpr unsigned kUnusable = static_cast<unsigned>(POLLERR) | static_cast<unsigned>(POLLHUP) |
+                                   static_cast<unsigned>(POLLNVAL);
+    if (ready <= 0 || (static_cast<unsigned>(writable.revents) & kUnusable) != 0) {
       giveUp(ready == 0 ? "stdout not drained within the write budget" : "stdout is unusable");
       return -1;
     }
