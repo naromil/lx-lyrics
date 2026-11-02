@@ -23,6 +23,11 @@ typedef struct {
   void* (*start)(void* userdata);
   /* End the session behind @p handle. Called once per successful start(). */
   void (*stop)(void* handle, void* userdata);
+  /* Optional. The showing state changed because of the user or the app: a
+   * successful show, a hide, a toggle or app_ended. Deliberately not called by
+   * lx_session_free(): the plugin going away (player quit, plugin disabled) is
+   * not the user hiding the window, so what was last recorded must survive. */
+  void (*showing_changed)(bool showing, void* userdata);
 } lx_session_ops_t;
 
 lx_session_t* lx_session_new(const lx_session_ops_t* ops, void* userdata);
@@ -36,6 +41,9 @@ bool lx_session_toggle(lx_session_t* session);
 void lx_session_app_ended(lx_session_t* session, const char* reason);
 const char* lx_session_last_reason(const lx_session_t* session);
 void lx_session_free(lx_session_t* session);
+/* Should a player start bring the window back? Only when remembering is on and
+ * the window was showing when the last session ended. */
+bool lx_session_restore_wanted(bool remember_state, bool was_showing);
 
 #ifdef __cplusplus
 }

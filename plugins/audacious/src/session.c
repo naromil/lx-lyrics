@@ -61,17 +61,29 @@ bool lx_session_show(lx_session_t* session)
   }
   session->handle = handle;
   session->showing = true;
+  if (session->ops.showing_changed) {
+    session->ops.showing_changed(true, session->userdata);
+  }
+  return true;
+}
+
+/* Ends a running session without reporting it; false when none was running. */
+static bool stop_running(lx_session_t* session)
+{
+  if (!session || !session->showing) {
+    return false;
+  }
+  session->ops.stop(session->handle, session->userdata);
+  session->handle = NULL;
+  session->showing = false;
   return true;
 }
 
 void lx_session_hide(lx_session_t* session)
 {
-  if (!session || !session->showing) {
-    return;
+  if (stop_running(session) && session->ops.showing_changed) {
+    session->ops.showing_changed(false, session->userdata);
   }
-  session->ops.stop(session->handle, session->userdata);
-  session->handle = NULL;
-  session->showing = false;
 }
 
 bool lx_session_toggle(lx_session_t* session)
@@ -107,7 +119,13 @@ void lx_session_free(lx_session_t* session)
   if (!session) {
     return;
   }
-  /* The plugin's cleanup path: a session still showing must be stopped. */
-  lx_session_hide(session);
+  /* The plugin's cleanup path: a session still showing must be stopped, but
+   * quietly (see showing_changed in session.h). */
+  stop_running(session);
   free(session);
+}
+
+bool lx_session_restore_wanted(bool remember_state, bool was_showing)
+{
+  return remember_state && was_showing;
 }

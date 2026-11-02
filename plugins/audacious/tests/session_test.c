@@ -134,10 +134,90 @@ static void test_invalid_ops(void)
   lx_session_free(NULL);
 }
 
+typedef struct {
+  fake_t fake;
+  int reports;
+  bool last_reported;
+} reporting_t;
+
+static void* reporting_start(void* userdata)
+{
+  return fake_start(&((reporting_t*)userdata)->fake);
+}
+
+static void reporting_stop(void* handle, void* userdata)
+{
+  fake_stop(handle, &((reporting_t*)userdata)->fake);
+}
+
+static void reporting_changed(bool showing, void* userdata)
+{
+  reporting_t* reporting = userdata;
+  reporting->reports++;
+  reporting->last_reported = showing;
+}
+
+/* What the plugin persists for the next player start hangs off these reports. */
+static void test_showing_changed(void)
+{
+  reporting_t state;
+  memset(&state, 0, sizeof(state));
+  const lx_session_ops_t ops = {
+    .start = reporting_start, .stop = reporting_stop, .showing_changed = reporting_changed};
+  lx_session_t* session = lx_session_new(&ops, &state);
+  CHECK(session != NULL);
+  if (!session) {
+    return;
+  }
+
+  /* A refused start changes nothing: an app that is missing today must not
+   * rewrite what the user last chose. */
+  state.fake.refuse_start = true;
+  CHECK(lx_session_show(session) == false);
+  CHECK(lx_session_toggle(session) == false);
+  CHECK(state.reports == 0);
+  state.fake.refuse_start = false;
+
+  CHECK(lx_session_show(session) == true);
+  CHECK(state.reports == 1 && state.last_reported == true);
+  /* No transition, no report. */
+  CHECK(lx_session_show(session) == true);
+  CHECK(state.reports == 1);
+
+  CHECK(lx_session_toggle(session) == false);
+  CHECK(state.reports == 2 && state.last_reported == false);
+  lx_session_hide(session);
+  CHECK(state.reports == 2);
+
+  CHECK(lx_session_toggle(session) == true);
+  CHECK(state.reports == 3 && state.last_reported == true);
+
+  /* The user closing the window counts as turning it off. */
+  lx_session_app_ended(session, "the lyric window was closed");
+  CHECK(state.reports == 4 && state.last_reported == false);
+
+  /* Quitting with the window up keeps "showing": free stops it silently. */
+  CHECK(lx_session_show(session) == true);
+  CHECK(state.reports == 5 && state.last_reported == true);
+  lx_session_free(session);
+  CHECK(state.fake.live == 0);
+  CHECK(state.reports == 5 && state.last_reported == true);
+}
+
+static void test_restore_wanted(void)
+{
+  CHECK(lx_session_restore_wanted(true, true) == true);
+  CHECK(lx_session_restore_wanted(true, false) == false);
+  CHECK(lx_session_restore_wanted(false, true) == false);
+  CHECK(lx_session_restore_wanted(false, false) == false);
+}
+
 int main(void)
 {
   test_lifecycle();
   test_invalid_ops();
+  test_showing_changed();
+  test_restore_wanted();
 
   if (failures == 0) {
     printf("session tests: OK\n");

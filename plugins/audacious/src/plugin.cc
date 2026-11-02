@@ -43,6 +43,9 @@
  * lyrics window at the next player start; off starts the plugin enabled with
  * the window hidden (see init()). */
 #define LX_CONF_REMEMBER_STATE "remember_state"
+/** Whether the lyrics window was showing when the last session ended. Plugin-
+ * written state, not a preference: never on the settings page. */
+#define LX_CONF_WINDOW_SHOWING "window_showing"
 /** The preferred global-shortcut trigger handed to the helper at player start.
  * The desktop owns the real binding (KDE: System Settings -> Shortcuts). */
 #define LX_CONF_HOTKEY "hotkey"
@@ -147,9 +150,10 @@ static const char lx_about[] = N_(
   "Settings: the app-path entry says which binary to spawn (empty searches $PATH), \"Show or "
   "hide the lyrics window\" starts or stops the display without disabling this plugin, \"Open "
   "lyrics settings\" raises the app's own configuration dialog over the same pipe, and the "
-  "remember-state checkbox decides whether the lyrics window is shown again at the next player "
-  "start. A hidden lyrics window is not the plugin being off: playback is reported only while "
-  "the window is showing, and the settings-page button brings it back.");
+  "remember-state checkbox decides whether the next player start restores the lyrics window as "
+  "you left it, or always starts with it hidden. A hidden lyrics window is not the plugin being "
+  "off: playback is reported only while the window is showing, and the settings-page button "
+  "brings it back.");
 
 /*
  * The plugin's preferences page — the app path, a "remember the state" checkbox
@@ -184,7 +188,8 @@ static void lx_toggle_clicked();
  * CTRL+ALT+l — aud_get_str() falls back to these defaults (config.cc:402-412),
  * which is what the page shows and what init() reads. */
 static const char* const lx_config_defaults[] = {
-  LX_CONF_REMEMBER_STATE, "TRUE", LX_CONF_HOTKEY, LX_HOTKEY_DEFAULT, nullptr,
+  LX_CONF_REMEMBER_STATE, "TRUE",  LX_CONF_WINDOW_SHOWING, "TRUE", LX_CONF_HOTKEY,
+  LX_HOTKEY_DEFAULT,      nullptr,
 };
 
 /* Neither frontend wraps a WidgetLabel, and the settings window grows to fit
@@ -222,9 +227,9 @@ static const PreferencesWidget lx_widgets[] = {
    * sent to the helper at the next player start. */
   WidgetLabel(lx_label_hotkey),
   WidgetEntry(N_("Shortcut:"), WidgetString(LX_CONF_SECTION, LX_CONF_HOTKEY)),
-  /* Off: a player start begins with the plugin enabled and the lyrics window
-   * hidden instead of restoring one (see init()); the box only ever gates that
-   * restore, a session the user asks for is always shown. */
+  /* On: a player start brings the window back only if it was showing when the
+   * last session ended. Off: it always starts hidden (see init()). The box only
+   * ever gates that restore, a session the user asks for is always shown. */
   WidgetCheck(N_("Remember the desktop lyrics state from the last session"),
               WidgetBool(LX_CONF_SECTION, LX_CONF_REMEMBER_STATE)),
   WidgetButton(N_("Open lyrics settings"), WidgetVButton{lx_open_settings_clicked, nullptr}),
@@ -303,6 +308,7 @@ public:
    * and tears that feed down. Main thread only. */
   static void* session_start(void* userdata);
   static void session_stop(void* handle, void* userdata);
+  static void session_showing_changed(bool showing, void* userdata);
 
 private:
   /* Playback hooks. All of them are delivered on the main thread. */
@@ -717,6 +723,16 @@ void* LxLyrics::session_start(void* userdata)
   return self->m_feed;
 }
 
+/* Records what the next player start restores. Every caller is on the main
+ * thread (the buttons, the queued hotkey toggle, the queued session end, init()),
+ * and the player quitting never lands here (lx_session_free() stays silent), so
+ * a window left up at exit stays "showing". */
+void LxLyrics::session_showing_changed(bool showing, void* userdata)
+{
+  (void)userdata;
+  aud_set_bool(LX_CONF_SECTION, LX_CONF_WINDOW_SHOWING, showing);
+}
+
 /* The session state machine's stop target: dissociate the host hooks before
  * the feed goes away (no frame or playback event may arrive mid-teardown),
  * then close the app's stdin and join/reap it (protocol.md §2). */
@@ -877,7 +893,8 @@ bool LxLyrics::init()
   m_end_reason[0] = '\0';
   pthread_mutex_unlock(&m_request_lock);
 
-  const lx_session_ops_t ops = {.start = session_start, .stop = session_stop};
+  const lx_session_ops_t ops = {
+    .start = session_start, .stop = session_stop, .showing_changed = session_showing_changed};
   m_session = lx_session_new(&ops, this);
   if (!m_session) {
     AUDERR("lx-lyrics: cannot allocate the session state; staying enabled and idle\n");
@@ -896,16 +913,20 @@ bool LxLyrics::init()
    * restores LX Lyrics, while the Plugins page — and audtool, and D-Bus — can
    * only ever enable it with one already running. A session the user asks for is
    * therefore always honoured, this run or after the box was flipped.
-   * With remembering off, the restore starts the plugin enabled with the lyrics
-   * window hidden (no spawn) instead of turning the plugin off: the user brings
-   * it back with the settings page's toggle. A headless run starts no interface
-   * at all, so there is nothing to tell the two apart by there and the checkbox
-   * stays inert. */
+   * With remembering on, the restore follows window_showing, which every
+   * user- or app-driven transition records (session_showing_changed()); with it
+   * off, or the window hidden last time, the restore starts the plugin enabled
+   * with the lyrics window hidden (no spawn) instead of turning the plugin off:
+   * the user brings it back with the toggle or the shortcut. A headless run
+   * starts no interface at all, so there is nothing to tell the two apart by
+   * there and the checkbox stays inert. */
   const bool restoring =
     !aud_get_headless_mode() && aud_plugin_get_current(PluginType::Iface) == nullptr;
-  if (restoring && !aud_get_bool(LX_CONF_SECTION, LX_CONF_REMEMBER_STATE)) {
-    AUDINFO("lx-lyrics: not restoring the lyrics window (remember_state is off); "
-            "the plugin stays enabled and idle\n");
+  if (restoring &&
+      !lx_session_restore_wanted(aud_get_bool(LX_CONF_SECTION, LX_CONF_REMEMBER_STATE),
+                                 aud_get_bool(LX_CONF_SECTION, LX_CONF_WINDOW_SHOWING))) {
+    AUDINFO("lx-lyrics: not restoring the lyrics window (remember_state is off, or the window was "
+            "hidden last time); the plugin stays enabled and idle\n");
     return true;
   }
 

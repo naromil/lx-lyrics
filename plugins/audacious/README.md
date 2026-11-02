@@ -147,8 +147,10 @@ the Plugins page (and `audtool`, and D-Bus) can only ever enable LX Lyrics with 
 running. A session the user asks for is therefore never gated, not even the very first click after
 a start in which the plugin was disabled.
 
-- **Checked** (the default): a visible session that was running comes back at the next player
-  start; the plugin is enabled either way.
+- **Checked** (the default): the window comes back at the next player start only if it was showing
+  when the last session ended. The plugin records that itself in `[lx-lyrics] window_showing` on
+  every show, hide, toggle and window close; quitting the player with the window up leaves it
+  showing, and a start that could not spawn changes nothing. The plugin is enabled either way.
 - **Unchecked**: the restore starts the plugin **enabled with the window hidden** — nothing is
   spawned, the Plugins page still reads on, and the settings page's toggle brings the window back
   whenever the user wants it. This is a hidden window, not a disabled plugin: the adapter keeps
@@ -207,7 +209,8 @@ The keys themselves, in `$XDG_CONFIG_HOME/audacious/config` (`config.cc:259`, IN
 | `[lx-lyrics] app_path` | *(empty)* | Path to `lx-lyrics-app`; empty means "search `$PATH`". |
 | `[lx-lyrics] hotkey` | `CTRL+ALT+l` | Preferred global-shortcut trigger passed to the helper at the next player start. The desktop owns the real binding and re-binds it in its own shortcut settings. |
 | `[lx-lyrics] hotkey_helper` | *(empty)* | Path to `lx-lyrics-hotkey`; empty means "next to the resolved app, then `$PATH`". |
-| `[lx-lyrics] remember_state` | `TRUE` | Start the next player run with the lyrics window visible; `FALSE` starts the plugin enabled with the window hidden. Either way the plugin is enabled and the settings-page toggle can show the window. |
+| `[lx-lyrics] remember_state` | `TRUE` | Restore the lyrics window's last state at the next player run; `FALSE` always starts the plugin enabled with the window hidden. Either way the plugin is enabled and the settings-page toggle can show the window. |
+| `[lx-lyrics] window_showing` | `TRUE` | Written by the plugin, not a preference: whether the window was showing when the last session ended. Read only when `remember_state` is on. |
 
 ## Global shortcut
 
@@ -382,14 +385,15 @@ The normal check needs an Audacious ≥ 4.6.1 with the plugin installed (`comman
    Settings* dialog, `open_settings` on the wire; a silent no-op with no session) and **Show or hide
    the lyrics window** (the explicit session switch). The row's separate information icon opens
    *About LX Lyrics* with the plugin text (`PluginInfo.about`).
-4. Uncheck that checkbox and quit the player while the lyric window is up: the next start keeps the
+4. Hide the lyric window (or uncheck that checkbox) and quit the player: the next start keeps the
    plugin enabled but begins with the window hidden — the log says `lx-lyrics: not restoring the
-   lyrics window (remember_state is off); the plugin stays enabled and idle`, and no child is
-   spawned. Press **Show or hide the lyrics window** and the session starts; the toggle is never
+   lyrics window (remember_state is off, or the window was hidden last time); the plugin stays
+   enabled and idle`, and no child is spawned. Press **Show or hide the lyrics window** and the session starts; the toggle is never
    gated by `remember_state` (see *Configuration*).
 5. Close the lyric window: the adapter logs `lx-lyrics: the lyrics window is no longer showing (the
    lyric window was closed)`, but the plugin stays **enabled and idle** — the Plugins page still
-   reads on, and no window comes back until the toggle or the next player start.
+   reads on, and no window comes back until the toggle or the shortcut, not even at the next player
+   start.
 6. With the plugin enabled (the window may be hidden), press the global shortcut: the window appears
    or disappears. A player started from the KDE launcher logs `lx-lyrics: global shortcut bound to
    Ctrl+Alt+L`; one started from a terminal logs `lx-lyrics: global shortcut unavailable (An app id
@@ -444,6 +448,13 @@ The remember-state checkbox was driven through the same GUI: on an untouched con
 idle` — no session, no child, and the plugin's own registry entry still reads `enabled 1`. A session
 the user asks for (the settings-page toggle, or enabling the plugin by hand) is never gated: the
 restore check only matches the one `init()` that runs with no interface current yet.
+
+The last-state restore was verified against the real 4.6.2 player (a relocated scratch prefix under
+`xvfb-run`, stub app and helper, `SIGTERM` to quit), nine consecutive starts: an untouched config
+spawned the app; quitting with the window up brought it back; a `toggle` line hid it, wrote
+`window_showing=FALSE`, and the next two starts spawned nothing; another `toggle` showed it and the
+next start restored it; `close_requested` wrote `FALSE` and the next start spawned nothing. The same
+GUI opened the settings page at 376 px wide with the wrapped labels.
 
 ## License
 
