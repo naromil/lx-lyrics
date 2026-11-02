@@ -9,11 +9,17 @@
 #   2. clang-tidy   — runs the curated .clang-tidy check set over both projects
 #      with run-clang-tidy; findings fail the run.
 #
-# Prerequisites: clang-format, clang-tidy and run-clang-tidy on PATH; the tidy
-# step needs a configured build dir per project (compile_commands.json).
+# Prerequisites: clang-format (the major version pinned below), clang-tidy and
+# run-clang-tidy on PATH; the tidy step needs a configured build dir per project
+# (compile_commands.json).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# clang-format's output changes between major versions, so a verdict only means
+# something from the version the tree is formatted with. Bump this and re-run
+# --fix in one commit. clang-format-<major> is preferred over plain clang-format.
+CLANG_FORMAT_MAJOR=23
 
 do_format=1
 do_tidy=1
@@ -58,8 +64,25 @@ done
 
 # --- clang-format -------------------------------------------------------------
 
+# Prints the pinned clang-format's command name; dies when only another major is
+# available, since its verdict would say nothing about the tree.
+find_clang_format() {
+    local candidate version
+    for candidate in "clang-format-$CLANG_FORMAT_MAJOR" clang-format; do
+        command -v "$candidate" >/dev/null 2>&1 || continue
+        version="$("$candidate" --version | sed -n 's/.*clang-format version \([0-9]*\)\..*/\1/p')"
+        if [ "$version" = "$CLANG_FORMAT_MAJOR" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+        printf 'note: %s is version %s, not %s\n' "$candidate" "${version:-unknown}" "$CLANG_FORMAT_MAJOR" >&2
+    done
+    die "clang-format $CLANG_FORMAT_MAJOR is required (the version pinned in tools/lint.sh); install it as clang-format-$CLANG_FORMAT_MAJOR or clang-format"
+}
+
 run_format() {
-    require_command clang-format
+    local clang_format
+    clang_format="$(find_clang_format)" || exit 1
 
     local -a files
     mapfile -t files < <(
@@ -70,10 +93,10 @@ run_format() {
 
     if [ "$fix" -eq 1 ]; then
         step "clang-format (rewriting ${#files[@]} files)"
-        clang-format -i "${files[@]}"
+        "$clang_format" -i "${files[@]}"
     else
         step "clang-format (checking ${#files[@]} files)"
-        clang-format --dry-run -Werror "${files[@]}"
+        "$clang_format" --dry-run -Werror "${files[@]}"
     fi
 }
 
