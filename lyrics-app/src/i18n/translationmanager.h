@@ -11,6 +11,7 @@
 #include <QString>
 
 class DesktopLyricConfig;
+class QLocale;
 
 // UI string lookup for the standalone lyrics app.
 //
@@ -43,6 +44,11 @@ public:
   // Resolved language id ("zh-cn", "zh-tw" or "en-us"), even when its pack
   // failed to parse and tr() is falling back to en-us.
   const QString& currentLanguage() const;
+
+  // Pack id a locale maps to when common.langId is null: Chinese in
+  // China/Singapore/Myanmar -> "zh-cn", in Taiwan/Hong Kong/Macau -> "zh-tw",
+  // anything else -> "en-us". Applied to QLocale::system() at runtime.
+  static QString languageForLocale(const QLocale& locale);
 
 private:
   // Resolves the trusted language id from config/system locale, then reloads

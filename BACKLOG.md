@@ -10,7 +10,7 @@
 - [ ] Per-word karaoke fill for `lxlrc` lyrics (lx-music parity; `desktopLyric.style.isFontWeightFont` is currently a no-op)
 - [ ] Extra sidecar lookup locations (a `lyrics/` subfolder, `Artist - Title.lrc`) — changes the acquisition order that `docs/protocol.md` §5 specifies
 - [ ] Online lyric search/download (deferred by design in architecture.md)
-- [ ] Add tests for `TranslationManager` (system-locale mapping incl. zh-HK/zh-SG, unsupported `common.langId` falling back to en-us, live switch emitting `languageChanged`, and the three packs keeping identical key sets) — the i18n path has no direct test coverage
+- [x] Add tests for `TranslationManager` (system-locale mapping incl. zh-HK/zh-SG, unsupported `common.langId` falling back to en-us, live switch emitting `languageChanged`, and the three packs keeping identical key sets) — the i18n path has no direct test coverage
 
 ## Proposed (needs the owner's OK — move to Routine to approve)
 

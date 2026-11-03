@@ -199,11 +199,15 @@ target_link_libraries(lyrics-app-feed-tests PRIVATE
 
 add_test(NAME feed COMMAND lyrics-app-feed-tests)
 
-# Tests for the DesktopLyricConfig persistence store.
+# Tests for the DesktopLyricConfig persistence store and the
+# TranslationManager that resolves common.langId into a language pack.
 add_executable(lyrics-app-config-tests
     tests/tst_config.cpp
     src/config/desktoplyricconfig.cpp
     src/config/desktoplyricconfig.h
+    src/i18n/translationmanager.cpp
+    src/i18n/translationmanager.h
+    translations.qrc
 )
 
 target_include_directories(lyrics-app-config-tests PRIVATE src/)

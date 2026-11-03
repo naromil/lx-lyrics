@@ -104,7 +104,11 @@ QString TranslationManager::resolveLanguageId() const
 
 QString TranslationManager::languageFromSystemLocale()
 {
-  const QLocale locale = QLocale::system();
+  return languageForLocale(QLocale::system());
+}
+
+QString TranslationManager::languageForLocale(const QLocale& locale)
+{
   if (locale.language() != QLocale::Chinese)
     return kLanguageEnglish;
 

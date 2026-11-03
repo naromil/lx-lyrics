@@ -9,11 +9,15 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLocale>
+#include <QRegularExpression>
+#include <QSet>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTest>
 
 #include "config/desktoplyricconfig.h"
+#include "i18n/translationmanager.h"
 
 // Persistence tests for DesktopLyricConfig (src/config/desktoplyricconfig.{h,cpp}).
 //
@@ -53,6 +57,12 @@ private slots:
   void parseRgbaStringEdgeCases_data();
   void parseRgbaStringEdgeCases();
   void rgbaStringFromColorRoundTrips();
+
+  void translationLocaleMapping_data();
+  void translationLocaleMapping();
+  void translationUnsupportedLangIdFallsBackToEnglish();
+  void translationLiveSwitchEmitsLanguageChanged();
+  void translationPacksShareKeySet();
 
   // moc requires an explicit access specifier to terminate the private slots region;
   // without it m_configRoot is parsed as a slot declaration and moc fails.
@@ -434,6 +444,112 @@ void TestConfig::rgbaStringFromColorRoundTrips()
     QCOMPARE(back.rgb(), color.rgb());
     QVERIFY2(qAbs(back.alpha() - alpha) <= 2, qPrintable(QString::number(alpha)));
   }
+}
+
+void TestConfig::translationLocaleMapping_data()
+{
+  QTest::addColumn<QString>("locale");
+  QTest::addColumn<QString>("expected");
+
+  QTest::newRow("zh-CN") << QStringLiteral("zh_CN") << QStringLiteral("zh-cn");
+  QTest::newRow("zh-SG") << QStringLiteral("zh_SG") << QStringLiteral("zh-cn");
+  QTest::newRow("zh-TW") << QStringLiteral("zh_TW") << QStringLiteral("zh-tw");
+  QTest::newRow("zh-HK") << QStringLiteral("zh_HK") << QStringLiteral("zh-tw");
+  QTest::newRow("zh-MO") << QStringLiteral("zh_MO") << QStringLiteral("zh-tw");
+  QTest::newRow("en-US") << QStringLiteral("en_US") << QStringLiteral("en-us");
+  QTest::newRow("en-GB") << QStringLiteral("en_GB") << QStringLiteral("en-us");
+  QTest::newRow("ja-JP") << QStringLiteral("ja_JP") << QStringLiteral("en-us");
+  QTest::newRow("C") << QStringLiteral("C") << QStringLiteral("en-us");
+}
+
+void TestConfig::translationLocaleMapping()
+{
+  // The null-langId auto-detect: only Chinese locales pick a Chinese pack,
+  // split by territory; everything else (including the C locale) is en-us.
+  QFETCH(QString, locale);
+  QFETCH(QString, expected);
+  QCOMPARE(TranslationManager::languageForLocale(QLocale(locale)), expected);
+}
+
+void TestConfig::translationUnsupportedLangIdFallsBackToEnglish()
+{
+  // A hand-edited, unsupported common.langId resolves to en-us with one
+  // warning; lookups then use the en-us pack and unknown keys echo the key.
+  DesktopLyricConfig config;
+  config.loadDefaults();
+  QVERIFY(config.set(QStringLiteral("common.langId"), QStringLiteral("fr-fr")));
+
+  QTest::ignoreMessage(QtWarningMsg, QRegularExpression(QStringLiteral("unsupported language id")));
+  const TranslationManager i18n(config);
+  QCOMPARE(i18n.currentLanguage(), QStringLiteral("en-us"));
+  QCOMPARE(i18n.tr(QStringLiteral("setting__desktop_lyric_lock")),
+           QStringLiteral("Lock lyric window"));
+  QCOMPARE(i18n.tr(QStringLiteral("no_such_key")), QStringLiteral("no_such_key"));
+  QCOMPARE(i18n.tr(QString()), QString());
+}
+
+void TestConfig::translationLiveSwitchEmitsLanguageChanged()
+{
+  // A common.langId change swaps the active pack live and emits
+  // languageChanged once per switch; other keys never reload the pack.
+  DesktopLyricConfig config;
+  config.loadDefaults();
+  QVERIFY(config.set(QStringLiteral("common.langId"), QStringLiteral("en-us")));
+  TranslationManager i18n(config);
+  QSignalSpy spy(&i18n, &TranslationManager::languageChanged);
+  QCOMPARE(i18n.tr(QStringLiteral("setting__desktop_lyric_lock")),
+           QStringLiteral("Lock lyric window"));
+
+  QVERIFY(config.set(QStringLiteral("common.langId"), QStringLiteral("zh-cn")));
+  QCOMPARE(spy.count(), 1);
+  QCOMPARE(i18n.currentLanguage(), QStringLiteral("zh-cn"));
+  QCOMPARE(i18n.tr(QStringLiteral("setting__desktop_lyric_lock")), QStringLiteral("锁定歌词"));
+
+  QVERIFY(config.set(QStringLiteral("common.langId"), QStringLiteral("zh-tw")));
+  QCOMPARE(spy.count(), 2);
+  QCOMPARE(i18n.currentLanguage(), QStringLiteral("zh-tw"));
+  QCOMPARE(i18n.tr(QStringLiteral("setting__desktop_lyric_lock")), QStringLiteral("鎖定歌詞視窗"));
+
+  QVERIFY(config.set(QStringLiteral("desktopLyric.isLock"), true));
+  QCOMPARE(spy.count(), 2); // Unrelated key: no reload.
+
+  // Back to null: the system-locale auto-detect applies (whatever it is).
+  QVERIFY(config.set(QStringLiteral("common.langId"), QVariant()));
+  QCOMPARE(spy.count(), 3);
+  QCOMPARE(i18n.currentLanguage(), TranslationManager::languageForLocale(QLocale::system()));
+}
+
+void TestConfig::translationPacksShareKeySet()
+{
+  // Every key must exist in all three packs (a key missing from one pack
+  // silently shows English there), and no value may be empty.
+  QSet<QString> reference;
+  for (const QString& langId :
+       {QStringLiteral("en-us"), QStringLiteral("zh-cn"), QStringLiteral("zh-tw")}) {
+    QFile file(QStringLiteral(":/translations/%1.json").arg(langId));
+    QVERIFY2(file.open(QIODevice::ReadOnly), qPrintable(langId));
+    QJsonParseError error;
+    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &error);
+    QVERIFY2(error.error == QJsonParseError::NoError && doc.isObject(), qPrintable(langId));
+    const QJsonObject pack = doc.object();
+    QSet<QString> keys;
+    for (auto it = pack.constBegin(); it != pack.constEnd(); ++it) {
+      QVERIFY2(it.value().isString() && !it.value().toString().isEmpty(),
+               qPrintable(langId + QStringLiteral(": ") + it.key()));
+      keys.insert(it.key());
+    }
+    if (reference.isEmpty()) {
+      reference = keys;
+    } else {
+      // Sorted lists, so a failure prints the differing keys.
+      QStringList actual(keys.cbegin(), keys.cend());
+      QStringList expected(reference.cbegin(), reference.cend());
+      actual.sort();
+      expected.sort();
+      QCOMPARE(actual, expected);
+    }
+  }
+  QVERIFY(!reference.isEmpty());
 }
 
 QTEST_MAIN(TestConfig)
