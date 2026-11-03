@@ -19,6 +19,7 @@
 // static init block below redirects the config dir to a per-process temp dir
 // (same recipe as tst_config.cpp initTestCase).
 #include <QApplication>
+#include <QCheckBox>
 #include <QCursor>
 #include <QDir>
 #include <QElapsedTimer>
@@ -127,6 +128,7 @@ private slots:
   void showTaskbarTogglesToolFlag();
   void fullscreenHideHidesWindow();
   void settingsDialogSurvivesWindowHide();
+  void settingsDialogPlaybackCheckboxesDriveSelector();
   void closeButtonRequestsClose();
   void unlockedControlBarStaysVisible();
   void playbackRateBoundaryRejectsInvalid();
@@ -638,6 +640,75 @@ void TestLyricController::settingsDialogSurvivesWindowHide()
   QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.enable"), true));
   QVERIFY(window.isVisible());
   QVERIFY(dialog->isVisible());
+}
+
+void TestLyricController::settingsDialogPlaybackCheckboxesDriveSelector()
+{
+  // The four player.* lyric-selection keys are reachable from the settings
+  // dialog: each checkbox mirrors its key on open and writes it on toggle,
+  // and the controller re-selects the lyric live (translation/roma lines and
+  // their swap, lxlrc vs plain lrc).
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults();
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  TrackSnapshot snapshot;
+  snapshot.name = QStringLiteral("Playback");
+  snapshot.lrc = QStringLiteral("[00:01.00]Plain");
+  snapshot.lxlrc = QStringLiteral("[00:01.00]<0,500>Karaoke");
+  snapshot.tlrc = QStringLiteral("[00:01.00]Translated");
+  snapshot.rlrc = QStringLiteral("[00:01.00]Romanized");
+  controller.setTrack(snapshot);
+
+  window.openSettingsDialog();
+  auto* dialog = window.findChild<SettingsDialog*>();
+  if (dialog == nullptr)
+    QFAIL("the settings dialog was not created");
+  auto* translation =
+    dialog->findChild<QCheckBox*>(QStringLiteral("player.isShowLyricTranslation"));
+  auto* roma = dialog->findChild<QCheckBox*>(QStringLiteral("player.isShowLyricRoma"));
+  auto* swap =
+    dialog->findChild<QCheckBox*>(QStringLiteral("player.isSwapLyricTranslationAndRoma"));
+  auto* lxlrc = dialog->findChild<QCheckBox*>(QStringLiteral("player.isPlayLxlrc"));
+  if (translation == nullptr || roma == nullptr || swap == nullptr || lxlrc == nullptr)
+    QFAIL("a playback checkbox is missing from the settings dialog");
+
+  // Defaults on open: only lxlrc is on (Linux), so the karaoke lyric is
+  // selected (the player keeps its word tags; the renderer strips them).
+  QVERIFY(!translation->isChecked());
+  QVERIFY(!roma->isChecked());
+  QVERIFY(!swap->isChecked());
+  QVERIFY(lxlrc->isChecked());
+  QCOMPARE(controller.player()->lines().size(), 1);
+  QCOMPARE(controller.player()->lines().at(0).text, QStringLiteral("<0,500>Karaoke"));
+  QVERIFY(controller.player()->lines().at(0).extendedLyrics.isEmpty());
+
+  translation->click();
+  QCOMPARE(ctx.config.get(QStringLiteral("player.isShowLyricTranslation")).toBool(), true);
+  QCOMPARE(controller.player()->lines().at(0).extendedLyrics,
+           QStringList{QStringLiteral("Translated")});
+
+  roma->click();
+  QCOMPARE(ctx.config.get(QStringLiteral("player.isShowLyricRoma")).toBool(), true);
+  QCOMPARE(controller.player()->lines().at(0).extendedLyrics,
+           (QStringList{QStringLiteral("Romanized"), QStringLiteral("Translated")}));
+
+  swap->click();
+  QCOMPARE(ctx.config.get(QStringLiteral("player.isSwapLyricTranslationAndRoma")).toBool(), true);
+  QCOMPARE(controller.player()->lines().at(0).extendedLyrics,
+           (QStringList{QStringLiteral("Translated"), QStringLiteral("Romanized")}));
+
+  lxlrc->click();
+  QCOMPARE(ctx.config.get(QStringLiteral("player.isPlayLxlrc")).toBool(), false);
+  QCOMPARE(controller.player()->lines().at(0).text, QStringLiteral("Plain"));
+
+  // A config change made elsewhere is reflected the next time it opens.
+  QVERIFY(ctx.config.set(QStringLiteral("player.isShowLyricRoma"), false));
+  dialog->hide();
+  window.openSettingsDialog();
+  QVERIFY(!roma->isChecked());
 }
 
 void TestLyricController::closeButtonRequestsClose()

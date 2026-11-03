@@ -58,5 +58,11 @@
   "setting__desktop_lyric_show_taskbar": "Show lyric window process on the taskbar",
   "setting__desktop_lyric_show_taskbar_tip": "This option is used as a workaround when the screen recording program cannot capture the lyric window.",
   "setting__desktop_lyric_unplay_color": "Not Played",
+  "setting__play": "Playback",
+  "setting__play_lyric_lxlrc": "Playback with karaoke-style lyrics if available",
+  "setting__play_lyric_lxlrc_tip": "This feature requires higher performance and is not recommended to be turned on for low performance devices!",
+  "setting__play_lyric_roma": "Show romanized lyrics if available",
+  "setting__play_lyric_transition": "Show translated lyrics if available",
+  "setting__player_swap_lyric_trans_roma": "Swap the position of the translated and romanized lyrics",
   "theme_edit_modal__pick_color": "Choose color"
 }

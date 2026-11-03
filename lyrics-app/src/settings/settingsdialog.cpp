@@ -155,6 +155,7 @@ void SettingsDialog::buildUi()
   auto* container = new QWidget;
   auto* layout = new QVBoxLayout(container);
   layout->addWidget(buildGeneralGroup(container));
+  layout->addWidget(buildPlaybackGroup(container));
   layout->addWidget(buildFontWeightGroup(container));
   layout->addWidget(buildDirectionGroup(container));
   layout->addWidget(buildScrollAlignGroup(container));
@@ -180,6 +181,7 @@ void SettingsDialog::showEvent(QShowEvent* event)
 QCheckBox* SettingsDialog::addCheckbox(QWidget* parent, const QString& label, const QString& key)
 {
   auto* box = new QCheckBox(label, parent);
+  box->setObjectName(key); // Lets tests (and accessibility tools) find a control by its key.
   connect(box, &QCheckBox::toggled, this, [this, key](bool on) {
     m_config.set(key, on);
   });
@@ -210,6 +212,27 @@ QWidget* SettingsDialog::buildGeneralGroup(QWidget* parent)
   // False positive: the layout is parented to `group` (QLayout(QWidget*) ctor), so it is
   // destroyed with the group.
   // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
+  return group;
+}
+
+QWidget* SettingsDialog::buildPlaybackGroup(QWidget* parent)
+{
+  // The lyric-selection subset of the reference SettingPlay.vue, in its order
+  // and with its labels; the controller re-selects the lyric live on change.
+  auto* group = new QGroupBox(m_i18n.tr(QStringLiteral("setting__play")), parent);
+  auto* layout = new QVBoxLayout(group);
+  layout->addWidget(addCheckbox(group, m_i18n.tr(QStringLiteral("setting__play_lyric_transition")),
+                                QStringLiteral("player.isShowLyricTranslation")));
+  layout->addWidget(addCheckbox(group, m_i18n.tr(QStringLiteral("setting__play_lyric_roma")),
+                                QStringLiteral("player.isShowLyricRoma")));
+  layout->addWidget(addCheckbox(group,
+                                m_i18n.tr(QStringLiteral("setting__player_swap_lyric_trans_roma")),
+                                QStringLiteral("player.isSwapLyricTranslationAndRoma")));
+  QCheckBox* lxlrc = addCheckbox(group, m_i18n.tr(QStringLiteral("setting__play_lyric_lxlrc")),
+                                 QStringLiteral("player.isPlayLxlrc"));
+  // The reference shows this tip on a help icon next to the checkbox.
+  lxlrc->setToolTip(m_i18n.tr(QStringLiteral("setting__play_lyric_lxlrc_tip")));
+  layout->addWidget(lxlrc);
   return group;
 }
 

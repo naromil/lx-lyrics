@@ -60,6 +60,7 @@ private:
   void updateLineGapLabel();
 
   QWidget* buildGeneralGroup(QWidget* parent);
+  QWidget* buildPlaybackGroup(QWidget* parent);
   QWidget* buildFontWeightGroup(QWidget* parent);
   QWidget* buildDirectionGroup(QWidget* parent);
   QWidget* buildScrollAlignGroup(QWidget* parent);

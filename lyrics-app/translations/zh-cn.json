@@ -58,5 +58,11 @@
   "setting__desktop_lyric_show_taskbar": "在任务栏显示歌词进程",
   "setting__desktop_lyric_show_taskbar_tip": "此选项作为在录屏软件无法捕获歌词窗口时的变通解决方法",
   "setting__desktop_lyric_unplay_color": "未播放颜色",
+  "setting__play": "播放设置",
+  "setting__play_lyric_lxlrc": "使用卡拉 OK 式歌词播放（如果可用）",
+  "setting__play_lyric_lxlrc_tip": "此功能比较耗性能，低配置电脑不建议开启！",
+  "setting__play_lyric_roma": "显示歌词罗马音（如果可用）",
+  "setting__play_lyric_transition": "显示歌词翻译（如果可用）",
+  "setting__player_swap_lyric_trans_roma": "调换歌词翻译与歌词罗马音位置",
   "theme_edit_modal__pick_color": "选择颜色"
 }

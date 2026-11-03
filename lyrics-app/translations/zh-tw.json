@@ -58,5 +58,11 @@
   "setting__desktop_lyric_show_taskbar": "在工具列顯示歌詞視窗處理程式",
   "setting__desktop_lyric_show_taskbar_tip": "此選項作為在螢幕錄影軟體無法擷取歌詞視窗時的變通解決方法",
   "setting__desktop_lyric_unplay_color": "未播放顏色",
+  "setting__play": "播放設定",
+  "setting__play_lyric_lxlrc": "使用卡拉 OK 式歌詞播放（如果可用）",
+  "setting__play_lyric_lxlrc_tip": "此功能比較耗性能，低配置電腦不建議開啟！",
+  "setting__play_lyric_roma": "顯示歌詞羅馬音（如果可用）",
+  "setting__play_lyric_transition": "顯示歌詞翻譯（如果可用）",
+  "setting__player_swap_lyric_trans_roma": "調換歌詞翻譯與歌詞羅馬音位置",
   "theme_edit_modal__pick_color": "選取顏色"
 }
