@@ -19,6 +19,10 @@ class DesktopLyricConfig;
 // Qt .ts/.qm translation system. The active pack is resolved from the
 // `common.langId` config key (null -> auto-detect from the system locale) and
 // en-us is always kept as the fallback.
+//
+// Keys are the reference ones, verbatim, except for the strings lx-music has
+// no key for: those are app-local and carry the `lxlyrics__` prefix so they
+// are never mistaken for (or clobbered by a refresh of) the reference packs.
 class TranslationManager : public QObject {
   Q_OBJECT
 

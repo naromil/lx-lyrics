@@ -212,9 +212,10 @@ ControlBar::ControlBar(DesktopLyricConfig& config, TranslationManager& i18n, QWi
   });
 
   // Settings gear: opens the modeless settings dialog. There is no reference
-  // i18n key for this button in the language packs, so the tooltip is the
-  // literal English string (tr() falls back to the key itself when unknown).
-  m_settingsButton = addIconButton(Icon::Settings, QStringLiteral("Lyric settings"));
+  // i18n key for this button in the language packs, so it uses an app-local key.
+  m_settingsButton =
+    addIconButton(Icon::Settings, QStringLiteral("lxlyrics__control_bar_settings"));
+  m_settingsButton->setObjectName(QStringLiteral("settingsButton"));
   connect(m_settingsButton, &QToolButton::clicked, this, &ControlBar::settingsRequested);
 
   connect(&m_config, &DesktopLyricConfig::settingChanged, this, &ControlBar::onSettingChanged);

@@ -81,19 +81,20 @@ public:
     }
     layout->addLayout(grid);
 
-    // No reference key for this label — kept as-is.
-    auto* resetButton = new QPushButton(QStringLiteral("Reset to default"), this);
+    auto* resetButton =
+      new QPushButton(m_i18n.tr(QStringLiteral("setting__desktop_lyric_color_reset")), this);
     connect(resetButton, &QPushButton::clicked, this, [this, defaultColor] {
       m_selected = defaultColor;
       accept();
     });
     layout->addWidget(resetButton);
 
-    // No reference key for this label — kept as-is.
-    auto* moreButton = new QPushButton(QStringLiteral("More colors..."), this);
+    // No reference key for this label: app-local key.
+    auto* moreButton = new QPushButton(m_i18n.tr(QStringLiteral("lxlyrics__color_more")), this);
     connect(moreButton, &QPushButton::clicked, this, [this, current] {
-      const QColor picked = QColorDialog::getColor(current, this, QStringLiteral("Select color"),
-                                                   QColorDialog::ShowAlphaChannel);
+      const QColor picked = QColorDialog::getColor(
+        current, this, m_i18n.tr(QStringLiteral("theme_edit_modal__pick_color")),
+        QColorDialog::ShowAlphaChannel);
       if (picked.isValid()) {
         m_selected = picked;
         accept();

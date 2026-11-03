@@ -56,6 +56,9 @@ const QString kDefaultUnplayColor = QStringLiteral("rgba(255, 255, 255, 1)");
 const QString kDefaultPlayedColor = QStringLiteral("rgba(7, 197, 86, 1)");
 const QString kDefaultShadowColor = QStringLiteral("rgba(0, 0, 0, 0.18)");
 
+// desktopLyric.style.lineGap default (the spacing reset target).
+constexpr int kDefaultLineGap = 15;
+
 // --- General checkbox list (reference order; hover-hide skipped on Linux) ---
 //
 // Each option pairs a desktopLyric.* config key with the reference translation
@@ -117,8 +120,6 @@ SettingsDialog::SettingsDialog(DesktopLyricConfig& config, TranslationManager& i
   , m_config(config)
   , m_i18n(i18n)
 {
-  setWindowTitle(QStringLiteral("Desktop Lyric Settings"));
-
   m_mainLayout = new QVBoxLayout(this);
   buildUi();
 
@@ -136,6 +137,8 @@ void SettingsDialog::buildUi()
   // recreate fresh widgets with current translations.
   delete m_scrollArea;
   m_scrollArea = nullptr;
+
+  setWindowTitle(m_i18n.tr(QStringLiteral("lxlyrics__settings_title")));
 
   m_checkboxBindings.clear();
   m_radioBindings.clear();
@@ -301,8 +304,8 @@ QWidget* SettingsDialog::buildAlignGroup(QWidget* parent)
 
 QWidget* SettingsDialog::buildStyleGroup(QWidget* parent)
 {
-  // "Lyric Style" has no reference key in the language packs — kept as-is.
-  auto* group = new QGroupBox(QStringLiteral("Lyric Style"), parent);
+  // "Lyric Style" has no reference key in the language packs: app-local key.
+  auto* group = new QGroupBox(m_i18n.tr(QStringLiteral("lxlyrics__settings_style")), parent);
   auto* form = new QFormLayout(group);
 
   m_lineGapSpin = new QSpinBox(group);
@@ -311,10 +314,13 @@ QWidget* SettingsDialog::buildStyleGroup(QWidget* parent)
 
   auto* resetSpacingButton =
     new QPushButton(m_i18n.tr(QStringLiteral("setting__desktop_lyric_reset")), group);
-  // The tooltip has no reference key in the language packs — kept as-is.
-  resetSpacingButton->setToolTip(QStringLiteral("Restore the default spacing (15 px)"));
+  // The tooltip has no reference key in the language packs: app-local key,
+  // with the same named {num} placeholder as the spacing label.
+  resetSpacingButton->setToolTip(
+    m_i18n.tr(QStringLiteral("lxlyrics__settings_line_gap_reset_tip"))
+      .replace(QStringLiteral("{num}"), QString::number(kDefaultLineGap)));
   connect(resetSpacingButton, &QPushButton::clicked, this, [this] {
-    m_lineGapSpin->setValue(15);
+    m_lineGapSpin->setValue(kDefaultLineGap);
   });
 
   auto* spacingRow = new QWidget(group);
@@ -348,8 +354,8 @@ QWidget* SettingsDialog::buildStyleGroup(QWidget* parent)
   connect(m_opacitySpin, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
     m_config.set(QStringLiteral("desktopLyric.style.opacity"), value);
   });
-  // "Opacity" has no reference key in the language packs — kept as-is.
-  form->addRow(QStringLiteral("Opacity"), m_opacitySpin);
+  // "Opacity" has no reference key in the language packs: app-local key.
+  form->addRow(m_i18n.tr(QStringLiteral("lxlyrics__settings_opacity")), m_opacitySpin);
 
   m_fontCombo = new QComboBox(group);
   m_fontCombo->addItem(m_i18n.tr(QStringLiteral("setting__desktop_lyric_font_default")),

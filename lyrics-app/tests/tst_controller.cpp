@@ -25,7 +25,9 @@
 #include <QElapsedTimer>
 #include <QEnterEvent>
 #include <QGraphicsOpacityEffect>
+#include <QGroupBox>
 #include <QImage>
+#include <QLabel>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTest>
@@ -129,6 +131,7 @@ private slots:
   void fullscreenHideHidesWindow();
   void settingsDialogSurvivesWindowHide();
   void settingsDialogPlaybackCheckboxesDriveSelector();
+  void settingsDialogAndGearFollowLanguage();
   void closeButtonRequestsClose();
   void unlockedControlBarStaysVisible();
   void playbackRateBoundaryRejectsInvalid();
@@ -709,6 +712,61 @@ void TestLyricController::settingsDialogPlaybackCheckboxesDriveSelector()
   dialog->hide();
   window.openSettingsDialog();
   QVERIFY(!roma->isChecked());
+}
+
+void TestLyricController::settingsDialogAndGearFollowLanguage()
+{
+  // Every string in the settings dialog and the gear tooltip comes from the
+  // language packs (reference keys or app-local lxlyrics__ keys): a live
+  // common.langId switch retitles the dialog and the gear, and no control is
+  // ever left showing a raw key (tr()'s unknown-key fallback).
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults();
+  QVERIFY(ctx.config.set(QStringLiteral("common.langId"), QStringLiteral("en-us")));
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  auto* gear = window.contentContainer()->findChild<QToolButton*>(QStringLiteral("settingsButton"));
+  if (gear == nullptr)
+    QFAIL("the control bar has no settings button");
+  window.openSettingsDialog();
+  auto* dialog = window.findChild<SettingsDialog*>();
+  if (dialog == nullptr)
+    QFAIL("the settings dialog was not created");
+
+  const auto rawKeys = [dialog] {
+    QStringList found;
+    const auto check = [&found](const QString& text) {
+      if (text.startsWith(QStringLiteral("lxlyrics__")) ||
+          text.startsWith(QStringLiteral("setting__")))
+        found.append(text);
+    };
+    for (const QWidget* widget : dialog->findChildren<QWidget*>()) {
+      check(widget->toolTip());
+      if (const auto* button = qobject_cast<const QAbstractButton*>(widget))
+        check(button->text());
+      else if (const auto* label = qobject_cast<const QLabel*>(widget))
+        check(label->text());
+      else if (const auto* group = qobject_cast<const QGroupBox*>(widget))
+        check(group->title());
+    }
+    return found;
+  };
+
+  QCOMPARE(dialog->windowTitle(), QStringLiteral("Desktop Lyric Settings"));
+  QCOMPARE(gear->toolTip(), QStringLiteral("Lyric settings"));
+  QCOMPARE(rawKeys(), QStringList{});
+
+  QVERIFY(ctx.config.set(QStringLiteral("common.langId"), QStringLiteral("zh-cn")));
+  QCOMPARE(dialog->windowTitle(), QStringLiteral("桌面歌词设置"));
+  QCOMPARE(gear->toolTip(), QStringLiteral("歌词设置"));
+  QCOMPARE(rawKeys(), QStringList{});
+
+  QVERIFY(ctx.config.set(QStringLiteral("common.langId"), QStringLiteral("zh-tw")));
+  QCOMPARE(dialog->windowTitle(), QStringLiteral("桌面歌詞設定"));
+  QCOMPARE(gear->toolTip(), QStringLiteral("歌詞設定"));
+  QCOMPARE(rawKeys(), QStringList{});
 }
 
 void TestLyricController::closeButtonRequestsClose()
