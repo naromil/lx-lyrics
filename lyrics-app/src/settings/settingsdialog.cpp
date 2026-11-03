@@ -120,6 +120,13 @@ SettingsDialog::SettingsDialog(DesktopLyricConfig& config, TranslationManager& i
   , m_config(config)
   , m_i18n(i18n)
 {
+  m_languageWriteTimer.setSingleShot(true);
+  m_languageWriteTimer.setInterval(0);
+  connect(&m_languageWriteTimer, &QTimer::timeout, this, [this] {
+    m_config.set(QStringLiteral("common.langId"),
+                 m_pendingLangId.isEmpty() ? QVariant() : QVariant(m_pendingLangId));
+  });
+
   m_mainLayout = new QVBoxLayout(this);
   buildUi();
 
@@ -165,6 +172,7 @@ void SettingsDialog::buildUi()
   layout->addWidget(buildAlignGroup(container));
   layout->addWidget(buildStyleGroup(container));
   layout->addWidget(buildColorGroup(container));
+  layout->addWidget(buildLanguageGroup(container));
   layout->addWidget(buildResetGroup(container));
   layout->addStretch();
 
@@ -410,6 +418,46 @@ QWidget* SettingsDialog::buildColorGroup(QWidget* parent)
   layout->addWidget(makeColorColumn(
     group, m_i18n.tr(QStringLiteral("setting__desktop_lyric_shadow_color")), m_shadowButton));
 
+  layout->addStretch();
+  return group;
+}
+
+QWidget* SettingsDialog::buildLanguageGroup(QWidget* parent)
+{
+  // Reference SettingBasic.vue: one radio per pack, labelled with the pack's
+  // own name (languages.json, never translated), plus an app-local "follow
+  // system" choice that stores null (TranslationManager's locale auto-detect).
+  struct LanguageChoice {
+    QString label;
+    QString langId; // Empty = follow system (stored as null).
+  };
+  const QVector<LanguageChoice> choices = {
+    {m_i18n.tr(QStringLiteral("lxlyrics__settings_lang_auto")), QString()},
+    {QStringLiteral("简体中文"), QStringLiteral("zh-cn")},
+    {QStringLiteral("繁體中文"), QStringLiteral("zh-tw")},
+    {QStringLiteral("English"), QStringLiteral("en-us")},
+  };
+
+  auto* group = new QGroupBox(m_i18n.tr(QStringLiteral("setting__basic_lang")), parent);
+  group->setToolTip(m_i18n.tr(QStringLiteral("setting__basic_lang_title")));
+  auto* layout = new QHBoxLayout(group);
+  for (const LanguageChoice& choice : choices) {
+    auto* radio = new QRadioButton(choice.label, group);
+    radio->setObjectName(QStringLiteral("common.langId:") +
+                         (choice.langId.isEmpty() ? QStringLiteral("auto") : choice.langId));
+    connect(radio, &QRadioButton::toggled, this, [this, langId = choice.langId](bool on) {
+      if (!on)
+        return;
+      // Deferred: a language change rebuilds this whole widget tree
+      // (buildUi), which must not delete the radio inside its own toggled().
+      m_pendingLangId = langId;
+      m_languageWriteTimer.start();
+    });
+    // populateFromConfig() compares toString(): a null langId reads as "",
+    // which checks the follow-system radio.
+    m_radioBindings.append({radio, QStringLiteral("common.langId"), choice.langId});
+    layout->addWidget(radio);
+  }
   layout->addStretch();
   return group;
 }

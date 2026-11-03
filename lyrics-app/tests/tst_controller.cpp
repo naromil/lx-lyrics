@@ -28,6 +28,7 @@
 #include <QGroupBox>
 #include <QImage>
 #include <QLabel>
+#include <QRadioButton>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTest>
@@ -132,6 +133,7 @@ private slots:
   void settingsDialogSurvivesWindowHide();
   void settingsDialogPlaybackCheckboxesDriveSelector();
   void settingsDialogAndGearFollowLanguage();
+  void settingsDialogLanguageSelectorWritesLangId();
   void closeButtonRequestsClose();
   void unlockedControlBarStaysVisible();
   void playbackRateBoundaryRejectsInvalid();
@@ -767,6 +769,48 @@ void TestLyricController::settingsDialogAndGearFollowLanguage()
   QCOMPARE(dialog->windowTitle(), QStringLiteral("桌面歌詞設定"));
   QCOMPARE(gear->toolTip(), QStringLiteral("歌詞設定"));
   QCOMPARE(rawKeys(), QStringList{});
+}
+
+void TestLyricController::settingsDialogLanguageSelectorWritesLangId()
+{
+  // The language radios write common.langId (a pack id, or null for "follow
+  // system"); the write is queued so the rebuild it triggers never deletes
+  // the clicked radio inside its own signal. Each rebuilt tree checks the
+  // radio matching the stored value.
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults();
+  QVERIFY(ctx.config.set(QStringLiteral("common.langId"), QStringLiteral("en-us")));
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  window.openSettingsDialog();
+  auto* dialog = window.findChild<SettingsDialog*>();
+  if (dialog == nullptr)
+    QFAIL("the settings dialog was not created");
+  const auto radio = [dialog](const QString& id) {
+    return dialog->findChild<QRadioButton*>(QStringLiteral("common.langId:") + id);
+  };
+  for (const QString& id : {QStringLiteral("auto"), QStringLiteral("zh-cn"),
+                            QStringLiteral("zh-tw"), QStringLiteral("en-us")}) {
+    if (radio(id) == nullptr)
+      QFAIL(qPrintable(QStringLiteral("no language radio for ") + id));
+  }
+  QVERIFY(radio(QStringLiteral("en-us"))->isChecked());
+  QCOMPARE(radio(QStringLiteral("auto"))->text(), QStringLiteral("Follow system"));
+
+  radio(QStringLiteral("zh-cn"))->click();
+  QTRY_COMPARE(ctx.config.get(QStringLiteral("common.langId")).toString(), QStringLiteral("zh-cn"));
+  QCOMPARE(i18n.currentLanguage(), QStringLiteral("zh-cn"));
+  QCOMPARE(dialog->windowTitle(), QStringLiteral("桌面歌词设置"));
+  // The rebuilt tree: pack names stay untranslated, follow-system follows.
+  QVERIFY(radio(QStringLiteral("zh-cn"))->isChecked());
+  QCOMPARE(radio(QStringLiteral("en-us"))->text(), QStringLiteral("English"));
+  QCOMPARE(radio(QStringLiteral("auto"))->text(), QStringLiteral("跟随系统"));
+
+  radio(QStringLiteral("auto"))->click();
+  QTRY_VERIFY(!ctx.config.get(QStringLiteral("common.langId")).isValid()); // Stored as null.
+  QVERIFY(radio(QStringLiteral("auto"))->isChecked());
 }
 
 void TestLyricController::closeButtonRequestsClose()

@@ -7,6 +7,8 @@
 #pragma once
 
 #include <QDialog>
+#include <QString>
+#include <QTimer>
 #include <QVector>
 
 class QCheckBox;
@@ -67,6 +69,7 @@ private:
   QWidget* buildAlignGroup(QWidget* parent);
   QWidget* buildStyleGroup(QWidget* parent);
   QWidget* buildColorGroup(QWidget* parent);
+  QWidget* buildLanguageGroup(QWidget* parent);
   QWidget* buildResetGroup(QWidget* parent);
 
   void populateFromConfig();
@@ -88,4 +91,9 @@ private:
   ColorPickerButton* m_playedButton = nullptr;
   ColorPickerButton* m_shadowButton = nullptr;
   QPushButton* m_resetWindowButton = nullptr;
+
+  // The language radios' write to common.langId, run from the event loop:
+  // the change rebuilds the widget tree, clicked radio included.
+  QTimer m_languageWriteTimer;
+  QString m_pendingLangId; // Empty = follow system (stored as null).
 };
