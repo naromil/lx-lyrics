@@ -27,6 +27,7 @@
 
 #include "app/appcontext.h"
 #include "config/desktoplyricconfig.h"
+#include "engine/checkedarith.h"
 #include "engine/lyricplayer.h"
 #include "engine/lyricselector.h"
 #include "host/feedtypes.h"
@@ -122,6 +123,14 @@ LyricController::LyricController(AppContext& ctx, LyricWindow& window, QObject* 
   connect(&m_ctx.config, &DesktopLyricConfig::settingChanged, this,
           &LyricController::onSettingChanged);
 
+  // Keyboard nudge (Ctrl+Up / Ctrl+Down / Ctrl+0); the window shows the
+  // resulting value as a short toast.
+  connect(&window, &LyricWindow::lyricOffsetAdjustRequested, this,
+          &LyricController::adjustLocalOffset);
+  connect(&window, &LyricWindow::lyricOffsetResetRequested, this,
+          &LyricController::resetLocalOffset);
+  connect(this, &LyricController::localOffsetChanged, &window, &LyricWindow::showLyricOffsetToast);
+
   applyRendererConfig();
   // Window-driven (not config-driven): the renderer must dim non-active
   // lines by the reference body opacity (LyricWindow::kBodyOpacity) while
@@ -140,6 +149,17 @@ void LyricController::setTrack(const TrackSnapshot& track)
   m_trackName = track.name;
   m_trackSinger = track.singer;
   m_trackAlbum = track.album;
+
+  // The local nudge fixes ONE track's timing: a different track starts from
+  // the host offset alone. A re-pushed snapshot of the same track keeps it.
+  const QString key = trackKey(track);
+  if (key != m_trackKey) {
+    m_trackKey = key;
+    if (m_localOffsetMs != 0) {
+      m_localOffsetMs = 0;
+      applyOffset();
+    }
+  }
 
   applyLyricText(track.lrc, track.tlrc, track.rlrc, track.lxlrc);
 
@@ -226,7 +246,35 @@ void LyricController::setOffset(qint64 tempOffset)
   // adjustment change or reconnect resend must not double-apply. Assign,
   // then let the player re-anchor.
   m_userOffsetMs = tempOffset;
-  m_player->setOffset(m_userOffsetMs);
+  applyOffset();
+}
+
+void LyricController::adjustLocalOffset(qint64 deltaMs)
+{
+  m_localOffsetMs = saturatingAdd(m_localOffsetMs, deltaMs);
+  applyOffset();
+  emit localOffsetChanged(m_localOffsetMs);
+}
+
+void LyricController::resetLocalOffset()
+{
+  m_localOffsetMs = 0;
+  applyOffset();
+  emit localOffsetChanged(m_localOffsetMs);
+}
+
+void LyricController::applyOffset()
+{
+  // The player re-anchors from the raw position, so changing the user part
+  // while playing moves the active line without double-applying anything.
+  m_player->setOffset(saturatingAdd(m_userOffsetMs, m_localOffsetMs));
+}
+
+QString LyricController::trackKey(const TrackSnapshot& track)
+{
+  if (!track.path.isEmpty())
+    return track.path;
+  return track.name + QChar(u'\x1f') + track.singer + QChar(u'\x1f') + track.album;
 }
 
 void LyricController::setPlaybackRate(double rate)

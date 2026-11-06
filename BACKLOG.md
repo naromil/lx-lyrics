@@ -2,7 +2,7 @@
 
 ## Routine (Claude may build these without asking)
 
-- [ ] User lyric offset adjustment (e.g. ±0.5 s from the control bar or keyboard, applied via the existing `setOffset` path) — no adapter or UI lets the user fix out-of-sync lyrics today; needs a UI addition and a decision on persistence (new config key vs per-track store)
+- [x] User lyric offset adjustment (e.g. ±0.5 s from the control bar or keyboard, applied via the existing `setOffset` path) — no adapter or UI lets the user fix out-of-sync lyrics today; needs a UI addition and a decision on persistence (new config key vs per-track store)
 - [x] Add settings-dialog checkboxes for `player.isShowLyricTranslation`, `player.isShowLyricRoma`, `player.isSwapLyricTranslationAndRoma` and `player.isPlayLxlrc` (existing keys, controller already honours them; controller-suite test) — today translated/romanized lines can only be switched by hand-editing config.json
 - [x] Translate the hardcoded English strings in the settings dialog ("Desktop Lyric Settings", "Lyric Style", "Opacity", the spacing-reset tooltip) and the gear tooltip — adds app-local i18n keys beyond lx-music's language packs
 - [x] Add a language selector (follow system / 简体中文 / 繁體中文 / English) for the existing `common.langId` key to the settings dialog — the UI language can currently only be changed through the system locale or config.json

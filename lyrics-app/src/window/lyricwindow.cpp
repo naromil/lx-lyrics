@@ -20,6 +20,7 @@
 #include <QShortcut>
 #include <QShowEvent>
 #include <QTimer>
+#include <QToolTip>
 #include <QVBoxLayout>
 #include <QVariantAnimation>
 #include <QWindow>
@@ -300,6 +301,24 @@ LyricWindow::LyricWindow(DesktopLyricConfig& config, TranslationManager& i18n)
   settingsShortcut->setContext(Qt::ApplicationShortcut);
   connect(settingsShortcut, &QShortcut::activated, this, &LyricWindow::openSettingsDialog);
 
+  // Ctrl+Up / Ctrl+Down / Ctrl+0 nudge the lyric timing for out-of-sync
+  // lyrics (same ApplicationShortcut context as Ctrl+,, so they also work
+  // while the window is locked). The controller applies the value.
+  auto* offsetEarlierShortcut = new QShortcut(QKeySequence(Qt::ControlModifier | Qt::Key_Up), this);
+  offsetEarlierShortcut->setContext(Qt::ApplicationShortcut);
+  connect(offsetEarlierShortcut, &QShortcut::activated, this, [this] {
+    emit lyricOffsetAdjustRequested(kLyricOffsetStepMs);
+  });
+  auto* offsetLaterShortcut = new QShortcut(QKeySequence(Qt::ControlModifier | Qt::Key_Down), this);
+  offsetLaterShortcut->setContext(Qt::ApplicationShortcut);
+  connect(offsetLaterShortcut, &QShortcut::activated, this, [this] {
+    emit lyricOffsetAdjustRequested(-kLyricOffsetStepMs);
+  });
+  auto* offsetResetShortcut = new QShortcut(QKeySequence(Qt::ControlModifier | Qt::Key_0), this);
+  offsetResetShortcut->setContext(Qt::ApplicationShortcut);
+  connect(offsetResetShortcut, &QShortcut::activated, this,
+          &LyricWindow::lyricOffsetResetRequested);
+
   // The gear button in the control bar is the always-visible mouse path to
   // the same dialog (the shortcut alone fails when the window has no focus,
   // e.g. on Wayland).
@@ -314,6 +333,18 @@ LyricWindow::LyricWindow(DesktopLyricConfig& config, TranslationManager& i18n)
   // startup (show() would have defeated it); only the --demo path shows
   // unconditionally.
   updateHiddenByHostConditions();
+}
+
+void LyricWindow::showLyricOffsetToast(qint64 offsetMs)
+{
+  // Signed seconds with no trailing zeros: +0.5, -1, 0.
+  QString seconds = QString::number(static_cast<double>(offsetMs) / 1000.0, 'g', 12);
+  if (offsetMs > 0)
+    seconds.prepend(QLatin1Char('+'));
+  m_lastLyricOffsetToast = m_i18n.tr(QStringLiteral("lxlyrics__lyric_offset_toast"))
+                             .replace(QStringLiteral("{num}"), seconds);
+  constexpr int kToastMs = 1500;
+  QToolTip::showText(mapToGlobal(rect().center()), m_lastLyricOffsetToast, this, QRect(), kToastMs);
 }
 
 void LyricWindow::openSettingsDialog()

@@ -29,6 +29,13 @@ struct PlaybackSnapshot;
 // player, setOffset REPLACES the user offset with the absolute value sent by
 // the host (reference setLyricOffset semantics), setPlaybackRate forwards the
 // rate.
+//
+// On top of the host's offset the user can nudge the lyric locally
+// (adjustLocalOffset/resetLocalOffset, bound to Ctrl+Up / Ctrl+Down / Ctrl+0
+// by LyricWindow) for a host that offers no offset UI. The nudge is added to
+// the host value — a later set_offset REPLACES only the host part, so the two
+// never overwrite each other — and it is session-only and per-track: it is
+// not persisted, and a set_info for a different track resets it to 0.
 class LyricController : public QObject {
   Q_OBJECT
 
@@ -50,11 +57,30 @@ public:
   void setOffset(qint64 tempOffset);
   void setPlaybackRate(double rate);
 
+  // Local lyric nudge (ms, positive = lyrics earlier, like the host offset).
+  // adjustLocalOffset ADDS deltaMs (saturating); both emit
+  // localOffsetChanged with the new value, even when it did not change, so a
+  // key press always gets on-screen feedback.
+  void adjustLocalOffset(qint64 deltaMs);
+  void resetLocalOffset();
+  qint64 localOffsetMs() const { return m_localOffsetMs; }
+
   // Test accessor: the player behind the pipeline (offset assertions in the
   // controller tests; same role as the renderer's test accessors).
   LyricPlayer* player() const { return m_player; }
 
+signals:
+  // The local nudge after an adjust/reset key press (not emitted by the
+  // silent per-track reset in setTrack).
+  void localOffsetChanged(qint64 localOffsetMs);
+
 private:
+  // Pushes host offset + local nudge into the player (which re-anchors).
+  void applyOffset();
+  // Track identity for the per-track nudge reset: the path when the host
+  // sends one, else the metadata.
+  static QString trackKey(const TrackSnapshot& track);
+
   void applyRendererConfig();
   void applySelectorConfig();
   // Applies raw lyric fields through the selector and player. Returns
@@ -86,4 +112,6 @@ private:
   QString m_trackAlbum;
   bool m_hasLyric = false;
   qint64 m_userOffsetMs = 0;
+  qint64 m_localOffsetMs = 0;
+  QString m_trackKey;
 };

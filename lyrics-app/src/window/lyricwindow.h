@@ -97,6 +97,13 @@ public:
   // stay hidden (enable=false, or the host already fullscreen).
   void updateHiddenByHostConditions();
 
+  // Lyric offset nudge step (ms) for the Ctrl+Up / Ctrl+Down shortcuts.
+  static constexpr qint64 kLyricOffsetStepMs = 500;
+
+  // Text of the last lyric-offset toast ("Lyric offset: +0.5 s"); exposed for
+  // tests, empty until the first nudge.
+  const QString& lastLyricOffsetToast() const { return m_lastLyricOffsetToast; }
+
 signals:
   // Emitted when the fade-out close animation completes (the content has
   // reached opacity 0.0); main.cpp quits the app in response. WM/session
@@ -112,7 +119,19 @@ signals:
   // boundaries that never pass a user close (host shutdown, app shutdown).
   void closeInitiated();
 
+  // Keyboard lyric-offset nudge: Ctrl+Up asks for +kLyricOffsetStepMs (lyrics
+  // earlier), Ctrl+Down for -kLyricOffsetStepMs (later), Ctrl+0 for a reset.
+  // ApplicationShortcut like Ctrl+, so they work while the window is locked.
+  // LyricController owns the value and answers with showLyricOffsetToast.
+  void lyricOffsetAdjustRequested(qint64 deltaMs);
+  void lyricOffsetResetRequested();
+
 public slots:
+  // Shows the local lyric offset (ms) as a short tooltip toast centred on the
+  // window — the only feedback a nudge has, since the offset is not part of
+  // the config or the control bar.
+  void showLyricOffsetToast(qint64 offsetMs);
+
   // Fade-out close: animate the content fade to 0.0 over the usual
   // kFadeAnimationMs, then emit closeAnimationFinished() (which quits the
   // app in main.cpp). Idempotent via the m_closing guard; public so the
@@ -210,6 +229,7 @@ private:
 
   DesktopLyricConfig& m_config;
   TranslationManager& m_i18n;
+  QString m_lastLyricOffsetToast;
   QWidget* m_contentContainer = nullptr;
   ControlBar* m_controlBar = nullptr;
   SpectrumWidget* m_spectrumWidget = nullptr;

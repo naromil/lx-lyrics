@@ -29,6 +29,7 @@
 #include <QImage>
 #include <QLabel>
 #include <QRadioButton>
+#include <QShortcut>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTest>
@@ -126,6 +127,8 @@ private slots:
   void metadataToggleReappliesPlaceholder();
   void mixedLyricNeverVisitsStaticLine();
   void setOffsetReplaceSemantics();
+  void localOffsetNudgeStacksOnHostOffset();
+  void localOffsetShortcutsAndToast();
   void selectorToggleWhilePlayingKeepsRawPosition();
   void enableHideShowsWindow();
   void showTaskbarTogglesToolFlag();
@@ -498,6 +501,118 @@ void TestLyricController::setOffsetReplaceSemantics()
   // A second message (adjustment change / reconnect resend) REPLACES.
   controller.setOffset(1500);
   QCOMPARE(controller.player()->offset(), qint64(1500)); // NOT 2500.
+}
+
+void TestLyricController::localOffsetNudgeStacksOnHostOffset()
+{
+  // The keyboard nudge is ADDED to the host's set_offset value: a later
+  // set_offset replaces only the host part, a re-pushed snapshot of the same
+  // track keeps the nudge, and a different track resets it (per-track,
+  // session-only — nothing is written to the config).
+  AppContext ctx(CliOptions{});
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+  QSignalSpy changedSpy(&controller, &LyricController::localOffsetChanged);
+
+  TrackSnapshot track;
+  track.name = QStringLiteral("Test");
+  track.path = QStringLiteral("/music/a.flac");
+  track.lrc = QStringLiteral("[00:01.00]<0,999>A\n[00:02.00]B\n[00:03.00]C");
+  controller.setTrack(track);
+  controller.setOffset(1000);
+
+  controller.adjustLocalOffset(500);
+  QCOMPARE(controller.localOffsetMs(), qint64(500));
+  QCOMPARE(controller.player()->offset(), qint64(1500));
+  QCOMPARE(changedSpy.count(), 1);
+  QCOMPARE(changedSpy.at(0).at(0).value<qint64>(), qint64(500));
+
+  // Host adjustment change: replaces the host part, the nudge stays on top.
+  controller.setOffset(2000);
+  QCOMPARE(controller.player()->offset(), qint64(2500));
+
+  // The same track re-pushed (set_info is a full snapshot) keeps the nudge.
+  controller.setTrack(track);
+  QCOMPARE(controller.localOffsetMs(), qint64(500));
+  QCOMPARE(controller.player()->offset(), qint64(2500));
+
+  // A different track starts from the host offset alone, silently.
+  TrackSnapshot next = track;
+  next.path = QStringLiteral("/music/b.flac");
+  controller.setTrack(next);
+  QCOMPARE(controller.localOffsetMs(), qint64(0));
+  QCOMPARE(controller.player()->offset(), qint64(2000));
+  QCOMPARE(changedSpy.count(), 1);
+
+  // Pathless tracks (streams) are told apart by their metadata.
+  TrackSnapshot stream;
+  stream.name = QStringLiteral("Stream one");
+  stream.lrc = track.lrc;
+  controller.setTrack(stream);
+  controller.adjustLocalOffset(-500);
+  controller.setTrack(stream);
+  QCOMPARE(controller.localOffsetMs(), qint64(-500));
+  stream.name = QStringLiteral("Stream two");
+  controller.setTrack(stream);
+  QCOMPARE(controller.localOffsetMs(), qint64(0));
+
+  // While playing the nudge re-anchors the clock: 1.6 s + 0.5 s lands on B.
+  controller.setOffset(0);
+  controller.play(1600);
+  QCOMPARE(controller.player()->currentLine(), 0);
+  controller.adjustLocalOffset(500);
+  QCOMPARE(controller.player()->currentLine(), 1);
+  controller.resetLocalOffset();
+  QCOMPARE(controller.localOffsetMs(), qint64(0));
+  QCOMPARE(controller.player()->offset(), qint64(0));
+  controller.pause();
+}
+
+void TestLyricController::localOffsetShortcutsAndToast()
+{
+  // Ctrl+Up / Ctrl+Down / Ctrl+0 are window shortcuts (ApplicationShortcut,
+  // so a locked window keeps them) that drive the controller's nudge, and
+  // every press is answered with a translated toast of the new value.
+  AppContext ctx(CliOptions{});
+  QVERIFY(ctx.config.set(QStringLiteral("common.langId"), QStringLiteral("en-us")));
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  const auto activate = [&window](const QKeySequence& keys) {
+    const QList<QShortcut*> shortcuts = window.findChildren<QShortcut*>();
+    for (QShortcut* shortcut : shortcuts) {
+      if (shortcut->key() == keys) {
+        QCOMPARE(shortcut->context(), Qt::ApplicationShortcut);
+        emit shortcut->activated();
+        return;
+      }
+    }
+    QFAIL(qPrintable(QStringLiteral("no shortcut for ") + keys.toString()));
+  };
+
+  activate(QKeySequence(Qt::ControlModifier | Qt::Key_Up));
+  QCOMPARE(controller.localOffsetMs(), LyricWindow::kLyricOffsetStepMs);
+  QCOMPARE(window.lastLyricOffsetToast(), QStringLiteral("Lyric offset: +0.5 s"));
+
+  activate(QKeySequence(Qt::ControlModifier | Qt::Key_Up));
+  QCOMPARE(window.lastLyricOffsetToast(), QStringLiteral("Lyric offset: +1 s"));
+
+  activate(QKeySequence(Qt::ControlModifier | Qt::Key_Down));
+  activate(QKeySequence(Qt::ControlModifier | Qt::Key_Down));
+  activate(QKeySequence(Qt::ControlModifier | Qt::Key_Down));
+  QCOMPARE(controller.localOffsetMs(), -LyricWindow::kLyricOffsetStepMs);
+  QCOMPARE(window.lastLyricOffsetToast(), QStringLiteral("Lyric offset: -0.5 s"));
+
+  activate(QKeySequence(Qt::ControlModifier | Qt::Key_0));
+  QCOMPARE(controller.localOffsetMs(), qint64(0));
+  QCOMPARE(window.lastLyricOffsetToast(), QStringLiteral("Lyric offset: 0 s"));
+
+  // The toast follows the UI language.
+  QVERIFY(ctx.config.set(QStringLiteral("common.langId"), QStringLiteral("zh-cn")));
+  activate(QKeySequence(Qt::ControlModifier | Qt::Key_Up));
+  QCOMPARE(window.lastLyricOffsetToast(), QStringLiteral("歌词偏移：+0.5 秒"));
 }
 
 void TestLyricController::selectorToggleWhilePlayingKeepsRawPosition()

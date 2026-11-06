@@ -126,6 +126,13 @@ so the shortcut is the way back). Every change writes through the config and re-
 A host can also ask for the dialog over the feed (`open_settings`), e.g. from the Fooyin
 plugin's Configure dialog in its Plugins page or the Audacious plugin's settings page.
 
+## Out-of-sync lyrics
+
+Press **`Ctrl+Up`** to show the lyrics 0.5 s earlier, **`Ctrl+Down`** to show them 0.5 s later,
+and **`Ctrl+0`** to reset; a short toast shows the current adjustment. The adjustment adds to any
+offset the player sends, applies to the current track only (the next track starts from 0) and is
+not saved.
+
 ## Tests
 
 Eight QTest suites (186 slots total), run with CTest:

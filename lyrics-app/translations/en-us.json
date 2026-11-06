@@ -15,6 +15,7 @@
   "desktop_lyric__win_top_on": "Un-top",
   "lxlyrics__color_more": "More colors...",
   "lxlyrics__control_bar_settings": "Lyric settings",
+  "lxlyrics__lyric_offset_toast": "Lyric offset: {num} s",
   "lxlyrics__settings_lang_auto": "Follow system",
   "lxlyrics__settings_line_gap_reset_tip": "Restore the default spacing ({num} px)",
   "lxlyrics__settings_opacity": "Opacity",

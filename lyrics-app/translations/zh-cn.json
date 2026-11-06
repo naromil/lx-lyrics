@@ -15,6 +15,7 @@
   "desktop_lyric__win_top_on": "置顶歌词界面",
   "lxlyrics__color_more": "更多颜色…",
   "lxlyrics__control_bar_settings": "歌词设置",
+  "lxlyrics__lyric_offset_toast": "歌词偏移：{num} 秒",
   "lxlyrics__settings_lang_auto": "跟随系统",
   "lxlyrics__settings_line_gap_reset_tip": "恢复默认间距（{num} px）",
   "lxlyrics__settings_opacity": "不透明度",
