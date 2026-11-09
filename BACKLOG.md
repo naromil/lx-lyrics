@@ -2,24 +2,23 @@
 
 ## Routine (Claude may build these without asking)
 
-- [x] User lyric offset adjustment (e.g. ±0.5 s from the control bar or keyboard, applied via the existing `setOffset` path) — no adapter or UI lets the user fix out-of-sync lyrics today; needs a UI addition and a decision on persistence (new config key vs per-track store)
-- [x] Add settings-dialog checkboxes for `player.isShowLyricTranslation`, `player.isShowLyricRoma`, `player.isSwapLyricTranslationAndRoma` and `player.isPlayLxlrc` (existing keys, controller already honours them; controller-suite test) — today translated/romanized lines can only be switched by hand-editing config.json
-- [x] Translate the hardcoded English strings in the settings dialog ("Desktop Lyric Settings", "Lyric Style", "Opacity", the spacing-reset tooltip) and the gear tooltip — adds app-local i18n keys beyond lx-music's language packs
-- [x] Add a language selector (follow system / 简体中文 / 繁體中文 / English) for the existing `common.langId` key to the settings dialog — the UI language can currently only be changed through the system locale or config.json
-- [ ] Global shortcuts for lock/unlock — extends the `lx-lyrics-hotkey` fd-3 lines and needs a new host→app message in `docs/protocol.md`
+- [ ] Lyric-offset controls in the settings dialog (−0.5 s / +0.5 s / reset with the current value, driving the existing `LyricController` nudge; app-local i18n keys; controller-suite test) — the nudge is keyboard-only today, with no visible control or hint, so most users never find it
 - [ ] Per-word karaoke fill for `lxlrc` lyrics (lx-music parity; `desktopLyric.style.isFontWeightFont` is currently a no-op)
+- [ ] Global shortcuts for lock/unlock — extends the `lx-lyrics-hotkey` fd-3 lines and needs a new host→app message in `docs/protocol.md`
 - [ ] Extra sidecar lookup locations (a `lyrics/` subfolder, `Artist - Title.lrc`) — changes the acquisition order that `docs/protocol.md` §5 specifies
+- [ ] Document the in-window keyboard shortcuts (`Ctrl+,` settings, `Ctrl+Up`/`Ctrl+Down`/`Ctrl+0` offset nudge) in `README.md` and `README.zh-CN.md` — neither README mentions them, so the offset fix and the locked-window escape hatch are undiscoverable
 - [ ] Online lyric search/download (deferred by design in architecture.md)
-- [x] Add tests for `TranslationManager` (system-locale mapping incl. zh-HK/zh-SG, unsupported `common.langId` falling back to en-us, live switch emitting `languageChanged`, and the three packs keeping identical key sets) — the i18n path has no direct test coverage
+- [ ] Add controller-suite tests for `LyricWindow` geometry (`desktopLyric.isLockScreen` drag/resize clamping and the off-screen stored-position rescue in `applyWindowGeometry`) — that code has no test coverage
 
 ## Proposed (needs the owner's OK — move to Routine to approve)
 
-
+- [ ] Clamp `desktopLyric.isLockScreen` to the screen the window is on instead of the primary screen — on multi-monitor setups enabling it drags the window back onto the primary monitor; needs the owner because it changes the ported primary-screen behaviour, which may be deliberate lx-music parity
 
 ## Ideas for the owner to consider (never built automatically)
 
 - Wayland layer-shell support for reliable always-on-top and click-through without KWin rules (new dependency)
 - Drop a `.lrc` file onto the lyrics window to attach it to the playing track
 - An mpv adapter (mpv has a C/Lua plugin API, unlike the dropped players)
+- Remember the lyric-offset nudge per track across sessions (today it is session-only by design; would need a new persisted store)
 
 ## Rejected (Claude won't re-propose these)
