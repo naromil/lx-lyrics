@@ -28,6 +28,7 @@
 #include <QGroupBox>
 #include <QImage>
 #include <QLabel>
+#include <QPushButton>
 #include <QRadioButton>
 #include <QShortcut>
 #include <QSignalSpy>
@@ -129,6 +130,7 @@ private slots:
   void setOffsetReplaceSemantics();
   void localOffsetNudgeStacksOnHostOffset();
   void localOffsetShortcutsAndToast();
+  void settingsDialogLyricOffsetControls();
   void selectorToggleWhilePlayingKeepsRawPosition();
   void enableHideShowsWindow();
   void showTaskbarTogglesToolFlag();
@@ -613,6 +615,88 @@ void TestLyricController::localOffsetShortcutsAndToast()
   QVERIFY(ctx.config.set(QStringLiteral("common.langId"), QStringLiteral("zh-cn")));
   activate(QKeySequence(Qt::ControlModifier | Qt::Key_Up));
   QCOMPARE(window.lastLyricOffsetToast(), QStringLiteral("歌词偏移：+0.5 秒"));
+}
+
+void TestLyricController::settingsDialogLyricOffsetControls()
+{
+  // The settings dialog's -/+/reset buttons are a visible path to the same
+  // local nudge as Ctrl+Down / Ctrl+Up / Ctrl+0, and its label shows the live
+  // value — including changes made by the shortcuts, the silent per-track
+  // reset, and across a language rebuild of the widget tree.
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults();
+  QVERIFY(ctx.config.set(QStringLiteral("common.langId"), QStringLiteral("en-us")));
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  TrackSnapshot first;
+  first.path = QStringLiteral("/music/first.flac");
+  first.lrc = QStringLiteral("[00:01.00]A\n[00:03.00]B");
+  controller.setTrack(first);
+
+  // A nudge made before the dialog exists is shown when it first opens.
+  controller.adjustLocalOffset(LyricWindow::kLyricOffsetStepMs);
+
+  window.openSettingsDialog();
+  auto* dialog = window.findChild<SettingsDialog*>();
+  if (dialog == nullptr)
+    QFAIL("the settings dialog was not created");
+
+  const auto label = [dialog] {
+    const auto* widget = dialog->findChild<QLabel*>(QStringLiteral("lxlyrics.lyricOffset"));
+    return widget != nullptr ? widget->text() : QStringLiteral("<missing label>");
+  };
+  const auto button = [dialog](const QString& name) {
+    return dialog->findChild<QPushButton*>(QStringLiteral("lxlyrics.lyricOffset.") + name);
+  };
+  QPushButton* later = button(QStringLiteral("later"));
+  QPushButton* earlier = button(QStringLiteral("earlier"));
+  QPushButton* reset = button(QStringLiteral("reset"));
+  if (later == nullptr || earlier == nullptr || reset == nullptr)
+    QFAIL("a lyric-offset button is missing from the settings dialog");
+
+  QCOMPARE(label(), QStringLiteral("Lyric offset: +0.5 s"));
+  QCOMPARE(earlier->text(), QStringLiteral("+0.5 s"));
+  QCOMPARE(later->text(), QStringLiteral("\u22120.5 s"));
+  QVERIFY(earlier->toolTip().contains(QStringLiteral("Ctrl+Up")));
+  QVERIFY(later->toolTip().contains(QStringLiteral("Ctrl+Down")));
+  QVERIFY(reset->toolTip().contains(QStringLiteral("Ctrl+0")));
+
+  earlier->click();
+  QCOMPARE(controller.localOffsetMs(), 2 * LyricWindow::kLyricOffsetStepMs);
+  QCOMPARE(label(), QStringLiteral("Lyric offset: +1 s"));
+  // A click gets the same toast as the shortcut.
+  QCOMPARE(window.lastLyricOffsetToast(), QStringLiteral("Lyric offset: +1 s"));
+
+  later->click();
+  later->click();
+  later->click();
+  QCOMPARE(controller.localOffsetMs(), -LyricWindow::kLyricOffsetStepMs);
+  QCOMPARE(label(), QStringLiteral("Lyric offset: -0.5 s"));
+
+  reset->click();
+  QCOMPARE(controller.localOffsetMs(), qint64(0));
+  QCOMPARE(label(), QStringLiteral("Lyric offset: 0 s"));
+
+  // Keyboard nudges (the same controller entry point) keep the label live.
+  controller.adjustLocalOffset(LyricWindow::kLyricOffsetStepMs);
+  QCOMPARE(label(), QStringLiteral("Lyric offset: +0.5 s"));
+
+  // A language switch rebuilds the dialog; the value survives the rebuild.
+  QVERIFY(ctx.config.set(QStringLiteral("common.langId"), QStringLiteral("zh-cn")));
+  QCOMPARE(label(), QStringLiteral("歌词偏移：+0.5 秒"));
+  QVERIFY(ctx.config.set(QStringLiteral("common.langId"), QStringLiteral("en-us")));
+
+  // A different track silently drops the nudge (no toast); the label follows.
+  const QString toastBefore = window.lastLyricOffsetToast();
+  TrackSnapshot second;
+  second.path = QStringLiteral("/music/second.flac");
+  second.lrc = first.lrc;
+  controller.setTrack(second);
+  QCOMPARE(controller.localOffsetMs(), qint64(0));
+  QCOMPARE(label(), QStringLiteral("Lyric offset: 0 s"));
+  QCOMPARE(window.lastLyricOffsetToast(), toastBefore);
 }
 
 void TestLyricController::selectorToggleWhilePlayingKeepsRawPosition()

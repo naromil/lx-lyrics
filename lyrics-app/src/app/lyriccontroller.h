@@ -73,6 +73,9 @@ signals:
   // The local nudge after an adjust/reset key press (not emitted by the
   // silent per-track reset in setTrack).
   void localOffsetChanged(qint64 localOffsetMs);
+  // Every change of the nudge value, the silent per-track reset included
+  // (no toast); keeps the settings dialog's offset label current.
+  void localOffsetValueChanged(qint64 localOffsetMs);
 
 private:
   // Pushes host offset + local nudge into the player (which re-anchors).

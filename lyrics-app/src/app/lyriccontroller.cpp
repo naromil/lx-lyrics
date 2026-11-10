@@ -130,6 +130,7 @@ LyricController::LyricController(AppContext& ctx, LyricWindow& window, QObject* 
   connect(&window, &LyricWindow::lyricOffsetResetRequested, this,
           &LyricController::resetLocalOffset);
   connect(this, &LyricController::localOffsetChanged, &window, &LyricWindow::showLyricOffsetToast);
+  connect(this, &LyricController::localOffsetValueChanged, &window, &LyricWindow::setLyricOffset);
 
   applyRendererConfig();
   // Window-driven (not config-driven): the renderer must dim non-active
@@ -158,6 +159,7 @@ void LyricController::setTrack(const TrackSnapshot& track)
     if (m_localOffsetMs != 0) {
       m_localOffsetMs = 0;
       applyOffset();
+      emit localOffsetValueChanged(m_localOffsetMs);
     }
   }
 
@@ -253,6 +255,7 @@ void LyricController::adjustLocalOffset(qint64 deltaMs)
 {
   m_localOffsetMs = saturatingAdd(m_localOffsetMs, deltaMs);
   applyOffset();
+  emit localOffsetValueChanged(m_localOffsetMs);
   emit localOffsetChanged(m_localOffsetMs);
 }
 
@@ -260,6 +263,7 @@ void LyricController::resetLocalOffset()
 {
   m_localOffsetMs = 0;
   applyOffset();
+  emit localOffsetValueChanged(m_localOffsetMs);
   emit localOffsetChanged(m_localOffsetMs);
 }
 

@@ -335,22 +335,42 @@ LyricWindow::LyricWindow(DesktopLyricConfig& config, TranslationManager& i18n)
   updateHiddenByHostConditions();
 }
 
-void LyricWindow::showLyricOffsetToast(qint64 offsetMs)
+QString LyricWindow::lyricOffsetText(const TranslationManager& i18n, qint64 offsetMs)
 {
   // Signed seconds with no trailing zeros: +0.5, -1, 0.
   QString seconds = QString::number(static_cast<double>(offsetMs) / 1000.0, 'g', 12);
   if (offsetMs > 0)
     seconds.prepend(QLatin1Char('+'));
-  m_lastLyricOffsetToast = m_i18n.tr(QStringLiteral("lxlyrics__lyric_offset_toast"))
-                             .replace(QStringLiteral("{num}"), seconds);
+  return i18n.tr(QStringLiteral("lxlyrics__lyric_offset_toast"))
+    .replace(QStringLiteral("{num}"), seconds);
+}
+
+void LyricWindow::setLyricOffset(qint64 offsetMs)
+{
+  m_lyricOffsetMs = offsetMs;
+  if (m_settingsDialog)
+    m_settingsDialog->setLyricOffset(offsetMs);
+}
+
+void LyricWindow::showLyricOffsetToast(qint64 offsetMs)
+{
+  m_lastLyricOffsetToast = lyricOffsetText(m_i18n, offsetMs);
   constexpr int kToastMs = 1500;
   QToolTip::showText(mapToGlobal(rect().center()), m_lastLyricOffsetToast, this, QRect(), kToastMs);
 }
 
 void LyricWindow::openSettingsDialog()
 {
-  if (!m_settingsDialog)
+  if (!m_settingsDialog) {
     m_settingsDialog = new SettingsDialog(m_config, m_i18n, this);
+    // The dialog's offset buttons are a mouse path to the same nudge as
+    // Ctrl+Up / Ctrl+Down / Ctrl+0.
+    connect(m_settingsDialog, &SettingsDialog::lyricOffsetAdjustRequested, this,
+            &LyricWindow::lyricOffsetAdjustRequested);
+    connect(m_settingsDialog, &SettingsDialog::lyricOffsetResetRequested, this,
+            &LyricWindow::lyricOffsetResetRequested);
+    m_settingsDialog->setLyricOffset(m_lyricOffsetMs);
+  }
 
   const bool alreadyVisible = m_settingsDialog->isVisible();
 

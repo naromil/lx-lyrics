@@ -25,6 +25,7 @@
 #include "config/desktoplyricconfig.h"
 #include "i18n/translationmanager.h"
 #include "settings/colorpickerbutton.h"
+#include "window/lyricwindow.h"
 
 namespace {
 
@@ -149,6 +150,7 @@ void SettingsDialog::buildUi()
 
   m_checkboxBindings.clear();
   m_radioBindings.clear();
+  m_lyricOffsetLabel = nullptr;
   m_lineGapLabel = nullptr;
   m_lineGapSpin = nullptr;
   m_fontSizeSpin = nullptr;
@@ -244,7 +246,67 @@ QWidget* SettingsDialog::buildPlaybackGroup(QWidget* parent)
   // The reference shows this tip on a help icon next to the checkbox.
   lxlrc->setToolTip(m_i18n.tr(QStringLiteral("setting__play_lyric_lxlrc_tip")));
   layout->addWidget(lxlrc);
+  layout->addWidget(buildLyricOffsetRow(group));
   return group;
+}
+
+QWidget* SettingsDialog::buildLyricOffsetRow(QWidget* parent)
+{
+  // The visible path to the Ctrl+Up / Ctrl+Down / Ctrl+0 nudge (app-local:
+  // the reference has no local offset control). The tooltips name the
+  // shortcuts so the buttons also teach them.
+  auto* row = new QWidget(parent);
+  auto* layout = new QHBoxLayout(row);
+  layout->setContentsMargins(0, 0, 0, 0);
+
+  m_lyricOffsetLabel = new QLabel(row);
+  m_lyricOffsetLabel->setObjectName(QStringLiteral("lxlyrics.lyricOffset"));
+  m_lyricOffsetLabel->setToolTip(m_i18n.tr(QStringLiteral("lxlyrics__settings_lyric_offset_tip")));
+  layout->addWidget(m_lyricOffsetLabel);
+
+  const QString step =
+    QString::number(static_cast<double>(LyricWindow::kLyricOffsetStepMs) / 1000.0, 'g', 12);
+
+  auto* laterButton = new QPushButton(QStringLiteral("\u2212%1 s").arg(step), row);
+  laterButton->setObjectName(QStringLiteral("lxlyrics.lyricOffset.later"));
+  laterButton->setToolTip(m_i18n.tr(QStringLiteral("lxlyrics__settings_lyric_offset_later_tip")));
+  connect(laterButton, &QPushButton::clicked, this, [this] {
+    emit lyricOffsetAdjustRequested(-LyricWindow::kLyricOffsetStepMs);
+  });
+  layout->addWidget(laterButton);
+
+  auto* earlierButton = new QPushButton(QStringLiteral("+%1 s").arg(step), row);
+  earlierButton->setObjectName(QStringLiteral("lxlyrics.lyricOffset.earlier"));
+  earlierButton->setToolTip(
+    m_i18n.tr(QStringLiteral("lxlyrics__settings_lyric_offset_earlier_tip")));
+  connect(earlierButton, &QPushButton::clicked, this, [this] {
+    emit lyricOffsetAdjustRequested(LyricWindow::kLyricOffsetStepMs);
+  });
+  layout->addWidget(earlierButton);
+
+  auto* resetButton =
+    new QPushButton(m_i18n.tr(QStringLiteral("setting__desktop_lyric_reset")), row);
+  resetButton->setObjectName(QStringLiteral("lxlyrics.lyricOffset.reset"));
+  resetButton->setToolTip(m_i18n.tr(QStringLiteral("lxlyrics__settings_lyric_offset_reset_tip")));
+  connect(resetButton, &QPushButton::clicked, this, &SettingsDialog::lyricOffsetResetRequested);
+  layout->addWidget(resetButton);
+
+  layout->addStretch();
+  updateLyricOffsetLabel();
+  return row;
+}
+
+void SettingsDialog::setLyricOffset(qint64 offsetMs)
+{
+  m_lyricOffsetMs = offsetMs;
+  updateLyricOffsetLabel();
+}
+
+void SettingsDialog::updateLyricOffsetLabel()
+{
+  if (!m_lyricOffsetLabel)
+    return; // Widget tree not built yet.
+  m_lyricOffsetLabel->setText(LyricWindow::lyricOffsetText(m_i18n, m_lyricOffsetMs));
 }
 
 QWidget* SettingsDialog::buildFontWeightGroup(QWidget* parent)

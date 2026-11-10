@@ -40,6 +40,18 @@ public:
   explicit SettingsDialog(DesktopLyricConfig& config, TranslationManager& i18n,
                           QWidget* parent = nullptr);
 
+  // The current local lyric nudge (ms) shown next to the offset buttons. The
+  // nudge is session-only state owned by LyricController, not a config key,
+  // so the window pushes every change here; the label survives a rebuild.
+  void setLyricOffset(qint64 offsetMs);
+
+signals:
+  // The playback group's lyric-offset buttons: -/+ ask for a nudge of
+  // -/+LyricWindow::kLyricOffsetStepMs (positive = lyrics earlier, like
+  // Ctrl+Up), reset for Ctrl+0. LyricWindow forwards them to the controller.
+  void lyricOffsetAdjustRequested(qint64 deltaMs);
+  void lyricOffsetResetRequested();
+
 protected:
   void showEvent(QShowEvent* event) override;
 
@@ -60,6 +72,8 @@ private:
 
   void buildUi();
   void updateLineGapLabel();
+  void updateLyricOffsetLabel();
+  QWidget* buildLyricOffsetRow(QWidget* parent);
 
   QWidget* buildGeneralGroup(QWidget* parent);
   QWidget* buildPlaybackGroup(QWidget* parent);
@@ -82,6 +96,8 @@ private:
   QVector<CheckboxBinding> m_checkboxBindings;
   QVector<RadioBinding> m_radioBindings;
 
+  QLabel* m_lyricOffsetLabel = nullptr;
+  qint64 m_lyricOffsetMs = 0;
   QLabel* m_lineGapLabel = nullptr;
   QSpinBox* m_lineGapSpin = nullptr;
   QSpinBox* m_fontSizeSpin = nullptr;

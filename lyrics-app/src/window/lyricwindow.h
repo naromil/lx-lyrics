@@ -104,6 +104,10 @@ public:
   // tests, empty until the first nudge.
   const QString& lastLyricOffsetToast() const { return m_lastLyricOffsetToast; }
 
+  // "Lyric offset: +0.5 s" in the current language (signed seconds, no
+  // trailing zeros) — the toast text, also the settings dialog's offset label.
+  static QString lyricOffsetText(const TranslationManager& i18n, qint64 offsetMs);
+
 signals:
   // Emitted when the fade-out close animation completes (the content has
   // reached opacity 0.0); main.cpp quits the app in response. WM/session
@@ -131,6 +135,10 @@ public slots:
   // window — the only feedback a nudge has, since the offset is not part of
   // the config or the control bar.
   void showLyricOffsetToast(qint64 offsetMs);
+
+  // Tracks the current local nudge (every change, including the silent
+  // per-track reset) so the settings dialog shows the live value.
+  void setLyricOffset(qint64 offsetMs);
 
   // Fade-out close: animate the content fade to 0.0 over the usual
   // kFadeAnimationMs, then emit closeAnimationFinished() (which quits the
@@ -230,6 +238,7 @@ private:
   DesktopLyricConfig& m_config;
   TranslationManager& m_i18n;
   QString m_lastLyricOffsetToast;
+  qint64 m_lyricOffsetMs = 0; // Mirrors LyricController's local nudge.
   QWidget* m_contentContainer = nullptr;
   ControlBar* m_controlBar = nullptr;
   SpectrumWidget* m_spectrumWidget = nullptr;

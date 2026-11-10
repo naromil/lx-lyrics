@@ -2,7 +2,7 @@
 
 ## Routine (Claude may build these without asking)
 
-- [ ] Lyric-offset controls in the settings dialog (−0.5 s / +0.5 s / reset with the current value, driving the existing `LyricController` nudge; app-local i18n keys; controller-suite test) — the nudge is keyboard-only today, with no visible control or hint, so most users never find it
+- [x] Lyric-offset controls in the settings dialog (−0.5 s / +0.5 s / reset with the current value, driving the existing `LyricController` nudge; app-local i18n keys; controller-suite test) — the nudge is keyboard-only today, with no visible control or hint, so most users never find it
 - [ ] Per-word karaoke fill for `lxlrc` lyrics (lx-music parity; `desktopLyric.style.isFontWeightFont` is currently a no-op)
 - [ ] Global shortcuts for lock/unlock — extends the `lx-lyrics-hotkey` fd-3 lines and needs a new host→app message in `docs/protocol.md`
 - [ ] Extra sidecar lookup locations (a `lyrics/` subfolder, `Artist - Title.lrc`) — changes the acquisition order that `docs/protocol.md` §5 specifies
