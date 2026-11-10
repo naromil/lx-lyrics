@@ -75,6 +75,23 @@ cp build/fyplugin_lxlyrics.so ~/.local/lib/fooyin/plugins/                      
 
 各适配器的 README 中有完整的构建、安装与测试命令。
 
+## 键盘快捷键
+
+应用获得焦点时，歌词窗口响应以下按键——它们是应用级快捷键，所以窗口**锁定**时（透明、
+鼠标穿透、控制栏隐藏）同样有效：
+
+| 按键 | 作用 |
+| --- | --- |
+| `Ctrl+,` | 打开设置对话框——窗口锁定时回到各项控制（以及解除锁定）的途径 |
+| `Ctrl+↑` | 歌词**提前** 0.5 秒（歌词落后于歌曲时使用） |
+| `Ctrl+↓` | 歌词**延后** 0.5 秒（歌词跑在歌曲前面时使用） |
+| `Ctrl+0` | 重置歌词偏移 |
+
+每次调整偏移都会用一个短暂的提示显示新的数值。该偏移叠加在播放器发送的偏移之上，只对当前
+歌曲生效（下一首从零开始），且不会保存。设置对话框的“播放设置”部分会显示同一数值，并提供
+−0.5 秒 / +0.5 秒 / 重置按钮。从应用外部显示或隐藏窗口由播放器适配器负责（其菜单项或可选的
+全局快捷键——见各适配器的 README）。
+
 ## 许可证
 
 `lyrics-app/` 采用 Apache-2.0——其歌词解析/渲染逻辑移植自 lx-music-desktop（Apache-2.0）并保留署名。`plugins/` 下的六个适配器（`fooyin/`、`deadbeef/`、`rhythmbox/`、`audacious/`、`quodlibet/`、`vlc/`）按仓库决策采用 GPL-3.0-only，各宿主均允许：Fooyin 是 GPL-3.0；Rhythmbox、Quod Libet 与 VLC 是 GPL-2.0-or-later（其 “or later” 条款允许 GPL-3.0 插件）；DeaDBeeF 的插件 API 头文件为 zlib 许可；Audacious 的 libaudcore 为 BSD-2-Clause。本仓库的条款见 `LICENSE`。

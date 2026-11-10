@@ -90,6 +90,26 @@ they are missing):
 
 Each adapter's README has the full build, install, and test commands.
 
+## Keyboard shortcuts
+
+The lyrics window answers these keys while the app has focus — they are
+application-wide, so they also work while the window is **locked** (transparent and
+click-through, with the control bar hidden):
+
+| Keys | Action |
+| --- | --- |
+| `Ctrl+,` | Open the settings dialog — the way back to the controls (and to unlocking) when the window is locked |
+| `Ctrl+Up` | Shift the lyrics 0.5 s **earlier** (use when the lyrics lag behind the song) |
+| `Ctrl+Down` | Shift the lyrics 0.5 s **later** (use when the lyrics run ahead) |
+| `Ctrl+0` | Reset the lyric offset |
+
+Each offset key shows the new value in a short tooltip. The offset is added on top of
+any offset the player sends, applies to the current track only (the next track starts
+from zero) and is not saved. The settings dialog's Playback section shows the same
+value with −0.5 s / +0.5 s / Reset buttons. Showing or hiding the window from outside
+the app is the player adapter's job (its menu item or the optional global shortcut —
+see each adapter's README).
+
 ## License
 
 `lyrics-app/` is Apache-2.0 — its lyric parsing/rendering logic is ported from lx-music-desktop (Apache-2.0) with attribution. The six adapters under `plugins/` (`fooyin/`, `deadbeef/`, `rhythmbox/`, `audacious/`, `quodlibet/`, `vlc/`) are GPL-3.0-only by repo decision, which their hosts permit: Fooyin is GPL-3.0; Rhythmbox, Quod Libet and VLC are GPL-2.0-or-later (whose "or later" clause allows a GPL-3.0 plugin); DeaDBeeF's plugin API header is zlib-licensed; and Audacious' libaudcore is BSD-2-Clause. See `LICENSE` for this repository's terms.
