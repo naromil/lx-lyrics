@@ -26,10 +26,13 @@
 #include <QEnterEvent>
 #include <QGraphicsOpacityEffect>
 #include <QGroupBox>
+#include <QGuiApplication>
 #include <QImage>
 #include <QLabel>
+#include <QMouseEvent>
 #include <QPushButton>
 #include <QRadioButton>
+#include <QScreen>
 #include <QShortcut>
 #include <QSignalSpy>
 #include <QStandardPaths>
@@ -113,6 +116,42 @@ private:
   bool m_playing = false;
 };
 
+namespace {
+
+// Sends one left-button mouse event at a global position straight to a
+// widget (the window's drag path or a resize handle), bypassing child hit
+// testing; the offscreen platform has no native move/resize, so the manual
+// drag/resize fallbacks run.
+void sendLeftMouse(QWidget* target, QEvent::Type type, const QPoint& globalPos)
+{
+  const Qt::MouseButton button = type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton;
+  const Qt::MouseButtons buttons =
+    type == QEvent::MouseButtonRelease ? Qt::MouseButtons() : Qt::MouseButtons(Qt::LeftButton);
+  QMouseEvent event(type, QPointF(target->mapFromGlobal(globalPos)), QPointF(globalPos), button,
+                    buttons, Qt::NoModifier);
+  QCoreApplication::sendEvent(target, &event);
+}
+
+QRect primaryAvailableGeometry()
+{
+  const QScreen* screen = QGuiApplication::primaryScreen();
+  return screen != nullptr ? screen->availableGeometry() : QRect();
+}
+
+// The window's resize grip with the given cursor whose rect contains the
+// given window-local point (the grips are private LyricWindow children).
+QWidget* resizeHandleAt(LyricWindow& window, Qt::CursorShape shape, const QPoint& localPoint)
+{
+  const QList<QWidget*> children = window.findChildren<QWidget*>(Qt::FindDirectChildrenOnly);
+  for (QWidget* child : children) {
+    if (child->cursor().shape() == shape && child->geometry().contains(localPoint))
+      return child;
+  }
+  return nullptr;
+}
+
+} // namespace
+
 class TestLyricController : public QObject {
   Q_OBJECT
 
@@ -140,6 +179,11 @@ private slots:
   void settingsDialogAndGearFollowLanguage();
   void settingsDialogLanguageSelectorWritesLangId();
   void closeButtonRequestsClose();
+  void storedPositionRescue_data();
+  void storedPositionRescue();
+  void lockScreenClampsWindowDrag();
+  void lockScreenClampsResize();
+  void enablingLockScreenClampsWindow();
   void unlockedControlBarStaysVisible();
   void playbackRateBoundaryRejectsInvalid();
   void animateCloseFadesThenSignals();
@@ -1043,6 +1087,226 @@ void TestLyricController::closeButtonRequestsClose()
   // assert here because the quit wiring lives only in main.cpp, never in the
   // test binary.
   QTRY_VERIFY(window.fadeFactor() < 0.5);
+}
+
+void TestLyricController::storedPositionRescue_data()
+{
+  // Offsets are relative to the primary screen's available area so the rows
+  // hold on any platform screen size. "rescued" rows expect the stored
+  // position clamped into that area; the others keep it untouched.
+  QTest::addColumn<QPoint>("storedOffset");
+  QTest::addColumn<bool>("rescued");
+  QTest::newRow("on-screen kept") << QPoint(10, 20) << false;
+  QTest::newRow("partly visible kept") << QPoint(-100, -50) << false;
+  QTest::newRow("far right-bottom rescued") << QPoint(100000, 100000) << true;
+  QTest::newRow("far left-top rescued") << QPoint(-100000, -100000) << true;
+}
+
+void TestLyricController::storedPositionRescue()
+{
+  // applyWindowGeometry trusts a stored x/y while it still intersects some
+  // screen; one that drifted off every screen (monitor unplugged, resolution
+  // change) is clamped back into the primary screen's available area — even
+  // with desktopLyric.isLockScreen off — so the window is findable on start.
+  QFETCH(QPoint, storedOffset);
+  QFETCH(bool, rescued);
+
+  const QRect available = primaryAvailableGeometry();
+  if (!available.isValid())
+    QSKIP("the platform reports no primary screen");
+
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults();
+  QVERIFY(!ctx.config.isLockScreen());
+  const QSize size(300, 200);
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.width"), size.width()));
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.height"), size.height()));
+  const QPoint stored = available.topLeft() + storedOffset;
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.x"), stored.x()));
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.y"), stored.y()));
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+
+  window.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&window));
+
+  QCOMPARE(window.size(), size);
+  if (!rescued) {
+    QCOMPARE(window.pos(), stored);
+  } else {
+    const QPoint expected(
+      qBound(available.left(), stored.x(), available.x() + available.width() - size.width()),
+      qBound(available.top(), stored.y(), available.y() + available.height() - size.height()));
+    QCOMPARE(window.pos(), expected);
+    QVERIFY(available.contains(window.geometry()));
+  }
+
+  ctx.config.loadDefaults(); // Leave defaults behind for the next AppContext.
+}
+
+void TestLyricController::lockScreenClampsWindowDrag()
+{
+  // desktopLyric.isLockScreen keeps a dragged window inside the primary
+  // screen's available area, and the release persists the clamped position.
+  // With the option off, the same drag is free to leave the screen.
+  const QRect available = primaryAvailableGeometry();
+  if (!available.isValid())
+    QSKIP("the platform reports no primary screen");
+
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults();
+  const QSize size(300, 200);
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.width"), size.width()));
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.height"), size.height()));
+  const QPoint start = available.topLeft() + QPoint(40, 30);
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.x"), start.x()));
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.y"), start.y()));
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.isLockScreen"), true));
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+
+  window.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&window));
+  QCOMPARE(window.pos(), start);
+
+  const QPoint maxTopLeft(available.x() + available.width() - size.width(),
+                          available.y() + available.height() - size.height());
+  const QPoint grab = window.mapToGlobal(QPoint(150, 100));
+
+  sendLeftMouse(&window, QEvent::MouseButtonPress, grab);
+  sendLeftMouse(&window, QEvent::MouseMove, grab + QPoint(100000, 100000));
+  QCOMPARE(window.pos(), maxTopLeft);
+  sendLeftMouse(&window, QEvent::MouseMove, grab - QPoint(100000, 100000));
+  QCOMPARE(window.pos(), available.topLeft());
+  // Inside the area the drag follows the cursor exactly.
+  sendLeftMouse(&window, QEvent::MouseMove, grab + QPoint(5, 7));
+  QCOMPARE(window.pos(), start + QPoint(5, 7));
+  sendLeftMouse(&window, QEvent::MouseMove, grab + QPoint(100000, 0));
+  QCOMPARE(window.pos(), QPoint(maxTopLeft.x(), start.y()));
+  sendLeftMouse(&window, QEvent::MouseButtonRelease, grab + QPoint(100000, 0));
+
+  // The release saved the clamped position, not the cursor's.
+  QCOMPARE(ctx.config.get(QStringLiteral("desktopLyric.x")).toInt(), maxTopLeft.x());
+  QCOMPARE(ctx.config.get(QStringLiteral("desktopLyric.y")).toInt(), start.y());
+
+  // isLockScreen off: no clamp.
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.isLockScreen"), false));
+  const QPoint before = window.pos();
+  const QPoint grab2 = window.mapToGlobal(QPoint(150, 100));
+  sendLeftMouse(&window, QEvent::MouseButtonPress, grab2);
+  sendLeftMouse(&window, QEvent::MouseMove, grab2 + QPoint(500, 0));
+  QCOMPARE(window.pos(), before + QPoint(500, 0));
+  sendLeftMouse(&window, QEvent::MouseButtonRelease, grab2 + QPoint(500, 0));
+  QCOMPARE(ctx.config.get(QStringLiteral("desktopLyric.x")).toInt(), before.x() + 500);
+
+  ctx.config.loadDefaults(); // Leave defaults behind for the next AppContext.
+}
+
+void TestLyricController::lockScreenClampsResize()
+{
+  // The edge/corner grips resize through the same clamp: with
+  // desktopLyric.isLockScreen on, no edge can leave the primary screen's
+  // available area, and the release persists the clamped bounds. Locking the
+  // window hides the grips.
+  const QRect available = primaryAvailableGeometry();
+  if (!available.isValid())
+    QSKIP("the platform reports no primary screen");
+
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults();
+  QVERIFY(!ctx.config.isLock());
+  const QSize size(300, 200);
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.width"), size.width()));
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.height"), size.height()));
+  const QPoint start = available.topLeft() + QPoint(60, 50);
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.x"), start.x()));
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.y"), start.y()));
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.isLockScreen"), true));
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+
+  window.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&window));
+  QCOMPARE(window.geometry(), QRect(start, size));
+
+  // Bottom-right grip pulled far past the screen: right/bottom stop at the
+  // available area's edges, left/top stay put.
+  QWidget* bottomRight =
+    resizeHandleAt(window, Qt::SizeFDiagCursor, QPoint(size.width() - 1, size.height() - 1));
+  if (bottomRight == nullptr)
+    QFAIL("no bottom-right resize grip");
+  QVERIFY(bottomRight->isVisible());
+  const QPoint brGrab = window.mapToGlobal(QPoint(size.width() - 1, size.height() - 1));
+  sendLeftMouse(bottomRight, QEvent::MouseButtonPress, brGrab);
+  sendLeftMouse(bottomRight, QEvent::MouseMove, brGrab + QPoint(100000, 100000));
+  QCOMPARE(window.geometry().topLeft(), start);
+  QCOMPARE(window.geometry().right(), available.right());
+  QCOMPARE(window.geometry().bottom(), available.bottom());
+  sendLeftMouse(bottomRight, QEvent::MouseButtonRelease, brGrab + QPoint(100000, 100000));
+
+  const QSize grown = window.size();
+  QCOMPARE(ctx.config.get(QStringLiteral("desktopLyric.width")).toInt(), grown.width());
+  QCOMPARE(ctx.config.get(QStringLiteral("desktopLyric.height")).toInt(), grown.height());
+
+  // Top-left grip pulled far the other way: left/top stop at the area's
+  // origin, right/bottom stay put.
+  const QRect beforeTopLeft = window.geometry();
+  QWidget* topLeft = resizeHandleAt(window, Qt::SizeFDiagCursor, QPoint(0, 0));
+  if (topLeft == nullptr)
+    QFAIL("no top-left resize grip");
+  const QPoint tlGrab = window.mapToGlobal(QPoint(0, 0));
+  sendLeftMouse(topLeft, QEvent::MouseButtonPress, tlGrab);
+  sendLeftMouse(topLeft, QEvent::MouseMove, tlGrab - QPoint(100000, 100000));
+  QCOMPARE(window.geometry().topLeft(), available.topLeft());
+  QCOMPARE(window.geometry().bottomRight(), beforeTopLeft.bottomRight());
+  sendLeftMouse(topLeft, QEvent::MouseButtonRelease, tlGrab - QPoint(100000, 100000));
+  QCOMPARE(ctx.config.get(QStringLiteral("desktopLyric.x")).toInt(), available.x());
+  QCOMPARE(ctx.config.get(QStringLiteral("desktopLyric.y")).toInt(), available.y());
+
+  // Locking hides every grip, so a locked window cannot be resized.
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.isLock"), true));
+  QVERIFY(!bottomRight->isVisible());
+  QVERIFY(!topLeft->isVisible());
+
+  ctx.config.loadDefaults(); // Leave defaults behind for the next AppContext.
+}
+
+void TestLyricController::enablingLockScreenClampsWindow()
+{
+  // Turning desktopLyric.isLockScreen on pulls a window that hangs over the
+  // edge of the primary screen back inside it, and while it is on a config
+  // size larger than the available area is capped to it.
+  const QRect available = primaryAvailableGeometry();
+  if (!available.isValid())
+    QSKIP("the platform reports no primary screen");
+
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults();
+  QVERIFY(!ctx.config.isLockScreen());
+  const QSize size(300, 200);
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.width"), size.width()));
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.height"), size.height()));
+  // Partly past the right edge: still intersects the screen, so it is kept.
+  const QPoint overhang(available.x() + available.width() - 100, available.y() + 40);
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.x"), overhang.x()));
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.y"), overhang.y()));
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+
+  window.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&window));
+  QCOMPARE(window.pos(), overhang);
+
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.isLockScreen"), true));
+  QCOMPARE(window.pos(), QPoint(available.x() + available.width() - size.width(), overhang.y()));
+  QVERIFY(available.contains(window.geometry()));
+
+  // A config size wider/taller than the area is capped while it is on.
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.width"), available.width() + 500));
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.height"), available.height() + 500));
+  QCOMPARE(window.size(), available.size());
+
+  ctx.config.loadDefaults(); // Leave defaults behind for the next AppContext.
 }
 
 void TestLyricController::unlockedControlBarStaysVisible()

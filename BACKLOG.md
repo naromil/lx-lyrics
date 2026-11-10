@@ -8,7 +8,7 @@
 - [ ] Extra sidecar lookup locations (a `lyrics/` subfolder, `Artist - Title.lrc`) — changes the acquisition order that `docs/protocol.md` §5 specifies
 - [x] Document the in-window keyboard shortcuts (`Ctrl+,` settings, `Ctrl+Up`/`Ctrl+Down`/`Ctrl+0` offset nudge) in `README.md` and `README.zh-CN.md` — neither README mentions them, so the offset fix and the locked-window escape hatch are undiscoverable
 - [ ] Online lyric search/download (deferred by design in architecture.md)
-- [ ] Add controller-suite tests for `LyricWindow` geometry (`desktopLyric.isLockScreen` drag/resize clamping and the off-screen stored-position rescue in `applyWindowGeometry`) — that code has no test coverage
+- [x] Add controller-suite tests for `LyricWindow` geometry (`desktopLyric.isLockScreen` drag/resize clamping and the off-screen stored-position rescue in `applyWindowGeometry`) — that code has no test coverage
 
 ## Proposed (needs the owner's OK — move to Routine to approve)
 
