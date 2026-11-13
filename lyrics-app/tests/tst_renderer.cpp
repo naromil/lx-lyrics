@@ -34,6 +34,44 @@ QVector<RenderLine> makeLines(int count)
   return lines;
 }
 
+// One karaoke line: words of `glyphs` characters each lasting 1000 ms.
+RenderLine makeFontLine(qint64 timeMs, const QStringList& words)
+{
+  RenderLine line;
+  line.timeMs = timeMs;
+  qint64 start = 0;
+  for (const QString& word : words) {
+    line.text += QStringLiteral("<%1,1000>%2").arg(start).arg(word);
+    line.words.append(LyricWord{word, start, 1000});
+    start += 1000;
+  }
+  return line;
+}
+
+// Horizontal painted extent of the pixels matching `pred` on a white canvas.
+template <typename Pred> QPair<int, int> paintedColumns(LyricRenderer& renderer, Pred pred)
+{
+  QImage image(renderer.size(), QImage::Format_ARGB32);
+  image.fill(Qt::white);
+  {
+    QPainter painter(&image);
+    renderer.render(&painter);
+  }
+  int left = -1;
+  int right = -1;
+  for (int x = 0; x < image.width(); ++x) {
+    for (int y = 0; y < image.height(); ++y) {
+      if (pred(image.pixelColor(x, y))) {
+        if (left < 0)
+          left = x;
+        right = x;
+        break;
+      }
+    }
+  }
+  return {left, right};
+}
+
 } // namespace
 
 // Exposes the protected wheel handler so the wheel-direction tests can drive
@@ -82,6 +120,10 @@ private slots:
   void zoomStaysAnchoredToAlignment();
   void lineFlushToAlignedBorder();
   void lineBlitOpacityFollowsBodyOpacityAndColorProgress();
+  void filledGlyphsFillEachWordLinearly();
+  void fontLinesFinishOrResetAroundActiveLine();
+  void fontLineFillPaintsPlayedLeadingPart();
+  void fontWeightFontBoldsOnlyFontLines();
   void wheelDownAdvancesOffset();
   void wheelUpRetreatsOffset();
   void wheelIgnoredWhenNotInteractive();
@@ -808,6 +850,156 @@ void TestLyricRenderer::pressInCenteredPlaceholderFallsThrough()
   QVERIFY(!renderer.isDragging());
   QCOMPARE(container.pressCount, 2);
   QTest::mouseRelease(&renderer, Qt::LeftButton, Qt::NoModifier, QPoint(300, 150));
+}
+
+void TestLyricRenderer::filledGlyphsFillEachWordLinearly()
+{
+  // Reference createAnimation: each word fills linearly over its own
+  // duration from its own start; spaces are not glyphs.
+  const QVector<LyricWord> words{{QStringLiteral("ab"), 0, 1000},
+                                 {QStringLiteral(" c d"), 1000, 1000},
+                                 {QStringLiteral("e"), 2500, 0}};
+  QCOMPARE(LyricRenderer::filledGlyphs(words, -100), 0.0);
+  QCOMPARE(LyricRenderer::filledGlyphs(words, 500), 1.0);
+  QCOMPARE(LyricRenderer::filledGlyphs(words, 1000), 2.0);
+  QCOMPARE(LyricRenderer::filledGlyphs(words, 1500), 3.0);
+  QCOMPARE(LyricRenderer::filledGlyphs(words, 2200), 4.0); // gap before "e"
+  QCOMPARE(LyricRenderer::filledGlyphs(words, 2500), 5.0); // zero duration: instant
+  QCOMPARE(LyricRenderer::filledGlyphs({}, 1000), 0.0);
+}
+
+void TestLyricRenderer::fontLinesFinishOrResetAroundActiveLine()
+{
+  // index.js _handleLinePlayerOnPlay: in a karaoke lyric the lines before
+  // the active one finish (fully filled), later ones reset; the active line
+  // follows the clock and freezes while paused. A line-mode lyric resets
+  // every passed line.
+  qint64 position = 0;
+  LyricRenderer renderer;
+  renderer.resize(600, 300);
+  renderer.setPositionSource([&position] {
+    return position;
+  });
+  const QVector<RenderLine> lines{makeFontLine(0, {QStringLiteral("ab"), QStringLiteral("cd")}),
+                                  makeFontLine(3000, {QStringLiteral("ef"), QStringLiteral("gh")}),
+                                  makeFontLine(6000, {QStringLiteral("ij")})};
+  renderer.setLines(lines, true);
+  renderer.setPlaying(true);
+
+  position = 3500; // halfway through "ef"
+  renderer.setActiveLine(1);
+  QCOMPARE(renderer.filledGlyphsForLine(0), 4.0);
+  QCOMPARE(renderer.filledGlyphsForLine(1), 1.0);
+  QCOMPARE(renderer.filledGlyphsForLine(2), 0.0);
+
+  // Pause freezes the fill even though the lyric clock keeps running.
+  renderer.setPlaying(false);
+  position = 4500;
+  QCOMPARE(renderer.filledGlyphsForLine(1), 1.0);
+  renderer.setPlaying(true);
+  QCOMPARE(renderer.filledGlyphsForLine(1), 3.0);
+
+  // Seeking back resets the lines after the new active line.
+  position = 500;
+  renderer.setActiveLine(0);
+  QCOMPARE(renderer.filledGlyphsForLine(0), 1.0);
+  QCOMPARE(renderer.filledGlyphsForLine(1), 0.0);
+
+  // A line-mode lyric (karaoke lines inside it still fill while active)
+  // resets the passed lines instead of finishing them.
+  renderer.setLines(lines, false);
+  position = 3500;
+  renderer.setActiveLine(1);
+  QCOMPARE(renderer.filledGlyphsForLine(0), 0.0);
+  QCOMPARE(renderer.filledGlyphsForLine(1), 1.0);
+
+  // Line-mode lines never report a fill.
+  renderer.setLines(makeLines(2), true);
+  renderer.setActiveLine(0);
+  QCOMPARE(renderer.filledGlyphsForLine(0), 0.0);
+}
+
+void TestLyricRenderer::fontLineFillPaintsPlayedLeadingPart()
+{
+  // Half the glyphs filled: the played color covers the leading half of the
+  // line's painted extent and nothing beyond it, in either alignment.
+  qint64 position = 1000;
+  LyricRenderer renderer;
+  renderer.resize(600, 200);
+  renderer.setFontSize(48);
+  renderer.setZoomActiveLrc(false);
+  renderer.setUnplayColor(QColor(0, 0, 255));
+  renderer.setPlayedColor(QColor(0, 200, 0));
+  renderer.setShadowColor(QColor(0, 0, 0, 0));
+  renderer.setPositionSource([&position] {
+    return position;
+  });
+  renderer.setLines({makeFontLine(0, {QStringLiteral("HH"), QStringLiteral("HH")})}, true);
+  renderer.setPlaying(true);
+  renderer.setActiveLine(0);
+  renderer.setPlaying(false); // Freeze at 1000 ms: 2 of 4 glyphs filled.
+  QCOMPARE(renderer.filledGlyphsForLine(0), 2.0);
+
+  const auto isInk = [](const QColor& c) {
+    return c.red() < 128;
+  };
+  const auto isPlayed = [](const QColor& c) {
+    return c.green() > 100 && c.green() > c.blue() + 60;
+  };
+  for (const Qt::Alignment align : {Qt::AlignHCenter, Qt::AlignLeft, Qt::AlignRight}) {
+    renderer.setAlign(align);
+    const QPair<int, int> ink = paintedColumns(renderer, isInk);
+    const QPair<int, int> played = paintedColumns(renderer, isPlayed);
+    QVERIFY2(ink.first >= 0 && played.first >= 0, "nothing painted");
+    const int middle = (ink.first + ink.second) / 2;
+    QVERIFY2(qAbs(played.first - ink.first) <= 3,
+             qPrintable(
+               QStringLiteral("played starts at %1, ink at %2").arg(played.first).arg(ink.first)));
+    QVERIFY2(
+      qAbs(played.second - middle) <= 8,
+      qPrintable(
+        QStringLiteral("played ends at %1, middle of ink is %2").arg(played.second).arg(middle)));
+  }
+
+  // Finished: the whole line is played.
+  position = 5000;
+  renderer.setPlaying(true);
+  renderer.setPlaying(false);
+  QCOMPARE(renderer.filledGlyphsForLine(0), 4.0);
+  const QPair<int, int> ink = paintedColumns(renderer, isInk);
+  const QPair<int, int> played = paintedColumns(renderer, isPlayed);
+  QVERIFY(qAbs(played.second - ink.second) <= 3);
+}
+
+void TestLyricRenderer::fontWeightFontBoldsOnlyFontLines()
+{
+  // Reference .fontWeightFont .font-mode > .line { font-weight: bold }: the
+  // setting widens karaoke lines and leaves line-mode lines alone.
+  LyricRenderer renderer;
+  renderer.resize(800, 200);
+  renderer.setFontSize(40);
+  renderer.setZoomActiveLrc(false);
+  renderer.setFontWeightLine(false);
+  const auto isInk = [](const QColor& c) {
+    return c.red() < 200;
+  };
+  renderer.setUnplayColor(QColor(0, 0, 0));
+  const auto inkWidth = [&]() {
+    const QPair<int, int> ink = paintedColumns(renderer, isInk);
+    return ink.second - ink.first;
+  };
+
+  renderer.setLines({makeFontLine(0, {QStringLiteral("Bold"), QStringLiteral("words")})}, true);
+  renderer.setFontWeightFont(false);
+  const int regular = inkWidth();
+  renderer.setFontWeightFont(true);
+  QVERIFY2(inkWidth() > regular, "isFontWeightFont did not bold a karaoke line");
+
+  renderer.setLines({RenderLine{QStringLiteral("Boldwords"), {}}}, true);
+  renderer.setFontWeightFont(false);
+  const int lineRegular = inkWidth();
+  renderer.setFontWeightFont(true);
+  QCOMPARE(inkWidth(), lineRegular);
 }
 
 QTEST_MAIN(TestLyricRenderer)

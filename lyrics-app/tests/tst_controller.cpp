@@ -160,6 +160,7 @@ private slots:
   void unsyncedLyricShowsStaticTextPlaceholder();
   void emptyLyricShowsPlaceholder();
   void validLyricShowsParsedLines();
+  void karaokeLyricFillsWordByWord();
   void setTrackAppliesPlaybackSnapshot();
   void setLyricChangeWhilePlayingResumes();
   void identicalLyricRepushIsNoOp();
@@ -315,6 +316,44 @@ void TestLyricController::validLyricShowsParsedLines()
   auto* renderer = window.contentContainer()->findChild<LyricRenderer*>();
   QVERIFY(renderer != nullptr);
   QCOMPARE(renderer->lineCount(), 2);
+}
+
+void TestLyricController::karaokeLyricFillsWordByWord()
+{
+  // An lxlrc (karaoke) lyric reaches the renderer with its parsed words and
+  // line times, and the fill follows the player's clock: the line before the
+  // active one is finished, the active one is mid-fill, the next untouched.
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults();
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  TrackSnapshot snapshot;
+  snapshot.name = QStringLiteral("Karaoke");
+  snapshot.lrc = QStringLiteral("[00:00.00]ab cd\n[00:02.00]ef gh\n[00:30.00]ij");
+  snapshot.lxlrc = QStringLiteral("[00:00.00]<0,1000>ab<1000,1000> cd\n"
+                                  "[00:02.00]<0,1000>ef<1000,1000> gh\n"
+                                  "[00:30.00]<0,1000>ij");
+  snapshot.isPlay = true;
+  snapshot.playedTimeMs = 3000; // halfway through " gh" of line 1
+  controller.setTrack(snapshot);
+
+  auto* renderer = window.contentContainer()->findChild<LyricRenderer*>();
+  QVERIFY(renderer != nullptr);
+  QCOMPARE(renderer->lineCount(), 3);
+  QCOMPARE(controller.player()->currentLine(), 1);
+  QCOMPARE(renderer->activeLine(), 1);
+  QCOMPARE(renderer->filledGlyphsForLine(0), 4.0);
+  const double active = renderer->filledGlyphsForLine(1);
+  QVERIFY2(active >= 2.0 && active < 4.0, qPrintable(QString::number(active)));
+  QCOMPARE(renderer->filledGlyphsForLine(2), 0.0);
+
+  // Pausing freezes the fill while the lyric clock keeps running.
+  controller.pause();
+  const double frozen = renderer->filledGlyphsForLine(1);
+  QTest::qWait(200);
+  QCOMPARE(renderer->filledGlyphsForLine(1), frozen);
 }
 
 void TestLyricController::setTrackAppliesPlaybackSnapshot()

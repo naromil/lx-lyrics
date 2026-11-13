@@ -7,6 +7,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 
 #include <QColor>
 #include <QElapsedTimer>
@@ -18,6 +19,8 @@
 #include <QStringList>
 #include <QVector>
 #include <QWidget>
+
+#include "engine/wordparser.h"
 
 class QFontMetrics;
 class QMouseEvent;
@@ -34,6 +37,20 @@ struct RenderLine {
   QString text;          // main line text (may contain <start,dur> karaoke tags)
   QStringList extended;  // extended lines (translation/romaji)
   bool isStatic = false; // broken-timestamp text: rendered, but never active, never colored
+  // Karaoke ("font-mode") words of the main line, empty for a line-mode line
+  // (WordParser line mode). A font-mode line fills word by word while active
+  // (font-player.js backgroundSize animation) instead of switching color.
+  QVector<LyricWord> words;
+  qint64 timeMs = 0; // line start on the lyric clock; word times are relative to it
+};
+
+// Karaoke split of one text run: the leading `fraction` of the run (its
+// advance horizontally, its glyph box top-down vertically) is painted in
+// `played` over the base fill. fraction < 0 = no split. Namespace scope so it
+// can be a default argument inside LyricRenderer.
+struct LyricFillSplit {
+  qreal fraction = -1.0;
+  QColor played;
 };
 
 // Paints the lyric list with QPainter, mirroring the reference LyricHorizontal
@@ -41,8 +58,9 @@ struct RenderLine {
 // (reference .lyricSpace), so the active line can always center in the
 // viewport — including the first and last lines (scroll range
 // [0, 0.6 * viewport + block]). The active line renders in the played color
-// while inactive lines stay in the unplay color (line-by-line highlight per
-// the original lx-music design); both the color and the active-line zoom
+// while inactive lines stay in the unplay color (line-mode highlight), except
+// karaoke lines (RenderLine::words), which fill word by word from the
+// position source while active (font-player.js); both the color and the active-line zoom
 // transition over 600 ms with per-line progress, so an outgoing line decays
 // while the incoming line grows (reference font-size/color .6s ease).
 //
@@ -58,7 +76,10 @@ class LyricRenderer : public QWidget {
 public:
   explicit LyricRenderer(QWidget* parent = nullptr);
 
-  void setLines(const QVector<RenderLine>& lines);
+  // fontLyric: the lyric as a whole is karaoke (index.js isLineMode false):
+  // font-mode lines left behind by the active line stay fully filled
+  // (FontPlayer.finish) instead of resetting (FontPlayer.reset).
+  void setLines(const QVector<RenderLine>& lines, bool fontLyric = false);
   void setActiveLine(int index); // -1 = none active
   // Static no-lyrics placeholder mode: the whole block is centered in the
   // viewport (no 80% leading spacer, no scrolling) instead of sitting below
@@ -70,7 +91,9 @@ public:
   // the horizontal line-mode halo: a dense stack of em offsets drawn in the
   // 51%-alpha font-mode shadow shade. Stroke4 is the vertical line-mode
   // halo: a mix of em and px offsets drawn in the full shadow color.
-  enum class StrokeStyle : std::uint8_t { Stroke3, Stroke4 };
+  // StrokeFont is the reference .stroke(1px) mixin on font-mode main lines:
+  // 16 px offsets in the 51%-alpha shade, both orientations.
+  enum class StrokeStyle : std::uint8_t { Stroke3, Stroke4, StrokeFont };
 
   // --- styling (all setters just store; repaint on change) ---
   void setVertical(bool on);                 // false=horizontal (default)
@@ -88,10 +111,8 @@ public:
   // colorProgressForLine). Paint-time helper, also unit-tested.
   double lineBlitOpacity(int line) const;
   void setEllipsis(bool on);
-  void setZoomActiveLrc(bool on); // active line font 1.2x, its extended 0.94x
-  void setFontWeightFont(
-    bool
-      on); // write-only: no longer affects rendering (line-by-line mode); retained for API compatibility
+  void setZoomActiveLrc(bool on);       // active line font 1.2x, its extended 0.94x
+  void setFontWeightFont(bool on);      // bold main line of font-mode (karaoke) lines
   void setFontWeightLine(bool on);      // bold main line
   void setFontWeightExtended(bool on);  // bold extended lines
   void setUnplayColor(const QColor& c); // default white
@@ -103,8 +124,19 @@ public:
   void setShadowColor(const QColor& c);
   void setShadowFontModeColor(
     const QColor&
-      c); // write-only: no longer affects rendering (line-by-line mode); retained for API compatibility
+      c); // write-only: the font-mode stroke derives its shade from setShadowColor (reference RGB_Alpha_Shade)
 
+  // Lyric-clock position source for the per-word fill (the controller hands
+  // in LyricPlayer::currentPositionMs). It is sampled every frame while
+  // playing; setPlaying(false) freezes the fill at the position it read last.
+  void setPositionSource(std::function<qint64()> source);
+  // Filled glyphs (non-space characters, fractional) of a font-mode line at
+  // lineRelativeMs: each word fills linearly over its duration (reference
+  // createAnimation, easing 'linear'). Pure; unit-tested.
+  static double filledGlyphs(const QVector<LyricWord>& words, qint64 lineRelativeMs);
+  // Test accessor: the filled glyph count the paint path uses for a line
+  // (0 for line-mode lines; the full count for played font-mode lines).
+  double filledGlyphsForLine(int line) const;
   // --- scrolling & interaction (port of useLyric.js) ---
   void setScrollAlign(bool top); // false=center (default), true=pin active line to the leading edge
   void setDelayScroll(
@@ -193,9 +225,10 @@ protected:
   bool isDragging() const { return m_dragging; }
 
 private:
+  using FillSplit = LyricFillSplit;
   void drawTextWithStroke(QPainter& p, const QString& text, const QRectF& rect, const QFont& font,
                           const QColor& fill, const QColor& stroke, StrokeStyle style,
-                          qreal scale = 1.0);
+                          qreal scale = 1.0, const FillSplit& split = {});
 
   // Per-group geometry for vertical (column) mode, shared by the layout pass
   // and the drawing pass so column widths stay consistent. Each text is held
@@ -215,9 +248,11 @@ private:
   void drawHorizontalGroup(QPainter& p, const RenderLine& line, int lineIndex, const QRectF& rect);
   void drawVerticalGroup(QPainter& p, const VerticalGroupMetrics& metrics, int lineIndex,
                          const QRectF& rect);
+  // filled >= 0 splits the column's glyphs per character (font-mode fill).
   void drawVerticalText(QPainter& p, const QString& text, const QRectF& columnRect,
                         const QFont& font, const QColor& fill, const QColor& stroke,
-                        StrokeStyle style, int letterSpacing, qreal scale = 1.0);
+                        StrokeStyle style, int letterSpacing, qreal scale = 1.0,
+                        double filled = -1.0);
   // zoomOverrideLine/zoomOverride measure ONE line at a fixed zoom progress
   // (default -1.0 = live progress), used by the isComputeHeight scroll-target
   // compensation to compare the outgoing line's zoomed and base extents.
@@ -317,6 +352,7 @@ private:
   qreal m_bodyOpacity = 1.0; // reference body { opacity: .8 } dimming, per line
   bool m_ellipsis = false;
   bool m_zoomActiveLrc = true;
+  bool m_fontWeightFont = true;
   bool m_fontWeightLine = true;
   bool m_fontWeightExtended = true;
   QColor m_unplayColor = QColor(Qt::white);
@@ -403,6 +439,26 @@ private:
   // a resizeEvent (e.g. moving between per-screen-DPR displays) invalidates
   // on the next paint, so blits never upscale a stale 1x raster.
   qreal m_cacheDpr = 1.0;
+
+  // --- font-mode (karaoke) fill ---
+  bool isFontLine(int lineIndex) const;
+  // Lyric-clock position used by the fill: live while playing, frozen on pause.
+  qint64 fillPositionMs() const;
+  // Re-derive which font-mode lines are "played" (reference .font-mode.played)
+  // and start their extended-line color transitions; marks changed lines dirty.
+  void syncPlayedLines();
+  // 16 ms tick while the active font-mode line is filling.
+  void stepFill();
+  void updateFillTimer();
+  bool m_fontLyric = false;
+  std::function<qint64()> m_positionSource;
+  qint64 m_pausedPositionMs = 0;
+  QTimer* m_fillTimer = nullptr;
+  QVector<bool> m_linePlayed; // played state per line (font-mode lines only)
+  // Extended-line played color progress of font-mode lines (reference
+  // .font-mode .extended .font-lrc { transition: color @transition-slow }).
+  QVector<double> m_linePlayedProgress;
+  QVector<LineTransition> m_linePlayedTransition;
 
   void startLineTransition(QVector<LineTransition>& transitions, const QVector<double>& progress,
                            int line, double to);

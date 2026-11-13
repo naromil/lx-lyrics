@@ -26,7 +26,7 @@ Consequences:
 - Owns **acquisition**: for the file at `set_info.path`, the same-directory `<dir>/<completeBaseName>.lrc` sidecar (falling back to a Kugou `<dir>/<completeBaseName>.krc` — `krc1` header + 16-byte XOR + zlib inflate — when the `.lrc` is absent, empty or undecodable) and the embedded lyrics tag (TagLib) — joined when both exist — with encoding conversion (UTF-8 BOM / UTF-16 BOM / GB18030 / BIG5 via ICU). Every sidecar is capped at 10 MiB; a larger one is skipped with a warning.
 - Owns **all parsing**: LRC, translation (`tlrc`), romaji (`rlrc`), word-level (`lxlrc`), and the `[awlrc:…]` container.
 - Owns **all selection logic**: lxlrc-vs-lrc choice, extended-lyrics construction (translation/romaji swap), offset handling, and active-line recomputation from `played_time`.
-- Owns **all rendering**: synchronized scrolling, line-by-line fill of the active line (word tags are stripped — lx-music's per-word karaoke animation is not reproduced), colors/fonts/opacity, vertical and horizontal layouts, spectrum visualization, and window management (frameless, always-on-top, lock, hover-hide, etc.).
+- Owns **all rendering**: synchronized scrolling, active-line highlight (plain lines switch color as a whole; karaoke `lxlrc` lines fill word by word from the lyric clock, as lx-music's font-player does), colors/fonts/opacity, vertical and horizontal layouts, spectrum visualization, and window management (frameless, always-on-top, lock, hover-hide, etc.).
 - Owns the full settings surface ported from `desktopLyric.*`, persisted in its own config store.
 - Run modes: `--player-feed` (host-driven), `--demo` (self-fed fake track + synthetic spectrum), or an inert window when no flag is given.
 

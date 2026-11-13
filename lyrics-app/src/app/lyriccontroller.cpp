@@ -13,9 +13,9 @@
 //   exactly like LyricSelector.
 // - core/mainWindowChannel.ts maps set_info/set_lyric/set_status/set_offset/
 //   set_playbackRate/set_play/set_pause/set_stop onto those entry points.
-// - index.js's onPlay/onSetLyric drive the view's active line; here the
-//   renderer paints line-by-line (active line in the played color, inactive
-//   lines in the unplay color) with no per-word karaoke fill.
+// - index.js's onPlay/onSetLyric drive the view's active line; line-mode
+//   lines switch to the played color as a whole, while karaoke (font-mode)
+//   lines fill word by word from the lyric clock (font-player.js).
 
 #include "app/lyriccontroller.h"
 
@@ -30,6 +30,7 @@
 #include "engine/checkedarith.h"
 #include "engine/lyricplayer.h"
 #include "engine/lyricselector.h"
+#include "engine/wordparser.h"
 #include "host/feedtypes.h"
 #include "renderer/lyricrenderer.h"
 #include "window/lyricwindow.h"
@@ -119,6 +120,11 @@ LyricController::LyricController(AppContext& ctx, LyricWindow& window, QObject* 
   // moves the active line.
   connect(m_player, &LyricPlayer::lyricsChanged, this, &LyricController::pushLyricsToRenderer);
   connect(m_player, &LyricPlayer::lineChanged, this, &LyricController::onLineChanged);
+  // The per-word karaoke fill samples the same offset-inclusive lyric clock
+  // that selects the active line.
+  m_renderer->setPositionSource([player = m_player] {
+    return player->currentPositionMs();
+  });
 
   connect(&m_ctx.config, &DesktopLyricConfig::settingChanged, this,
           &LyricController::onSettingChanged);
@@ -398,13 +404,23 @@ void LyricController::showNoLyricsPlaceholder()
 
 void LyricController::pushLyricsToRenderer()
 {
-  // Map the player's parsed lines onto the renderer's line groups. The
-  // renderer strips any karaoke word tags and paints line-by-line.
+  // Map the player's parsed lines onto the renderer's line groups. Each line
+  // is parsed into karaoke words like FontPlayer._parseLyric: a line whose
+  // every segment carries a <start,duration> tag fills word by word, any
+  // other line stays line mode (no words). Static lines never fill.
   QVector<RenderLine> lines;
   const QVector<LrcLine>& playerLines = m_player->lines();
   lines.reserve(playerLines.size());
-  for (const LrcLine& line : playerLines)
-    lines.append({line.text, line.extendedLyrics, line.isStatic});
+  for (const LrcLine& line : playerLines) {
+    RenderLine renderLine{line.text, line.extendedLyrics, line.isStatic};
+    renderLine.timeMs = line.timeMs;
+    if (!line.isStatic) {
+      const WordParser::Result parsed = WordParser::parse(line.text);
+      if (!parsed.isLineMode)
+        renderLine.words = parsed.words;
+    }
+    lines.append(renderLine);
+  }
 
   // A zero-line push (a lyric cleared via stop(), or a genuinely empty
   // parse) must never reach the renderer as a blank pane — the placeholder
@@ -435,7 +451,7 @@ void LyricController::pushLyricsToRenderer()
   }
 
   m_renderer->setCenteredBlock(false); // Real lyrics: back to the scroll layout.
-  m_renderer->setLines(lines);
+  m_renderer->setLines(lines, !m_player->isLineMode());
   // currentLine() returns -1 while the player parks on a static lead line,
   // so mixed lyrics never activate a static line pre-play.
   m_renderer->setActiveLine(m_player->currentLine());

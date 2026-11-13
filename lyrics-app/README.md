@@ -12,9 +12,10 @@ app owns **all** lyric acquisition, parsing, line selection, and rendering.
 
 ## Features
 
-- **Line-by-line synchronized lyrics** with active-line highlight. Word-level karaoke fill is
-  intentionally **not** rendered — `<start,duration>` word tags only set line mode and are
-  stripped at paint time, where lx-music animates each word individually.
+- **Synchronized lyrics** with active-line highlight. Plain lines switch to the played color as
+  a whole; karaoke (`lxlrc`, `<start,duration>` word tags) lines fill word by word from the
+  lyric clock like lx-music, keep their played color once passed, and follow
+  `isFontWeightFont` for bold.
 - **Sidecar acquisition**: `<dir>/<completeBaseName>.lrc` first, then a Kugou
   `<dir>/<completeBaseName>.krc` when the `.lrc` is absent, empty or undecodable (`krc1` header,
   zlib stream XORed with the reference 16-byte key, timestamps rewritten to `[mm:ss.mmm]` so
