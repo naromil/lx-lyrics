@@ -27,10 +27,10 @@
 
 namespace {
 
-// Fake track for --demo: a multi-line lyric that displays line-by-line (active
-// line = played color, inactive = unplay). Most lines are plain; one main line
-// and one extended (tlrc) line keep karaoke word tags to prove the renderer's
-// stripWordTags runs on both the main- and extended-line paths. It flows
+// Fake track for --demo: a multi-line lyric (active line = played color,
+// inactive = unplay). Most lines are plain; one main line carries karaoke word
+// tags, so it fills word by word while active, and one extended (tlrc) line
+// keeps tags to prove the renderer strips them there. It flows
 // through the SAME pipeline as a host set_info message
 // (LyricController::setTrack -> LyricPlayer -> LyricRenderer), so the demo
 // exercises the full render path.

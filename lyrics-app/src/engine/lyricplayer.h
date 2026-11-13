@@ -64,6 +64,9 @@ public:
   // Test accessor: the active playback rate (1.0 until a valid rate is set;
   // invalid setPlaybackRate calls leave it unchanged).
   double playbackRate() const { return m_rate; }
+  // Lyric-wide line mode (index.js isLineMode): the first timed line carries
+  // no <start,duration> word tags. False for a karaoke lyric.
+  bool isLineMode() const { return m_lineMode; }
   // Raw live re-anchor support (setOffset/setPlaybackRate/setVertical and
   // the controller's selector re-selection): the clock anchors the raw
   // caller position independently of the offset-inclusive position that

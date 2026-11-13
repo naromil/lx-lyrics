@@ -17,6 +17,7 @@
 #include <QTimer>
 #include <QWheelEvent>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -83,8 +84,8 @@ const QSize kSizeHint(400, 120);
 // group rect.
 constexpr qreal kCacheHaloPadPx = 8.0;
 
-// Word-level karaoke tags are stripped; the display fills whole lines
-// (lx-music animates each word). Removes every <digits,digits> sequence (JS
+// Word-level karaoke tags are stripped from the painted text; karaoke lines
+// fill from RenderLine::words instead. Removes every <digits,digits> sequence (JS
 // timeRxpAll: /<(\d+),(\d+)>/g); extended lines arrive pre-tagged too. The
 // pattern lives in a function-local static: a namespace-scope
 // QRegularExpression could throw during static init
@@ -177,6 +178,56 @@ constexpr std::array<StrokeOffset, 17> kStroke4Offsets = {{
   {1, false, 0, false},      // 1px 0px
   {1, false, 0, false},      // 1px 0px
 }};
+
+// Reference .stroke(1px, --color-lyric-shadow-font-mode) (layout.less
+// .stroke mixin, i/j loops over {1px, 0}): the font-mode main-line halo, 16 px
+// offsets (four of them the glyph's own position) drawn in the 51%-alpha
+// shade in both orientations.
+constexpr std::array<StrokeOffset, 16> kStrokeFontOffsets = {{
+  {1, false, 1, false},
+  {1, false, -1, false},
+  {-1, false, -1, false},
+  {-1, false, 1, false},
+  {1, false, 0, false},
+  {1, false, 0, false},
+  {-1, false, 0, false},
+  {-1, false, 0, false},
+  {0, false, 1, false},
+  {0, false, -1, false},
+  {0, false, -1, false},
+  {0, false, 1, false},
+  {0, false, 0, false},
+  {0, false, 0, false},
+  {0, false, 0, false},
+  {0, false, 0, false},
+}};
+
+// Font-mode fill tick (the reference runs one Web Animation per word).
+constexpr int kFillTickMs = 16;
+
+int nonSpaceCount(const QString& text)
+{
+  return int(std::count_if(text.cbegin(), text.cend(), [](QChar ch) {
+    return !ch.isSpace();
+  }));
+}
+
+// Horizontal advance of a row's first `filled` non-space glyphs (fractional:
+// the partial glyph contributes its share of its own advance).
+qreal filledAdvance(const QString& row, const QFontMetrics& fm, double filled)
+{
+  int seen = 0;
+  for (int i = 0; i < row.size(); ++i) {
+    if (row.at(i).isSpace())
+      continue;
+    if (seen + 1 > filled) {
+      const double part = filled - seen;
+      return fm.horizontalAdvance(row.left(i)) + part * fm.horizontalAdvance(row.at(i));
+    }
+    ++seen;
+  }
+  return fm.horizontalAdvance(row);
+}
 
 // Horizontal gap formulas from the reference --line-extended-gap / --line-gap.
 qreal horizontalExtendedGap(int lineGap)
@@ -431,6 +482,13 @@ LyricRenderer::LyricRenderer(QWidget* parent)
     stepTransitions();
   });
   m_transitionClock.start();
+
+  // Font-mode fill: repaint the active karaoke line every 16 ms while it fills.
+  m_fillTimer = new QTimer(this);
+  m_fillTimer->setInterval(kFillTickMs);
+  connect(m_fillTimer, &QTimer::timeout, this, [this] {
+    stepFill();
+  });
 }
 
 QSize LyricRenderer::sizeHint() const
@@ -438,9 +496,13 @@ QSize LyricRenderer::sizeHint() const
   return kSizeHint;
 }
 
-void LyricRenderer::setLines(const QVector<RenderLine>& lines)
+void LyricRenderer::setLines(const QVector<RenderLine>& lines, bool fontLyric)
 {
   m_lines = lines;
+  m_fontLyric = fontLyric;
+  m_linePlayed.fill(false, m_lines.size());
+  m_linePlayedProgress.fill(0.0, m_lines.size());
+  m_linePlayedTransition.fill(LineTransition{}, m_lines.size());
   // Rebuild the per-line color/zoom progress with the lines: everything
   // starts unplayed and unzoomed (a lyric change does not animate).
   // Transitions are dropped (fresh lyric, fresh state); m_prevActiveLine
@@ -466,6 +528,7 @@ void LyricRenderer::setLines(const QVector<RenderLine>& lines)
   // scroll when the old active line was also 0).
   m_activeLine = -1;
   invalidateLineCaches(); // Fresh content: every cached raster is stale.
+  updateFillTimer();
   update();
 }
 
@@ -501,6 +564,12 @@ void LyricRenderer::setActiveLine(int index)
   animateLineColors(clamped);
   startZoomTransition(clamped);
   m_activeLine = clamped;
+  // Font-mode lines: the new active line starts filling, lines it passed
+  // finish (font lyric) or reset, and the old active line re-rasterizes.
+  if (oldLine >= 0 && oldLine < m_lineCache.size())
+    m_lineCache[oldLine].dirty = true;
+  syncPlayedLines();
+  updateFillTimer();
   update();
 
   // Both transitions are set up before the scroll math so the auto-scroll
@@ -643,10 +712,12 @@ void LyricRenderer::setZoomActiveLrc(bool on)
   update();
 }
 
-void LyricRenderer::setFontWeightFont(bool /*on*/)
+void LyricRenderer::setFontWeightFont(bool on)
 {
-  // No-op: write-only, the value no longer affects rendering (line-by-line
-  // mode); retained for API compatibility with the host config sync.
+  // Reference .fontWeightFont .font-mode > .line { font-weight: bold }.
+  m_fontWeightFont = on;
+  invalidateLineCaches();
+  update();
 }
 
 void LyricRenderer::setFontWeightLine(bool on)
@@ -686,9 +757,9 @@ void LyricRenderer::setShadowColor(const QColor& c)
 
 void LyricRenderer::setShadowFontModeColor(const QColor& /*color*/)
 {
-  // No-op: write-only, the value no longer affects rendering (line-by-line
-  // mode; the stroke always uses m_shadowColor); retained for API
-  // compatibility with the host config sync.
+  // No-op: write-only. The font-mode stroke uses the 51%-alpha shade of
+  // m_shadowColor, which is how the reference derives
+  // --color-lyric-shadow-font-mode (useTheme.ts RGB_Alpha_Shade(0.49, ...)).
 }
 
 void LyricRenderer::setScrollAlign(bool top)
@@ -738,7 +809,101 @@ void LyricRenderer::setInteractive(bool on)
 
 void LyricRenderer::setPlaying(bool on)
 {
+  // Pausing freezes the fill where it is: the lyric clock itself keeps
+  // running, so the position is captured now and held until play resumes.
+  if (m_playing && !on && m_positionSource)
+    m_pausedPositionMs = m_positionSource();
   m_playing = on;
+  if (m_activeLine >= 0 && m_activeLine < m_lineCache.size())
+    m_lineCache[m_activeLine].dirty = true;
+  syncPlayedLines();
+  updateFillTimer();
+  update();
+}
+
+void LyricRenderer::setPositionSource(std::function<qint64()> source)
+{
+  m_positionSource = std::move(source);
+  updateFillTimer();
+}
+
+double LyricRenderer::filledGlyphs(const QVector<LyricWord>& words, qint64 lineRelativeMs)
+{
+  double filled = 0.0;
+  for (const LyricWord& word : words) {
+    const int glyphs = nonSpaceCount(word.text);
+    if (lineRelativeMs < word.startMs)
+      break; // Words are in time order; nothing later has started.
+    const double fraction =
+      word.durationMs <= 0
+        ? 1.0
+        : qBound(0.0, double(lineRelativeMs - word.startMs) / double(word.durationMs), 1.0);
+    filled += glyphs * fraction;
+  }
+  return filled;
+}
+
+bool LyricRenderer::isFontLine(int lineIndex) const
+{
+  return lineIndex >= 0 && lineIndex < m_lines.size() && !m_lines.at(lineIndex).words.isEmpty();
+}
+
+qint64 LyricRenderer::fillPositionMs() const
+{
+  return (m_playing && m_positionSource) ? m_positionSource() : m_pausedPositionMs;
+}
+
+double LyricRenderer::filledGlyphsForLine(int line) const
+{
+  if (!isFontLine(line))
+    return 0.0;
+  const RenderLine& l = m_lines.at(line);
+  if (line != m_activeLine)
+    return m_linePlayed.value(line) ? nonSpaceCount(stripWordTags(l.text)) : 0.0;
+  return filledGlyphs(l.words, fillPositionMs() - l.timeMs);
+}
+
+void LyricRenderer::syncPlayedLines()
+{
+  // Reference index.js _handleLinePlayerOnPlay + FontPlayer: in a karaoke
+  // lyric the lines before the active one are finished ('played'), lines
+  // after it are reset; in a line-mode lyric every passed line resets. The
+  // active line turns 'played' once its last word has filled.
+  for (int i = 0; i < m_lines.size(); ++i) {
+    bool played = false;
+    if (isFontLine(i)) {
+      if (i == m_activeLine) {
+        const LyricWord& last = m_lines.at(i).words.constLast();
+        played = fillPositionMs() - m_lines.at(i).timeMs >= last.startMs + last.durationMs;
+      } else {
+        played = m_fontLyric && m_activeLine >= 0 && i < m_activeLine;
+      }
+    }
+    if (played == m_linePlayed.at(i))
+      continue;
+    m_linePlayed[i] = played;
+    m_lineCache[i].dirty = true;
+    startLineTransition(m_linePlayedTransition, m_linePlayedProgress, i, played ? 1.0 : 0.0);
+  }
+}
+
+void LyricRenderer::stepFill()
+{
+  if (m_activeLine >= 0 && m_activeLine < m_lineCache.size())
+    m_lineCache[m_activeLine].dirty = true;
+  syncPlayedLines();
+  updateFillTimer();
+  update();
+}
+
+void LyricRenderer::updateFillTimer()
+{
+  const bool filling =
+    m_playing && m_positionSource && isFontLine(m_activeLine) && !m_linePlayed.value(m_activeLine);
+  if (filling && !m_fillTimer->isActive())
+    m_fillTimer->start();
+  else if (!filling)
+    m_fillTimer->stop();
 }
 
 void LyricRenderer::resetScroll()
@@ -849,6 +1014,7 @@ void LyricRenderer::stepTransitions()
   };
   step(m_lineColorTransition, m_lineColorProgress);
   step(m_lineZoomTransition, m_lineZoomProgress);
+  step(m_linePlayedTransition, m_linePlayedProgress);
   if (!anyActive)
     m_transitionTimer->stop();
   update();
@@ -958,7 +1124,7 @@ qreal LyricRenderer::extendedZoomFactor(int lineIndex, double zoomOverride) cons
   return (kExtendedScale + (kActiveExtendedZoom - kExtendedScale) * progress) / kExtendedScale;
 }
 
-QFont LyricRenderer::makeMainFont(int /*lineIndex*/, double /*zoomOverride*/) const
+QFont LyricRenderer::makeMainFont(int lineIndex, double /*zoomOverride*/) const
 {
   QFont font;
   if (!m_fontFamily.isEmpty())
@@ -969,7 +1135,8 @@ QFont LyricRenderer::makeMainFont(int /*lineIndex*/, double /*zoomOverride*/) co
   // so the old qRound(m_fontSize * zoom) font stepped in ~4 discrete jumps
   // over the 600 ms transition — the stiffness this transform replaces.
   font.setPixelSize(m_fontSize);
-  font.setBold(m_fontWeightLine); // Every line renders line-mode style.
+  // Font-mode lines follow isFontWeightFont, line-mode lines isFontWeightLine.
+  font.setBold(isFontLine(lineIndex) ? m_fontWeightFont : m_fontWeightLine);
   return font;
 }
 
@@ -1281,7 +1448,9 @@ bool LyricRenderer::isLineTransitioning(int lineIndex) const
   // settled progress (exactly 0.0 or 1.0) lives in the cache as-is.
   const double zoom = m_lineZoomProgress.at(lineIndex);
   const double color = m_lineColorProgress.at(lineIndex);
-  return (zoom > 0.0 && zoom < 1.0) || (color > 0.0 && color < 1.0);
+  const double played = m_linePlayedProgress.value(lineIndex);
+  return (zoom > 0.0 && zoom < 1.0) || (color > 0.0 && color < 1.0) ||
+         (played > 0.0 && played < 1.0);
 }
 
 void LyricRenderer::renderLineToCache(int lineIndex, const QRectF& rect,
@@ -1341,14 +1510,37 @@ void LyricRenderer::drawHorizontalGroup(QPainter& p, const RenderLine& line, int
   const QColor fill = colorForLine(lineIndex);
   const QColor stroke = shadedShadowColor(m_shadowColor);
 
+  // Font-mode (karaoke) lines: the main line fills glyph by glyph over the
+  // unplay color with the 1px font-mode stroke (reference .font-mode > .line
+  // spans), and the extended lines switch to played with the line's
+  // 'played' state (600 ms transition) instead of with the active state.
+  const bool fontLine = isFontLine(lineIndex);
+  const QColor extFill =
+    fontLine ? interpolateColor(m_unplayColor, m_playedColor, m_linePlayedProgress.value(lineIndex))
+             : fill;
+  const StrokeStyle mainStyle = fontLine ? StrokeStyle::StrokeFont : StrokeStyle::Stroke3;
+  double filledLeft = fontLine ? filledGlyphsForLine(lineIndex) : -1.0;
+  // Split for one row: consumes the row's share of the filled glyphs.
+  const auto rowSplit = [&](const QString& row, const QFontMetrics& fm) {
+    if (!fontLine)
+      return FillSplit{};
+    const int glyphs = nonSpaceCount(row);
+    const double rowFilled = qBound(0.0, filledLeft, double(glyphs));
+    filledLeft -= glyphs;
+    const qreal advance = fm.horizontalAdvance(row);
+    return FillSplit{advance > 0 ? filledAdvance(row, fm, rowFilled) / advance : 0.0,
+                     m_playedColor};
+  };
+  const QColor mainFill = fontLine ? m_unplayColor : fill;
+
   if (m_ellipsis) {
     // Ellipsis mode: one single line with a trailing "…" (reference
     // .ellipsis .font-lrc { .mixin-ellipsis(1) }).
     const QString mainText =
       elideForWidth(stripWordTags(line.text), mainFm, int(rect.width()), mainScale);
     const QRectF mainRect(rect.x(), rect.y(), rect.width(), mainFm.height() * mainScale);
-    drawTextWithStroke(p, mainText, mainRect, mainFont, fill, stroke, StrokeStyle::Stroke3,
-                       mainScale);
+    drawTextWithStroke(p, mainText, mainRect, mainFont, mainFill, stroke, mainStyle, mainScale,
+                       rowSplit(mainText, mainFm));
 
     qreal y = rect.y() + mainFm.height() * mainScale;
     for (const QString& rawExtended : line.extended) {
@@ -1357,7 +1549,7 @@ void LyricRenderer::drawHorizontalGroup(QPainter& p, const RenderLine& line, int
         elideForWidth(stripWordTags(rawExtended), extendedFm, int(rect.width()), extScale);
       drawTextWithStroke(p, extText,
                          QRectF(rect.x(), y, rect.width(), extendedFm.height() * extScale),
-                         extendedFont, fill, stroke, StrokeStyle::Stroke3, extScale);
+                         extendedFont, extFill, stroke, StrokeStyle::Stroke3, extScale);
       y += extendedFm.height() * extScale;
     }
     return;
@@ -1372,7 +1564,7 @@ void LyricRenderer::drawHorizontalGroup(QPainter& p, const RenderLine& line, int
     wrapForWidth(stripWordTags(line.text), mainFm, int(rect.width()), mainScale);
   for (const QString& row : mainRows) {
     drawTextWithStroke(p, row, QRectF(rect.x(), y, rect.width(), mainFm.height() * mainScale),
-                       mainFont, fill, stroke, StrokeStyle::Stroke3, mainScale);
+                       mainFont, mainFill, stroke, mainStyle, mainScale, rowSplit(row, mainFm));
     y += mainFm.height() * mainScale;
   }
   for (const QString& rawExtended : line.extended) {
@@ -1381,7 +1573,7 @@ void LyricRenderer::drawHorizontalGroup(QPainter& p, const RenderLine& line, int
       wrapForWidth(stripWordTags(rawExtended), extendedFm, int(rect.width()), extScale);
     for (const QString& row : extRows) {
       drawTextWithStroke(p, row, QRectF(rect.x(), y, rect.width(), extendedFm.height() * extScale),
-                         extendedFont, fill, stroke, StrokeStyle::Stroke3, extScale);
+                         extendedFont, extFill, stroke, StrokeStyle::Stroke3, extScale);
       y += extendedFm.height() * extScale;
     }
   }
@@ -1403,6 +1595,14 @@ void LyricRenderer::drawVerticalGroup(QPainter& p, const VerticalGroupMetrics& m
   // Vertical strokes use the FULL shadow color at ~1 px offsets (reference
   // stroke4), unlike the horizontal 51%-alpha shade (stroke3).
   const QColor fill = colorForLine(lineIndex);
+  // Font-mode lines: per-glyph fill of the main columns with the font-mode
+  // stroke; extended columns follow the 'played' state (see
+  // drawHorizontalGroup).
+  const bool fontLine = isFontLine(lineIndex);
+  const QColor extFill =
+    fontLine ? interpolateColor(m_unplayColor, m_playedColor, m_linePlayedProgress.value(lineIndex))
+             : fill;
+  double filledLeft = fontLine ? filledGlyphsForLine(lineIndex) : -1.0;
 
   // Columns are drawn rightmost-first: in the wrapped flow (writing-mode
   // vertical-rl) the first column of each text sits at the right edge and
@@ -1411,27 +1611,36 @@ void LyricRenderer::drawVerticalGroup(QPainter& p, const VerticalGroupMetrics& m
   // gap (reference .extended { margin-right: ... }).
   qreal right = rect.right();
   auto drawColumns = [&](const QStringList& cols, const QFont& font, const QFontMetrics& fm,
-                         qreal scale) {
+                         qreal scale, bool isMain) {
+    const bool split = fontLine && isMain;
+    const QColor colFill = split ? m_unplayColor : (fontLine ? extFill : fill);
+    const QColor colStroke = split ? shadedShadowColor(m_shadowColor) : m_shadowColor;
+    const StrokeStyle colStyle = split ? StrokeStyle::StrokeFont : StrokeStyle::Stroke4;
     for (int i = 0; i < cols.size(); ++i) {
       const qreal colWidth = columnWidth(cols.at(i), fm, scale);
       const QRectF colRect(right - colWidth, rect.top(), colWidth, m.groupHeight);
-      drawVerticalText(p, cols.at(i), colRect, font, fill, m_shadowColor, StrokeStyle::Stroke4,
-                       letterSpacing, scale);
+      const int glyphs = nonSpaceCount(cols.at(i));
+      const double colFilled = split ? qBound(0.0, filledLeft, double(glyphs)) : -1.0;
+      if (split)
+        filledLeft -= glyphs;
+      drawVerticalText(p, cols.at(i), colRect, font, colFill, colStroke, colStyle, letterSpacing,
+                       scale, colFilled);
       right = colRect.left();
       if (i < cols.size() - 1)
         right -= letterSpacing;
     }
   };
-  drawColumns(m.mainColumns, m.mainFont, mainFm, mainScale);
+  drawColumns(m.mainColumns, m.mainFont, mainFm, mainScale, true);
   for (const QStringList& extCols : m.extendedColumns) {
     right -= extGap;
-    drawColumns(extCols, m.extendedFont, extendedFm, extScale);
+    drawColumns(extCols, m.extendedFont, extendedFm, extScale, false);
   }
 }
 
 void LyricRenderer::drawVerticalText(QPainter& p, const QString& text, const QRectF& columnRect,
                                      const QFont& font, const QColor& fill, const QColor& stroke,
-                                     StrokeStyle style, int letterSpacing, qreal scale)
+                                     StrokeStyle style, int letterSpacing, qreal scale,
+                                     double filled)
 {
   if (text.isEmpty())
     return;
@@ -1443,16 +1652,20 @@ void LyricRenderer::drawVerticalText(QPainter& p, const QString& text, const QRe
   const qreal cellHeight = fm.height() * scale;
   const qreal step = cellHeight + letterSpacing;
   qreal y = columnRect.y();
+  int glyph = 0; // non-space glyphs seen (the font-mode fill counts glyphs)
   for (const QChar ch : text) {
+    FillSplit split;
+    if (filled >= 0.0 && !ch.isSpace())
+      split = FillSplit{qBound(0.0, filled - glyph++, 1.0), m_playedColor};
     drawTextWithStroke(p, QString(ch), QRectF(columnRect.x(), y, columnRect.width(), cellHeight),
-                       font, fill, stroke, style, scale);
+                       font, fill, stroke, style, scale, split);
     y += step;
   }
 }
 
 void LyricRenderer::drawTextWithStroke(QPainter& p, const QString& text, const QRectF& rect,
                                        const QFont& font, const QColor& fill, const QColor& stroke,
-                                       StrokeStyle style, qreal scale)
+                                       StrokeStyle style, qreal scale, const FillSplit& split)
 {
   if (text.isEmpty())
     return;
@@ -1501,10 +1714,12 @@ void LyricRenderer::drawTextWithStroke(QPainter& p, const QString& text, const Q
   // active-line zoom and the 0.8x extended scale included); px offsets are
   // fixed device pixels.
   const qreal em = font.pixelSize();
-  const StrokeOffset* offsets =
-    (style == StrokeStyle::Stroke3) ? kStroke3Offsets.data() : kStroke4Offsets.data();
-  const std::size_t passCount =
-    (style == StrokeStyle::Stroke3) ? kStroke3Offsets.size() : kStroke4Offsets.size();
+  const StrokeOffset* offsets = (style == StrokeStyle::Stroke3)   ? kStroke3Offsets.data()
+                                : (style == StrokeStyle::Stroke4) ? kStroke4Offsets.data()
+                                                                  : kStrokeFontOffsets.data();
+  const std::size_t passCount = (style == StrokeStyle::Stroke3)   ? kStroke3Offsets.size()
+                                : (style == StrokeStyle::Stroke4) ? kStroke4Offsets.size()
+                                                                  : kStrokeFontOffsets.size();
 
   p.setPen(stroke);
   p.setBrush(stroke);
@@ -1515,9 +1730,48 @@ void LyricRenderer::drawTextWithStroke(QPainter& p, const QString& text, const Q
     p.drawText(rect.translated(dx, dy), flags, text);
   }
 
-  p.setPen(fill);
-  p.setBrush(fill);
+  // Karaoke split (reference span background-clip:text with a played
+  // gradient sized 0 -> 100%): the base fill, then the played color clipped
+  // to the filled leading part of the run — left to right horizontally, top
+  // down for a vertical glyph cell.
+  const bool fullyPlayed = split.fraction >= 1.0;
+  const QColor base = fullyPlayed ? split.played : fill;
+  p.setPen(base);
+  p.setBrush(base);
   p.drawText(rect, flags, text);
+
+  if (split.fraction > 0.0 && !fullyPlayed) {
+    const QFontMetricsF fm(font);
+    QRectF clip;
+    const qreal pad = em; // covers glyph overhang across the cross axis
+    if (m_vertical) {
+      const qreal top = rect.center().y() - fm.height() / 2.0;
+      clip = QRectF(rect.left() - pad, top - pad, rect.width() + 2 * pad,
+                    pad + fm.height() * split.fraction);
+    } else {
+      const qreal advance = fm.horizontalAdvance(text);
+      // Leading edge of the run as textFlags() aligns it.
+      qreal left = rect.center().x() - advance / 2.0;
+      switch (m_align & Qt::AlignHorizontal_Mask) {
+      case Qt::AlignLeft:
+        left = rect.left();
+        break;
+      case Qt::AlignRight:
+        left = rect.right() - advance;
+        break;
+      default:
+        break; // Qt::AlignHCenter
+      }
+      clip = QRectF(left - pad, rect.top() - pad, pad + advance * split.fraction,
+                    rect.height() + 2 * pad);
+    }
+    p.save();
+    p.setClipRect(clip, Qt::IntersectClip);
+    p.setPen(split.played);
+    p.setBrush(split.played);
+    p.drawText(rect, flags, text);
+    p.restore();
+  }
 
   if (scaled)
     p.restore();
@@ -1525,10 +1779,12 @@ void LyricRenderer::drawTextWithStroke(QPainter& p, const QString& text, const Q
 
 QVector<QPointF> LyricRenderer::strokeOffsetsPx(StrokeStyle style, qreal emPx)
 {
-  const StrokeOffset* offsets =
-    (style == StrokeStyle::Stroke3) ? kStroke3Offsets.data() : kStroke4Offsets.data();
-  const std::size_t count =
-    (style == StrokeStyle::Stroke3) ? kStroke3Offsets.size() : kStroke4Offsets.size();
+  const StrokeOffset* offsets = (style == StrokeStyle::Stroke3)   ? kStroke3Offsets.data()
+                                : (style == StrokeStyle::Stroke4) ? kStroke4Offsets.data()
+                                                                  : kStrokeFontOffsets.data();
+  const std::size_t count = (style == StrokeStyle::Stroke3)   ? kStroke3Offsets.size()
+                            : (style == StrokeStyle::Stroke4) ? kStroke4Offsets.size()
+                                                              : kStrokeFontOffsets.size();
   QVector<QPointF> result;
   result.reserve(int(count));
   for (std::size_t i = 0; i < count; ++i) {
