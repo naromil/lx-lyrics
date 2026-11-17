@@ -4,8 +4,10 @@
 #
 #   ./tools/lint.sh [--fix] [--format-only] [--tidy-only] [--help]
 #
-#   1. clang-format — checks every C++ source against the repo's .clang-format
-#      (--fix rewrites the files instead of failing).
+#   1. clang-format — checks every C/C++ source against the repo's
+#      .clang-format: the app, the Fooyin adapter, and the C/C++ adapters
+#      (plugins/deadbeef, plugins/audacious, plugins/vlc) that clang-tidy does
+#      not cover (--fix rewrites the files instead of failing).
 #   2. clang-tidy   — runs the curated .clang-tidy check set over both projects
 #      with run-clang-tidy; findings fail the run.
 #
@@ -84,12 +86,28 @@ run_format() {
     local clang_format
     clang_format="$(find_clang_format)" || exit 1
 
+    # Only src/ and tests/ are listed, so a project's build/ dir (generated
+    # moc/config headers) is never formatted. The C adapters are format-only:
+    # their builds need player headers, so they stay outside clang-tidy.
+    local -a dirs=(
+        "$REPO_ROOT/lyrics-app/src" "$REPO_ROOT/lyrics-app/tests"
+        "$REPO_ROOT/plugins/fooyin/src" "$REPO_ROOT/plugins/fooyin/tests"
+    )
+    local adapter
+    for adapter in deadbeef audacious vlc; do
+        dirs+=("$REPO_ROOT/plugins/$adapter/src" "$REPO_ROOT/plugins/$adapter/tests")
+    done
+    local dir
+    for dir in "${dirs[@]}"; do
+        [ -d "$dir" ] || die "source directory $dir not found"
+    done
+
     local -a files
     mapfile -t files < <(
-        find "$REPO_ROOT/lyrics-app/src" "$REPO_ROOT/lyrics-app/tests" "$REPO_ROOT/plugins/fooyin/src" \
-            \( -name '*.cpp' -o -name '*.h' \) | sort
+        find "${dirs[@]}" -type f \
+            \( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.h' \) | sort
     )
-    [ "${#files[@]}" -gt 0 ] || die "no C++ sources found"
+    [ "${#files[@]}" -gt 0 ] || die "no C/C++ sources found"
 
     if [ "$fix" -eq 1 ]; then
         step "clang-format (rewriting ${#files[@]} files)"
