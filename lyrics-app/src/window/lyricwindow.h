@@ -56,6 +56,11 @@ public:
   // attach here in later tasks.
   QWidget* contentContainer() const { return m_contentContainer; }
 
+  // The UI string lookup the window was built with, so the controller can
+  // translate the strings it paints into the lyric area (the "No lyrics"
+  // placeholder) from the same pack as the control bar.
+  TranslationManager& i18n() const { return m_i18n; }
+
   // Spectrum visualizer: a full-window backdrop behind the lyric lines
   // (reference .content inset 0 / z-index -1; hidden unless
   // desktopLyric.audioVisualization is on). Wired to a transport — the player

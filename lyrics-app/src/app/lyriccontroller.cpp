@@ -32,6 +32,7 @@
 #include "engine/lyricselector.h"
 #include "engine/wordparser.h"
 #include "host/feedtypes.h"
+#include "i18n/translationmanager.h"
 #include "renderer/lyricrenderer.h"
 #include "window/lyricwindow.h"
 
@@ -137,6 +138,14 @@ LyricController::LyricController(AppContext& ctx, LyricWindow& window, QObject* 
           &LyricController::resetLocalOffset);
   connect(this, &LyricController::localOffsetChanged, &window, &LyricWindow::showLyricOffsetToast);
   connect(this, &LyricController::localOffsetValueChanged, &window, &LyricWindow::setLyricOffset);
+
+  // The "No lyrics" placeholder is a translated string: a language switch
+  // while it is showing repaints it in the new pack. Real lyric lines are
+  // untouched (the placeholder shows exactly when the player has no lines).
+  connect(&window.i18n(), &TranslationManager::languageChanged, this, [this] {
+    if (m_player->lines().isEmpty())
+      showNoLyricsPlaceholder();
+  });
 
   applyRendererConfig();
   // Window-driven (not config-driven): the renderer must dim non-active
@@ -379,12 +388,14 @@ void LyricController::showNoLyricsPlaceholder()
   // color — centered and never highlighted (setActiveLine(-1) keeps the
   // active-line color and zoom off), so the window shows the track instead
   // of a blank pane. Empty fields are skipped; a track with no metadata at
-  // all falls back to a plain "No lyrics". Replaced by the real lines as
-  // soon as a lyric arrives (pushLyricsToRenderer feeds from the player).
+  // all falls back to a plain "No lyrics" (app-local i18n key, so zh-cn/zh-tw
+  // users see their own language). Replaced by the real lines as soon as a
+  // lyric arrives (pushLyricsToRenderer feeds from the player).
+  const QString noLyrics = m_window.i18n().tr(QStringLiteral("lxlyrics__no_lyrics"));
   QVector<RenderLine> lines;
   if (m_ctx.config.get(kKeyShowNoLyricMetadata).toBool()) {
     if (m_trackName.isEmpty())
-      lines.append(RenderLine{QStringLiteral("No lyrics"), {}});
+      lines.append(RenderLine{noLyrics, {}});
     else
       lines.append(RenderLine{m_trackName, {}});
     if (!m_trackSinger.isEmpty())
@@ -392,9 +403,9 @@ void LyricController::showNoLyricsPlaceholder()
     if (!m_trackAlbum.isEmpty())
       lines.append(RenderLine{m_trackAlbum, {}});
   }
-  // Toggle off, or a track with no metadata at all: the plain literal.
+  // Toggle off, or a track with no metadata at all: the plain placeholder.
   if (lines.isEmpty())
-    lines.append(RenderLine{QStringLiteral("No lyrics"), {}});
+    lines.append(RenderLine{noLyrics, {}});
   m_renderer->setLines(lines);
   m_renderer->setActiveLine(-1);
   // Center the block in the viewport; the lines still follow the alignment

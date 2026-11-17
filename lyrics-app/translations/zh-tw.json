@@ -16,6 +16,7 @@
   "lxlyrics__color_more": "更多顏色…",
   "lxlyrics__control_bar_settings": "歌詞設定",
   "lxlyrics__lyric_offset_toast": "歌詞偏移：{num} 秒",
+  "lxlyrics__no_lyrics": "暫無歌詞",
   "lxlyrics__settings_lang_auto": "跟隨系統",
   "lxlyrics__settings_line_gap_reset_tip": "恢復預設間距（{num} px）",
   "lxlyrics__settings_lyric_offset_earlier_tip": "歌詞提前（Ctrl+↑）",

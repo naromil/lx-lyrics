@@ -159,6 +159,7 @@ private slots:
   void invalidTimestampsRenderAsStaticLines();
   void unsyncedLyricShowsStaticTextPlaceholder();
   void emptyLyricShowsPlaceholder();
+  void noLyricsPlaceholderFollowsLanguage();
   void validLyricShowsParsedLines();
   void karaokeLyricFillsWordByWord();
   void setTrackAppliesPlaybackSnapshot();
@@ -294,6 +295,50 @@ void TestLyricController::emptyLyricShowsPlaceholder()
   auto* renderer = window.contentContainer()->findChild<LyricRenderer*>();
   QVERIFY(renderer != nullptr);
   QCOMPARE(renderer->lineCount(), 3);
+}
+
+void TestLyricController::noLyricsPlaceholderFollowsLanguage()
+{
+  // The plain "No lyrics" placeholder is the app-local lxlyrics__no_lyrics
+  // key, not an English literal: it is painted in the active pack and a live
+  // common.langId switch repaints it. Real lyric lines are never touched.
+  AppContext ctx(CliOptions{});
+  ctx.config.loadDefaults();
+  QVERIFY(ctx.config.set(QStringLiteral("common.langId"), QStringLiteral("en-us")));
+  TranslationManager i18n(ctx.config);
+  LyricWindow window(ctx.config, i18n);
+  LyricController controller(ctx, window);
+
+  auto* renderer = window.contentContainer()->findChild<LyricRenderer*>();
+  QVERIFY(renderer != nullptr);
+
+  // A track with no metadata and no lyric: the single placeholder line.
+  controller.setTrack(TrackSnapshot{});
+  QCOMPARE(renderer->lineCount(), 1);
+  QCOMPARE(renderer->lineText(0), QStringLiteral("No lyrics"));
+
+  QVERIFY(ctx.config.set(QStringLiteral("common.langId"), QStringLiteral("zh-cn")));
+  QCOMPARE(renderer->lineCount(), 1);
+  QCOMPARE(renderer->lineText(0), QStringLiteral("暂无歌词"));
+
+  QVERIFY(ctx.config.set(QStringLiteral("common.langId"), QStringLiteral("zh-tw")));
+  QCOMPARE(renderer->lineText(0), QStringLiteral("暫無歌詞"));
+
+  // Metadata toggle off with a titled track: the plain placeholder, still
+  // translated.
+  QVERIFY(ctx.config.set(QStringLiteral("desktopLyric.isShowNoLyricMetadata"), false));
+  TrackSnapshot titled;
+  titled.name = QStringLiteral("Skyland - Mich");
+  controller.setTrack(titled);
+  QCOMPARE(renderer->lineCount(), 1);
+  QCOMPARE(renderer->lineText(0), QStringLiteral("暫無歌詞"));
+
+  // Once real lyrics arrive, a language switch leaves them alone.
+  titled.lrc = QStringLiteral("[00:01.00]Hello\n[00:02.00]World");
+  controller.setTrack(titled);
+  QVERIFY(ctx.config.set(QStringLiteral("common.langId"), QStringLiteral("en-us")));
+  QCOMPARE(renderer->lineCount(), 2);
+  QCOMPARE(renderer->lineText(0), QStringLiteral("Hello"));
 }
 
 void TestLyricController::validLyricShowsParsedLines()

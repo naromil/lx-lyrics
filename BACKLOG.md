@@ -4,7 +4,7 @@
 
 - [ ] Extra sidecar lookup locations (a `lyrics/` subfolder, `Artist - Title.lrc`) — changes the acquisition order that `docs/protocol.md` §5 specifies
 - [ ] Global shortcuts for lock/unlock — extends the `lx-lyrics-hotkey` fd-3 lines and needs a new host→app message in `docs/protocol.md`
-- [ ] Translate the "No lyrics" placeholder in `LyricController::showNoLyricsPlaceholder()` (app-local i18n key in the three packs; controller-suite test) — it is a hardcoded English literal, so zh-CN/zh-TW users see English whenever a track has no lyrics
+- [x] Translate the "No lyrics" placeholder in `LyricController::showNoLyricsPlaceholder()` (app-local i18n key in the three packs; controller-suite test) — it is a hardcoded English literal, so zh-CN/zh-TW users see English whenever a track has no lyrics
 - [ ] Online lyric search/download (deferred by design in architecture.md)
 - [ ] Extend `tools/lint.sh`'s clang-format pass to the C/C++ adapter sources (`plugins/deadbeef`, `plugins/audacious`, `plugins/vlc`, `plugins/fooyin/src/hotkey.c`) — they are kept format-clean only by hand today (and pass), so drift goes unnoticed
 

@@ -180,6 +180,12 @@ public:
   // Test accessor for the line list size (placeholder vs real lines).
   int lineCount() const { return m_lines.size(); }
 
+  // Test accessor for one line's main text (empty when out of range).
+  QString lineText(int line) const
+  {
+    return (line >= 0 && line < m_lines.size()) ? m_lines.at(line).text : QString();
+  }
+
   // Test accessor for the current active line (exposed for tests; -1 = none
   // active — static lines are clamped to -1).
   int activeLine() const { return m_activeLine; }

@@ -16,6 +16,7 @@
   "lxlyrics__color_more": "More colors...",
   "lxlyrics__control_bar_settings": "Lyric settings",
   "lxlyrics__lyric_offset_toast": "Lyric offset: {num} s",
+  "lxlyrics__no_lyrics": "No lyrics",
   "lxlyrics__settings_lang_auto": "Follow system",
   "lxlyrics__settings_line_gap_reset_tip": "Restore the default spacing ({num} px)",
   "lxlyrics__settings_lyric_offset_earlier_tip": "Show lyrics earlier (Ctrl+Up)",
