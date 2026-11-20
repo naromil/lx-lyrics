@@ -122,6 +122,7 @@ private slots:
   void lineBlitOpacityFollowsBodyOpacityAndColorProgress();
   void filledGlyphsFillEachWordLinearly();
   void fontLinesFinishOrResetAroundActiveLine();
+  void lyricLoadedWhilePausedStartsUnfilled();
   void fontLineFillPaintsPlayedLeadingPart();
   void fontWeightFontBoldsOnlyFontLines();
   void wheelDownAdvancesOffset();
@@ -917,6 +918,35 @@ void TestLyricRenderer::fontLinesFinishOrResetAroundActiveLine()
   renderer.setLines(makeLines(2), true);
   renderer.setActiveLine(0);
   QCOMPARE(renderer.filledGlyphsForLine(0), 0.0);
+}
+
+void TestLyricRenderer::lyricLoadedWhilePausedStartsUnfilled()
+{
+  // A lyric swapped in while paused (next track picked while paused, or a
+  // re-selection) parks on its first line before any play(). The frozen
+  // position belongs to the previous lyric and must not fill the new one.
+  qint64 position = 0;
+  LyricRenderer renderer;
+  renderer.resize(600, 300);
+  renderer.setPositionSource([&position] {
+    return position;
+  });
+  const QVector<RenderLine> lines{makeFontLine(0, {QStringLiteral("ab"), QStringLiteral("cd")}),
+                                  makeFontLine(3000, {QStringLiteral("ef")})};
+  renderer.setLines(lines, true);
+  renderer.setPlaying(true);
+  position = 120000; // deep into the previous song
+  renderer.setActiveLine(1);
+  renderer.setPlaying(false);
+
+  renderer.setLines(lines, true);
+  renderer.setActiveLine(0);
+  QCOMPARE(renderer.filledGlyphsForLine(0), 0.0);
+
+  // Playing from the start then fills from the live clock as usual.
+  position = 500;
+  renderer.setPlaying(true);
+  QCOMPARE(renderer.filledGlyphsForLine(0), 1.0);
 }
 
 void TestLyricRenderer::fontLineFillPaintsPlayedLeadingPart()

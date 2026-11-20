@@ -500,6 +500,13 @@ void LyricRenderer::setLines(const QVector<RenderLine>& lines, bool fontLyric)
 {
   m_lines = lines;
   m_fontLyric = fontLyric;
+  // The frozen fill position belongs to the previous lyric. A lyric swapped
+  // in while paused parks on its first line before any play(), so it starts
+  // unfilled (fresh FontPlayers in the reference): freeze at its earliest
+  // line time until setPlaying(true) samples the live clock again.
+  m_pausedPositionMs = 0;
+  for (const RenderLine& line : m_lines)
+    m_pausedPositionMs = qMin(m_pausedPositionMs, line.timeMs);
   m_linePlayed.fill(false, m_lines.size());
   m_linePlayedProgress.fill(0.0, m_lines.size());
   m_linePlayedTransition.fill(LineTransition{}, m_lines.size());
